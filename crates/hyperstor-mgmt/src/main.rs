@@ -344,7 +344,10 @@ async fn serve(
                 Some(false) => {
                     // Plain HTTP on the HTTPS port: to HTTPS.
                     let svc = hyper::service::service_fn(|req| async move {
-                        Ok::<_, std::convert::Infallible>(web::to_https(&req))
+                        Ok::<_, std::convert::Infallible>(match whole(req).await {
+                            Ok(req) => web::to_https(&req),
+                            Err(r) => r,
+                        })
                     });
                     let _ = builder
                         .serve_connection(hyper_util::rt::TokioIo::new(stream), svc)
@@ -409,6 +412,8 @@ async fn offer_claim(s: Arc<State>, at: String) {
 }
 
 type Resp = http::Response<Full<Bytes>>;
+/// A request with all of its body read ([`whole`]).
+type Req = http::Request<Bytes>;
 
 fn respond(status: u16, ctype: &str, body: impl Into<Bytes>) -> Resp {
     http::Response::builder()
@@ -502,7 +507,7 @@ pub fn host_allowed(host: &str, port: u16, extra: &[String]) -> bool {
         && port_ok
 }
 
-fn cookie_of(req: &http::Request<hyper::body::Incoming>) -> Option<String> {
+fn cookie_of(req: &Req) -> Option<String> {
     req.headers()
         .get_all(http::header::COOKIE)
         .iter()
@@ -515,7 +520,7 @@ fn cookie_of(req: &http::Request<hyper::body::Incoming>) -> Option<String> {
         })
 }
 
-fn bearer_of(req: &http::Request<hyper::body::Incoming>) -> Option<String> {
+fn bearer_of(req: &Req) -> Option<String> {
     req.headers()
         .get(http::header::AUTHORIZATION)?
         .to_str()
@@ -524,13 +529,35 @@ fn bearer_of(req: &http::Request<hyper::body::Incoming>) -> Option<String> {
         .map(|t| t.trim().to_string())
 }
 
-async fn body_of(
-    req: http::Request<hyper::body::Incoming>,
-) -> Result<(http::request::Parts, Bytes), Resp> {
+/// Reads all of `req`'s body (at most [`MAX_BODY`]) before anything
+/// answers it (#329). hyper drops a connection whose request body is left
+/// unread, without a `Connection: close` in the answer, so a client that
+/// keeps connections open, such as a proxy or a tunnel, sends its next
+/// request on a closed one. Every handler that takes a body reads all of
+/// it anyway. A larger body is refused, with `Connection: close`, as
+/// the connection is then dropped.
+async fn whole(req: http::Request<hyper::body::Incoming>) -> Result<Req, Resp> {
     let (parts, body) = req.into_parts();
+    let too_large = || {
+        let mut r = error(413, "too_large", "request too large");
+        r.headers_mut().insert(
+            http::header::CONNECTION,
+            http::HeaderValue::from_static("close"),
+        );
+        r
+    };
+    // A length said to be too large: refused without reading any of it.
+    let said = parts
+        .headers
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if said.is_some_and(|n| n > MAX_BODY as u64) {
+        return Err(too_large());
+    }
     match Limited::new(body, MAX_BODY).collect().await {
-        Ok(b) => Ok((parts, b.to_bytes())),
-        Err(_) => Err(error(413, "too_large", "request too large")),
+        Ok(b) => Ok(http::Request::from_parts(parts, b.to_bytes())),
+        Err(_) => Err(too_large()),
     }
 }
 
@@ -552,6 +579,10 @@ async fn serve_one(
     peer: SocketAddr,
     via: bool,
 ) -> Resp {
+    let req = match whole(req).await {
+        Ok(r) => r,
+        Err(r) => return r,
+    };
     if !state.front.admits(peer.ip(), via) {
         return respond(403, "text/plain", "only through the proxy\n");
     }
@@ -559,11 +590,7 @@ async fn serve_one(
     handle(state, req, client).await
 }
 
-async fn handle(
-    state: &State,
-    req: http::Request<hyper::body::Incoming>,
-    peer: SocketAddr,
-) -> Resp {
+async fn handle(state: &State, req: Req, peer: SocketAddr) -> Resp {
     let host = req
         .headers()
         .get(http::header::HOST)
@@ -912,15 +939,12 @@ struct OidcStartReq {
 /// `POST /auth/oidc/start {return_to?, claim?, reauth?}`: where to send
 /// the browser (`{"redirect": URL}`), and the cookie binding the login to
 /// it.
-async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::Incoming>) -> Resp {
+async fn oidc_start(state: &State, l: &Login, req: Req) -> Resp {
     let Some(o) = &l.oidc else {
         return error(404, "not_found", "identity provider logins are off here");
     };
     let host = host_of(&req);
-    let (_, body) = match body_of(req).await {
-        Ok(b) => b,
-        Err(r) => return r,
-    };
+    let (_, body) = req.into_parts();
     let r: OidcStartReq = if body.is_empty() {
         OidcStartReq::default()
     } else {
@@ -979,12 +1003,7 @@ async fn oidc_start(state: &State, l: &Login, req: http::Request<hyper::body::In
 
 /// `GET /auth/oidc/callback?code&state`: the provider sends the browser
 /// back; a session, then on to where the login began.
-async fn oidc_callback(
-    state: &State,
-    l: &Login,
-    req: http::Request<hyper::body::Incoming>,
-    peer: SocketAddr,
-) -> Resp {
+async fn oidc_callback(state: &State, l: &Login, req: Req, peer: SocketAddr) -> Resp {
     let Some(o) = &l.oidc else {
         return error(404, "not_found", "identity provider logins are off here");
     };
@@ -1118,7 +1137,7 @@ fn percent_decode(v: &str) -> String {
 async fn with_login(
     state: &State,
     l: &Login,
-    req: http::Request<hyper::body::Incoming>,
+    req: Req,
     path: &str,
     read: bool,
     peer: SocketAddr,
@@ -1158,10 +1177,7 @@ async fn with_login(
             );
         }
         (&http::Method::POST, "/auth/login") => {
-            let (_, body) = match body_of(req).await {
-                Ok(b) => b,
-                Err(r) => return r,
-            };
+            let (_, body) = req.into_parts();
             let Ok(r) = serde_json::from_slice::<LoginReq>(&body) else {
                 return error(400, "invalid_argument", "expected {user, password}");
             };
@@ -1257,10 +1273,7 @@ async fn with_login(
             if let Err(r) = authorize(l, &p, "People.CreateToken", "own") {
                 return r;
             }
-            let (_, body) = match body_of(req).await {
-                Ok(b) => b,
-                Err(r) => return r,
-            };
+            let (_, body) = req.into_parts();
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
             let name = v["name"].as_str().unwrap_or("").to_string();
             let days = v["days"].as_u64();
@@ -1310,10 +1323,7 @@ async fn with_login(
                 Ok(r) => r,
                 Err(r) => return r,
             };
-            let (_, body) = match body_of(req).await {
-                Ok(b) => b,
-                Err(r) => return r,
-            };
+            let (_, body) = req.into_parts();
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
             let mut roles: Vec<String> = v["roles"]
                 .as_array()
@@ -1386,10 +1396,7 @@ async fn with_login(
                 Ok(r) => r,
                 Err(r) => return r,
             };
-            let (parts, body) = match body_of(req).await {
-                Ok(b) => b,
-                Err(r) => return r,
-            };
+            let (parts, body) = req.into_parts();
             let r = proxy::forward(
                 &state.tls,
                 &state.members,
