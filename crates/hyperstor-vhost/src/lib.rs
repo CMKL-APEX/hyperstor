@@ -1,12 +1,15 @@
 //! `hyperstor-vhost` serves the volumes attached on this node to its VMs
 //! over vhost-user-blk (11-frontends.md §11.1, 04-decisions.md D1, D26, D116).
 //!
-//! One reactor thread runs everything: a client of the cluster, a control
-//! socket (D117) through which glidex attaches and detaches volumes, and
-//! a vhost-user socket per attached volume, `<dir>/<volume id>.sock`, which
+//! The first reactor runs a client of the cluster, a control socket
+//! (D117) through which glidex attaches and detaches volumes, and a
+//! vhost-user socket per attached volume, `<dir>/<volume id>.sock`, which
 //! the hypervisor connects to (and reconnects to after either side
-//! restarts). Each queue of a connected disk is a task on the same
-//! reactor; more reactors, pinned per NUMA node, come later.
+//! restarts). There is a reactor per NUMA node, each pinned to one CPU
+//! (D290, [`reactors`]); a disk runs whole on one of them, that of the
+//! node its guest's memory is bound to (D291, D292): its connection and
+//! its lease move there when the hypervisor's memory table comes. Each
+//! queue of a connected disk is a task on that reactor.
 //!
 //! Stopping the service leaves its volumes attached (04-decisions.md D143):
 //! `<dir>/state.json` names them and the instance that held them, and the
@@ -17,11 +20,14 @@ pub mod blk;
 pub mod control;
 pub mod device;
 pub mod inflight;
+pub mod numa;
+pub mod reactors;
 
 use control::{Reply, Request, Take};
 use device::Disk;
 use hyperstor_client::{Client, ClientError};
 use hyperstor_reactor::fd;
+use reactors::Reactors;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -52,6 +58,25 @@ pub struct Options {
     /// The host it names to storage nodes, for realm bindings (`--host`,
     /// D259, D261); empty: none.
     pub host: String,
+    /// The reactors' CPUs, one reactor each (`--cpus`, D290); None: the
+    /// first CPU of each NUMA node with CPUs.
+    pub cpus: Option<Vec<usize>>,
+    /// How long a polled disk's queues stay polled after they were last
+    /// busy (`--poll-us`, D293).
+    pub poll: std::time::Duration,
+}
+
+/// The reactors' CPUs and nodes: `cpus` as given, or the first CPU of
+/// each node; one reactor, not pinned, on a host that lists no nodes.
+pub fn reactor_cpus(cpus: Option<&[usize]>, sys: &Path) -> Vec<(Option<usize>, Option<u32>)> {
+    let nodes = numa::nodes(sys);
+    let cpus = cpus.map_or_else(|| numa::default_cpus(&nodes), <[usize]>::to_vec);
+    if cpus.is_empty() {
+        return vec![(None, None)];
+    }
+    cpus.iter()
+        .map(|&c| (Some(c), numa::node_of(&nodes, c)))
+        .collect()
 }
 
 /// The control socket's path in `dir`.
@@ -71,8 +96,9 @@ pub struct State {
     pub instance: u64,
     /// Each disk: its volume, serial, the identity of its lease (D150; 0
     /// in a file written before identities, whose leases have the
-    /// instance as their identity) and its label (D153).
-    pub disks: Vec<(u128, String, u64, String)>,
+    /// instance as their identity), its label (D153) and whether its
+    /// rings are polled (D293).
+    pub disks: Vec<(u128, String, u64, String, bool)>,
 }
 
 impl State {
@@ -80,12 +106,13 @@ impl State {
         let disks: Vec<serde_json::Value> = self
             .disks
             .iter()
-            .map(|(v, s, l, label)| {
+            .map(|(v, s, l, label, poll)| {
                 serde_json::json!({
                     "volume": format!("{v:032x}"),
                     "serial": s,
                     "lease": format!("{l:016x}"),
                     "label": label,
+                    "poll": poll,
                 })
             })
             .collect();
@@ -111,7 +138,8 @@ impl State {
                 None => 0,
             };
             let label = d["label"].as_str().unwrap_or("vhost").to_string();
-            disks.push((volume, hex(&d["serial"], "serial")?, lease, label));
+            let poll = d["poll"].as_bool().unwrap_or(false);
+            disks.push((volume, hex(&d["serial"], "serial")?, lease, label, poll));
         }
         Ok(State { instance, disks })
     }
@@ -123,7 +151,14 @@ pub fn disk_path(dir: &Path, volume: u128) -> PathBuf {
 }
 
 struct Served {
-    disk: Rc<Disk>,
+    /// The reactor that holds the disk and its lease (D291).
+    home: Rc<Cell<usize>>,
+    serial: String,
+    /// Its lease's identity and label, for the state file (D150, D153).
+    lease: u64,
+    label: String,
+    /// Its rings are polled while busy (D293).
+    poll: bool,
     socket: PathBuf,
     listener: UnixListener,
     /// The connected frontend, if any, to cut off at detach.
@@ -148,6 +183,28 @@ struct Service {
     opts: Options,
     client: Rc<Client>,
     disks: RefCell<BTreeMap<u128, Served>>,
+    reactors: Reactors,
+    /// Connections each reactor serves, for placing the next (D292).
+    load: RefCell<Vec<usize>>,
+}
+
+/// A disk on the reactor this runs on, around its attached volume.
+fn new_disk(
+    volume: Rc<hyperstor_client::volume::Attached>,
+    serial: String,
+    queues: u16,
+    hold: std::time::Duration,
+    poll: bool,
+) -> Rc<Disk> {
+    Rc::new(Disk {
+        volume,
+        serial,
+        queues,
+        poll,
+        locks: Default::default(),
+        hold,
+        held: Default::default(),
+    })
 }
 
 /// Runs the service on this thread until `stop` receives (or is dropped),
@@ -159,6 +216,7 @@ pub fn serve(
     stop: std::sync::mpsc::Receiver<()>,
 ) -> Result<(), String> {
     // A volume's socket must fit a Unix socket's path (107 bytes).
+    device::set_poll_window(opts.poll);
     let longest = disk_path(&opts.dir, u128::MAX);
     if longest.as_os_str().len() > 107 {
         return Err(format!(
@@ -197,30 +255,46 @@ pub fn serve(
         let _ = stop.recv();
         let _ = tx.send(());
     });
-    // For measurements only (02-benchmarks.md, 2026-11-11): the reactor's
-    // completion spin, as hyperstord's `--spin-us`. Off by default.
-    if let Some(us) = std::env::var("HS_VHOST_SPIN_US")
-        .ok()
-        .and_then(|v| v.parse().ok())
-    {
-        hyperstor_reactor::set_spin(std::time::Duration::from_micros(us));
-    }
+    let cpus = reactor_cpus(opts.cpus.as_deref(), Path::new(numa::SYS_NODES));
     hyperstor_reactor::block_on(async move {
-        let client = Client::connect_members(opts.meta.clone(), instance_id())
+        let id = instance_id();
+        let client = Client::connect_members(opts.meta.clone(), id)
             .await
             .map_err(|e| format!("map service: {e}"))?;
         client.set_networks(opts.networks.clone());
         client.set_host(&opts.host);
+        let spec = reactors::ClientSpec {
+            meta: opts.meta.clone(),
+            id,
+            instance: client.instance,
+            networks: opts.networks.clone(),
+            host: opts.host.clone(),
+        };
+        let (reactors, jobs) = Reactors::start(&cpus, spec, client.clone());
+        let _jobs = hyperstor_reactor::spawn(jobs);
+        let listed: Vec<String> = reactors
+            .all
+            .iter()
+            .map(|r| match (r.cpu, r.node) {
+                (Some(c), Some(n)) => format!("CPU {c} (node {n})"),
+                (Some(c), None) => format!("CPU {c}"),
+                _ => "not pinned".into(),
+            })
+            .collect();
+        eprintln!("hyperstor-vhost: reactors on {}", listed.join(", "));
+        let n = reactors.all.len();
         let svc = Rc::new(Service {
             opts,
             client,
             disks: RefCell::new(BTreeMap::new()),
+            reactors,
+            load: RefCell::new(vec![0; n]),
         });
         // Before glidex can ask: the volumes the last instance had.
         if let Some(prev) = previous {
-            for (volume, serial, lease, label) in prev.disks {
+            for (volume, serial, lease, label, poll) in prev.disks {
                 let old = if lease == 0 { prev.instance } else { lease };
-                match svc.reclaim(volume, serial, old, &label).await {
+                match svc.reclaim(volume, serial, old, &label, poll).await {
                     Ok(()) => eprintln!("hyperstor-vhost: volume {volume:032x}: taken back"),
                     Err(e) => eprintln!("hyperstor-vhost: volume {volume:032x}: dropped: {e}"),
                 }
@@ -325,19 +399,20 @@ impl Service {
     async fn handle(self: &Rc<Self>, id: u64, req: Request) -> Reply {
         match req {
             Request::Hello => Reply::ok(id, control::hello()),
-            Request::List => Reply::ok(id, control::list(self.list())),
+            Request::List => Reply::ok(id, control::list(self.list().await)),
             Request::Attach {
                 volume,
                 serial,
                 take,
                 holder,
+                poll,
             } => {
                 let label = if holder.is_empty() {
                     "vhost".to_string()
                 } else {
                     format!("vhost:{holder}")
                 };
-                match self.attach(volume, serial, take, &label).await {
+                match self.attach(volume, serial, take, &label, poll).await {
                     Ok(v) => Reply::ok(id, v),
                     Err(Refused::Held { message, holder }) => Reply::held(id, &message, &holder),
                     Err(Refused::Other(code, msg)) => Reply::error(id, code, &msg),
@@ -350,18 +425,48 @@ impl Service {
         }
     }
 
-    fn list(&self) -> Vec<control::Listed> {
-        self.disks
+    async fn list(&self) -> Vec<control::Listed> {
+        let disks: Vec<(u128, PathBuf, bool, usize, bool)> = self
+            .disks
             .borrow()
             .iter()
-            .map(|(id, d)| control::Listed {
-                volume: *id,
-                socket: d.socket.clone(),
-                size: d.disk.volume.volume().size,
-                connected: d.conn.borrow().is_some(),
-                lost: d.disk.volume.lost(),
+            .map(|(id, d)| {
+                (
+                    *id,
+                    d.socket.clone(),
+                    d.conn.borrow().is_some(),
+                    d.home.get(),
+                    d.poll,
+                )
             })
-            .collect()
+            .collect();
+        let mut out = Vec::new();
+        for (volume, socket, connected, home, poll) in disks {
+            let (lost, size) = self.status(volume).await.unwrap_or((true, 0));
+            out.push(control::Listed {
+                volume,
+                socket,
+                size,
+                connected,
+                lost,
+                reactor: home,
+                node: self.reactors.all[home].node,
+                poll,
+            });
+        }
+        out
+    }
+
+    /// Whether `volume`'s lease is lost, and its size, as the reactor
+    /// holding it knows; None if it isn't attached.
+    async fn status(&self, volume: u128) -> Option<(bool, u64)> {
+        let home = self.disks.borrow().get(&volume)?.home.get();
+        self.reactors
+            .run_on(home, move || async move {
+                device::local_disk(volume).map(|d| (d.volume.lost(), d.volume.volume().size))
+            })
+            .await
+            .flatten()
     }
 
     /// Writes the state file (D143): this instance and its volumes. A
@@ -373,10 +478,7 @@ impl Service {
                 .disks
                 .borrow()
                 .iter()
-                .map(|(v, d)| {
-                    let a = &d.disk.volume;
-                    (*v, d.disk.serial.clone(), a.lease(), a.label().to_string())
-                })
+                .map(|(v, d)| (*v, d.serial.clone(), d.lease, d.label.clone(), d.poll))
                 .collect(),
         };
         let path = state_path(&self.opts.dir);
@@ -399,6 +501,7 @@ impl Service {
         serial: String,
         old: u64,
         label: &str,
+        poll: bool,
     ) -> Result<(), String> {
         use hyperstor_client::volume::Take;
         let att = match self.client.attach_as(volume, Take::Attach, label).await {
@@ -410,7 +513,7 @@ impl Service {
                 .map_err(|e| e.to_string())?,
             Err(e) => return Err(e.to_string()),
         };
-        self.open_disk(volume, serial, att)
+        self.open_disk(volume, serial, att, poll)
             .await
             .map(|_| ())
             .map_err(|(_, e)| e)
@@ -426,15 +529,15 @@ impl Service {
         serial: String,
         take: Take,
         label: &str,
+        poll: bool,
     ) -> Result<control::Value, Refused> {
-        let lost = match self.disks.borrow().get(&volume) {
-            Some(d) if !d.disk.volume.lost() => {
-                return Ok(control::attached(&d.socket, d.disk.volume.volume().size));
+        let socket = self.disks.borrow().get(&volume).map(|d| d.socket.clone());
+        if let Some(socket) = socket {
+            match self.status(volume).await {
+                Some((false, size)) => return Ok(control::attached(&socket, size)),
+                // Lost, or its reactor gone: let go and attach afresh.
+                _ => self.detach(volume, true).await.map_err(Refused::from)?,
             }
-            d => d.is_some(),
-        };
-        if lost {
-            self.detach(volume, true).await.map_err(Refused::from)?;
         }
         let how = match take {
             Take::Attach => hyperstor_client::volume::Take::Attach,
@@ -452,7 +555,7 @@ impl Service {
                 },
                 _ => Refused::Other(control::error_code(&e), e.to_string()),
             })?;
-        self.open_disk(volume, serial, att)
+        self.open_disk(volume, serial, att, poll)
             .await
             .map_err(Refused::from)
     }
@@ -463,10 +566,11 @@ impl Service {
         volume: u128,
         serial: String,
         att: Rc<hyperstor_client::volume::Attached>,
+        poll: bool,
     ) -> Result<control::Value, (&'static str, String)> {
         // Another request may have attached it meanwhile.
         if let Some(d) = self.disks.borrow().get(&volume) {
-            return Ok(control::attached(&d.socket, d.disk.volume.volume().size));
+            return Ok(control::attached(&d.socket, att.volume().size));
         }
         let socket = disk_path(&self.opts.dir, volume);
         let _ = std::fs::remove_file(&socket);
@@ -490,18 +594,22 @@ impl Service {
             }
         };
         let size = att.volume().size;
-        let disk = Rc::new(Disk {
-            volume: att,
-            serial,
-            queues: self.opts.queues,
-            locks: Default::default(),
-            hold: self.opts.hold_full,
-            held: Default::default(),
-        });
+        let (lease, label) = (att.lease(), att.label().to_string());
+        // Until a hypervisor connects, on this, the first, reactor (D292).
+        device::hold_disk(new_disk(
+            att,
+            serial.clone(),
+            self.opts.queues,
+            self.opts.hold_full,
+            poll,
+        ));
+        let home = Rc::new(Cell::new(0));
         let conn = Rc::new(RefCell::new(None));
         let stopping = Rc::new(Cell::new(false));
         let task = hyperstor_reactor::spawn(serve_disk(
-            disk.clone(),
+            self.clone(),
+            volume,
+            home.clone(),
             accepting,
             conn.clone(),
             stopping.clone(),
@@ -509,7 +617,11 @@ impl Service {
         self.disks.borrow_mut().insert(
             volume,
             Served {
-                disk,
+                home,
+                serial,
+                lease,
+                label,
+                poll,
                 socket: socket.clone(),
                 listener,
                 conn,
@@ -553,11 +665,16 @@ impl Service {
         d.task.await;
         let _ = std::fs::remove_file(&d.socket);
         self.save_state();
-        d.disk
-            .volume
-            .detach()
+        self.reactors
+            .run_on(d.home.get(), move || async move {
+                match device::drop_disk(volume) {
+                    Some(disk) => disk.volume.detach().await.map_err(|e| e.to_string()),
+                    None => Ok(()),
+                }
+            })
             .await
-            .map_err(|e| ("internal", e.to_string()))
+            .unwrap_or(Ok(()))
+            .map_err(|e| ("internal", e))
     }
 
     /// Whether a frontend stays connected to `volume`'s disk through
@@ -566,9 +683,12 @@ impl Service {
     async fn still_connected(&self, volume: u128) -> bool {
         let t = std::time::Instant::now();
         loop {
-            let open = self.disks.borrow().get(&volume).is_some_and(|d| {
-                !d.disk.volume.lost() && d.conn.borrow().as_ref().is_some_and(peer_open)
-            });
+            let connected = self
+                .disks
+                .borrow()
+                .get(&volume)
+                .is_some_and(|d| d.conn.borrow().as_ref().is_some_and(peer_open));
+            let open = connected && self.status(volume).await.is_some_and(|(lost, _)| !lost);
             if !open || t.elapsed() >= HANGUP_GRACE {
                 return open;
             }
@@ -597,8 +717,13 @@ fn peer_open(s: &UnixStream) -> bool {
 }
 
 /// Accepts one frontend at a time on a disk's socket, until detached.
+/// Each connection starts here, on the first reactor, and goes on on the
+/// reactor its guest's memory says once its memory table comes (D292);
+/// the disk and its lease move there first (D291).
 async fn serve_disk(
-    disk: Rc<Disk>,
+    svc: Rc<Service>,
+    volume: u128,
+    home: Rc<Cell<usize>>,
     listener: UnixListener,
     conn: Rc<RefCell<Option<UnixStream>>>,
     stopping: Rc<Cell<bool>>,
@@ -615,17 +740,84 @@ async fn serve_disk(
         };
         let Ok(keep) = s.try_clone() else { continue };
         *conn.borrow_mut() = Some(keep);
-        let r = device::serve_connection(disk.clone(), s).await;
+        let size = svc.status(volume).await.map_or(0, |(_, size)| size);
+        let mut ended = device::serve_connection(volume, size, svc.opts.queues, s).await;
+        // Placed at its first memory table, and again, once, if its
+        // guest's memory isn't bound and its pages are elsewhere (D292).
+        let r = loop {
+            let (moving, policy) = match ended {
+                device::Ended::Closed(r) => break r,
+                device::Ended::Place(m, p) => (m, p),
+            };
+            let to = {
+                let load = svc.load.borrow();
+                numa::place(&policy, &svc.reactors.nodes(), &load)
+            };
+            let at = svc.move_disk(volume, home.get(), to).await;
+            home.set(at);
+            let node = svc.reactors.all[at].node;
+            svc.load.borrow_mut()[at] += 1;
+            ended = svc
+                .reactors
+                .run_on(at, move || device::resume(moving, node))
+                .await
+                .unwrap_or_else(|| device::Ended::Closed(Err("its reactor stopped".into())));
+            svc.load.borrow_mut()[at] -= 1;
+        };
         *conn.borrow_mut() = None;
         if stopping.get() {
             return;
         }
         if let Err(e) = r {
-            eprintln!(
-                "hyperstor-vhost: volume {:032x}: connection ended: {e}",
-                disk.volume.volume().id
-            );
+            eprintln!("hyperstor-vhost: volume {volume:032x}: connection ended: {e}");
         }
+    }
+}
+
+impl Service {
+    /// Moves `volume`'s disk from reactor `from` to reactor `to` (D291):
+    /// `to`'s client takes over renewing its lease, then `from` lets go of
+    /// its handle without detaching. Returns where the disk is: `from`,
+    /// if `to` couldn't take it.
+    async fn move_disk(&self, volume: u128, from: usize, to: usize) -> usize {
+        if from == to {
+            return to;
+        }
+        let Some((serial, lease, label, poll)) = self
+            .disks
+            .borrow()
+            .get(&volume)
+            .map(|d| (d.serial.clone(), d.lease, d.label.clone(), d.poll))
+        else {
+            return from;
+        };
+        let (spec, queues, hold) = (self.reactors.spec(), self.opts.queues, self.opts.hold_full);
+        let taken = self
+            .reactors
+            .run_on(to, move || async move {
+                let client = reactors::client(&spec).await?;
+                let att = client
+                    .adopt(volume, lease, &label)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                device::hold_disk(new_disk(att, serial, queues, hold, poll));
+                Ok::<(), String>(())
+            })
+            .await
+            .unwrap_or_else(|| Err("its reactor stopped".into()));
+        if let Err(e) = taken {
+            eprintln!(
+                "hyperstor-vhost: volume {volume:032x}: stays on reactor {from}, reactor {to} couldn't take it: {e}"
+            );
+            return from;
+        }
+        // Requests still running there finish on the handle they hold.
+        self.reactors
+            .run_on(from, move || async move {
+                device::drop_disk(volume);
+            })
+            .await;
+        to
     }
 }
 
@@ -638,8 +830,8 @@ mod tests {
         let s = State {
             instance: 0x0123_4567_89ab_cdef,
             disks: vec![
-                (u128::MAX, "serial-1".into(), 9, "vhost:node-1".into()),
-                (7, String::new(), 1, "vhost".into()),
+                (u128::MAX, "serial-1".into(), 9, "vhost:node-1".into(), true),
+                (7, String::new(), 1, "vhost".into(), false),
             ],
         };
         assert_eq!(State::parse(&s.to_json()), Ok(s));
@@ -649,7 +841,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             old.disks,
-            vec![(1, "s".to_string(), 0, "vhost".to_string())]
+            vec![(1, "s".to_string(), 0, "vhost".to_string(), false)]
         );
         assert!(State::parse("{}").is_err());
         assert!(State::parse(r#"{"instance": "zz", "disks": []}"#).is_err());

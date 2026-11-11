@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! {"id": 1, "op": "hello"}
-//! {"id": 2, "op": "attach", "args": {"volume": "<32 hex digits>", "serial": "…", "take": "attach"|"take_over"|"preempt"}}
+//! {"id": 2, "op": "attach", "args": {"volume": "<32 hex digits>", "serial": "…", "take": "attach"|"take_over"|"preempt", "poll": false}}
 //! {"id": 3, "op": "detach", "args": {"volume": "…", "force": false}}
 //! {"id": 4, "op": "list"}
 //! ```
@@ -49,6 +49,8 @@ pub enum Request {
         /// Who asks, recorded with the lease as `vhost:<holder>` (D153):
         /// glidex names its node.
         holder: String,
+        /// Poll its rings while busy (D293): for latency-critical VMs.
+        poll: bool,
     },
     Detach {
         volume: u128,
@@ -119,11 +121,17 @@ pub fn parse(line: &[u8]) -> Result<(u64, Request), String> {
                     "holder {holder:?}: up to {HOLDER_MAX} printable ASCII characters"
                 ));
             }
+            let poll = match args.get("poll") {
+                None => false,
+                Some(Value::Bool(b)) => *b,
+                Some(p) => return Err(format!("poll {p}: true or false")),
+            };
             Request::Attach {
                 volume: volume()?,
                 serial,
                 take,
                 holder,
+                poll,
             }
         }
         o => return Err(format!("op {o:?}: hello, attach, detach or list")),
@@ -177,6 +185,11 @@ pub struct Listed {
     /// Its lease was taken by a take-over or preemption elsewhere (D150):
     /// its I/O fails until it is detached or attached again.
     pub lost: bool,
+    /// The reactor that serves it (D291), and that reactor's NUMA node.
+    pub reactor: usize,
+    pub node: Option<u32>,
+    /// Its rings are polled while busy (D293).
+    pub poll: bool,
 }
 
 pub fn list(disks: Vec<Listed>) -> Value {
@@ -189,6 +202,9 @@ pub fn list(disks: Vec<Listed>) -> Value {
                 "size": d.size,
                 "connected": d.connected,
                 "lost": d.lost,
+                "reactor": d.reactor,
+                "node": d.node,
+                "poll": d.poll,
             })
         })
         .collect();
@@ -213,7 +229,7 @@ mod tests {
 
     #[test]
     fn requests_parse_and_bad_ones_say_why() {
-        let (id, r) = parse(br#"{"id": 7, "op": "attach", "args": {"volume": "ab", "serial": "disk-1", "take": "preempt"}}"#).unwrap();
+        let (id, r) = parse(br#"{"id": 7, "op": "attach", "args": {"volume": "ab", "serial": "disk-1", "take": "preempt", "poll": true}}"#).unwrap();
         assert_eq!(id, 7);
         assert_eq!(
             r,
@@ -222,6 +238,7 @@ mod tests {
                 serial: "disk-1".into(),
                 take: Take::Preempt,
                 holder: String::new(),
+                poll: true,
             }
         );
         let (_, r) = parse(br#"{"op": "attach", "args": {"volume": "1"}}"#).unwrap();
@@ -232,6 +249,7 @@ mod tests {
                 serial: String::new(),
                 take: Take::Attach,
                 holder: String::new(),
+                poll: false,
             }
         );
         assert_eq!(parse(br#"{"op": "list"}"#).unwrap().1, Request::List);
@@ -259,6 +277,7 @@ mod tests {
             br#"{"op": "attach", "args": {}}"#,
             br#"{"op": "attach", "args": {"volume": "xyz"}}"#,
             br#"{"op": "attach", "args": {"volume": "1", "take": "steal"}}"#,
+            br#"{"op": "attach", "args": {"volume": "1", "poll": "yes"}}"#,
             br#"{"op": "attach", "args": {"volume": "1", "serial": "this serial is far too long"}}"#,
             br#"{"op": "detach", "args": {"volume": "1", "force": "yes"}}"#,
         ] {

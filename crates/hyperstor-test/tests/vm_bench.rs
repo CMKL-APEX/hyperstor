@@ -17,7 +17,14 @@
 //! - `HS_VMB_RT`: seconds per job (default 10);
 //! - `HS_VMB_LABEL`: the first word of each `RESULT` line;
 //! - `HS_VHOST_SPIN_US`: passed to `hyperstor-vhost`, the reactor's
-//!   completion spin.
+//!   completion spin;
+//! - `HS_VMB_CPUS`: `hyperstor-vhost`'s `--cpus` (its reactors, D290);
+//! - `HS_VMB_NODES`: NUMA nodes, VM `i` on the `i`-th (round robin): its
+//!   memory bound there (`host_numa_node`) and its process pinned to the
+//!   node's CPUs (`taskset`), as glidex places a VM;
+//! - `HS_VMB_UNBOUND=1`: with `HS_VMB_NODES`, the process pinned but the
+//!   memory not bound, so its disk is placed by its pages (D292);
+//! - `HS_VMB_POLL=1`: the disks attached with `poll` (D293).
 //!
 //! The test cluster keeps three copies on three 1 GiB nodes: the guests
 //! write 128 MiB (one VM) or 64 MiB each (scaling) so it never fills,
@@ -139,29 +146,79 @@ fn initramfs(path: &Path) {
     std::fs::write(path, c.finish()).unwrap();
 }
 
-fn machine(kernel: &str, initrd: &str, socket: &str, jobs: &str, rt: u32, sz: &str) -> Vec<String> {
-    [
-        "cloud-hypervisor",
-        "--kernel",
-        kernel,
-        "--initramfs",
-        initrd,
-        "--cmdline",
-        &format!("console=ttyS0 quiet panic=-1 hsjobs={jobs} hsrt={rt} hssize={sz}"),
-        "--cpus",
-        "boot=2",
-        "--memory",
-        "size=1G,shared=on",
-        "--disk",
-        &format!("vhost_user=true,socket={socket},num_queues=2,queue_size=128"),
-        "--serial",
-        "tty",
-        "--console",
-        "off",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect()
+/// Node `n`'s CPUs but its first, which is the host's and its reactor's
+/// (D290; glidex host-topology.md H7), as `taskset` takes them.
+fn node_cpus_but_first(n: u32) -> String {
+    let list =
+        std::fs::read_to_string(format!("/sys/devices/system/node/node{n}/cpulist")).unwrap();
+    let mut cpus: Vec<u32> = Vec::new();
+    for part in list.trim().split(',') {
+        let (a, b) = part.split_once('-').unwrap_or((part, part));
+        cpus.extend(a.parse::<u32>().unwrap()..=b.parse::<u32>().unwrap());
+    }
+    cpus.sort_unstable();
+    cpus[1..]
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The VM's placement: its node, and whether its memory is bound there.
+#[derive(Clone, Copy)]
+struct Place(Option<u32>, bool);
+
+fn machine(
+    kernel: &str,
+    initrd: &str,
+    socket: &str,
+    jobs: &str,
+    rt: u32,
+    sz: &str,
+    at: Place,
+) -> Vec<String> {
+    let memory = match at {
+        Place(Some(n), true) => vec![
+            "--memory".to_string(),
+            "size=0".into(),
+            "--memory-zone".into(),
+            format!("id=mem0,size=1G,shared=on,host_numa_node={n}"),
+        ],
+        _ => vec!["--memory".to_string(), "size=1G,shared=on".into()],
+    };
+    let mut cmd: Vec<String> = match at.0 {
+        Some(n) => vec!["taskset".into(), "-c".into(), node_cpus_but_first(n)],
+        None => Vec::new(),
+    };
+    cmd.extend(
+        [
+            "cloud-hypervisor",
+            "--kernel",
+            kernel,
+            "--initramfs",
+            initrd,
+            "--cmdline",
+            &format!("console=ttyS0 quiet panic=-1 hsjobs={jobs} hsrt={rt} hssize={sz}"),
+            "--cpus",
+            "boot=2",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    cmd.extend(memory);
+    cmd.extend(
+        [
+            "--disk",
+            &format!("vhost_user=true,socket={socket},num_queues=2,queue_size=128"),
+            "--serial",
+            "tty",
+            "--console",
+            "off",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+    cmd
 }
 
 /// Boots `cmd` (at most `limit`); returns the `HS fio` lines.
@@ -251,9 +308,19 @@ fn fio_in_guests() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
+    let mut args = vec!["--queues".to_string(), "2".into()];
+    if let Ok(cpus) = std::env::var("HS_VMB_CPUS") {
+        args.extend(["--cpus".to_string(), cpus]);
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let nodes: Vec<u32> = std::env::var("HS_VMB_NODES")
+        .map(|v| v.split(',').map(|n| n.parse().unwrap()).collect())
+        .unwrap_or_default();
+    let bound = std::env::var("HS_VMB_UNBOUND").is_err();
+    let at = |v: usize| Place((!nodes.is_empty()).then(|| nodes[v % nodes.len()]), bound);
     let mut svcs = Vec::new();
     for k in 0..nsvc {
-        svcs.push(Service::start(&c, &format!("vmb{k}"), &["--queues", "2"]));
+        svcs.push(Service::start(&c, &format!("vmb{k}"), &args));
     }
     let pids: Vec<u32> = svcs.iter().map(Service::pid).collect();
     let vhost_ticks = || pids.iter().map(|&p| cpu_ticks(p)).sum::<u64>();
@@ -270,7 +337,9 @@ fn fio_in_guests() {
             ])
             .ok();
         let id = made.out.split_whitespace().nth(1).unwrap().to_string();
-        let r = svc.attach(&id, "attach");
+        let poll = std::env::var("HS_VMB_POLL").is_ok_and(|v| v == "1");
+        let r = svc.ctl(serde_json::json!({"id": 1, "op": "attach", "args": {
+            "volume": id, "serial": "disk-under-test", "poll": poll}}));
         sockets.push(r["ok"]["socket"].as_str().unwrap().to_string());
     }
     let initrd = c.scratch.path("initrd.cpio");
@@ -290,7 +359,7 @@ fn fio_in_guests() {
         let t0 = vhost_ticks();
         let w = Instant::now();
         let lines = boot(
-            &machine(&kernel, &i, &sockets[0], &single, rt, "128M"),
+            &machine(&kernel, &i, &sockets[0], &single, rt, "128M", at(0)),
             Duration::from_secs(600),
         );
         let cpu = (vhost_ticks() - t0) as f64 / hz;
@@ -311,7 +380,7 @@ fn fio_in_guests() {
             let w = Instant::now();
             let hs: Vec<_> = (0..n)
                 .map(|v| {
-                    let cmd = machine(&kernel, &i, &sockets[v], job, rt, "64M");
+                    let cmd = machine(&kernel, &i, &sockets[v], job, rt, "64M", at(v));
                     std::thread::spawn(move || boot(&cmd, Duration::from_secs(600)))
                 })
                 .collect();
@@ -326,6 +395,16 @@ fn fio_in_guests() {
             }
             let wall = w.elapsed().as_secs_f64();
             let cpu = (vhost_ticks() - t0) as f64 / hz;
+            // Where each disk ran (D292), as the services say.
+            let placed: Vec<String> = svcs
+                .iter()
+                .flat_map(|s| {
+                    let r = s.ctl(serde_json::json!({"id": 1, "op": "list"}));
+                    r["ok"]["disks"].as_array().cloned().unwrap_or_default()
+                })
+                .map(|d| format!("{}", d["reactor"]))
+                .collect();
+            println!("PLACED {label} vms={n} {job} reactors={}", placed.join(","));
             println!(
                 "RESULT {label} vms={n} {job} iops={total:.0} lat_us={:.1} vhost_cpu_s={cpu:.1} wall_s={wall:.1} vhost_cores={:.2}",
                 lat / n as f64,

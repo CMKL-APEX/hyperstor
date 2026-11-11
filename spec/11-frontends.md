@@ -33,8 +33,9 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
     guest not to notify, so submitting I/O costs the guest no exit;
   - after 50 µs (configurable) without new requests, the queue re-enables
     notifications and the reactor waits on its eventfd (adaptive
-    polling). Why opt-in: it helps only latency-bound I/O, for half again
-    the frontend's CPU (I350);
+    polling). Why opt-in: it helps only latency-bound I/O (4 KiB reads
+    at QD1 +22%, nothing at QD32), for about a core while the disk is
+    busy (I350, I359);
   - completions are signalled through irqfd, which KVM delivers as a
     posted interrupt where the CPU supports it, again without an exit;
   - a VM marked latency-critical can use polled queues in its own
@@ -59,13 +60,18 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   to hang up first: one just stopped closes its socket only once its
   process has exited (I313).
 - **As built** (HS3, D116, D117; 01-implementation-notes.md I158–I161):
-  one reactor, the control socket, write-through 512e disks (512-byte
+  the control socket, write-through 512e disks (512-byte
   sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
   under Cloud Hypervisor and QEMU; restarts that keep the volumes (the
   state file, in-flight tracking; D143, D145, I173, I174), and its unit
-  from `hyperstor-install --vhost` (D142, D144, I175). Not yet: reactors per
-  NUMA node (D290–D292), discard, packed rings, adaptive polling (D293),
-  zero copy and the config-change event.
+  from `hyperstor-install --vhost` (D142, D144, I175); reactors per NUMA
+  node, a disk placed by its guest's memory policy when the memory table
+  arrives, its connection and its lease moving there, and a disk whose
+  guest's memory isn't bound moved once the pages its requests use show
+  their node (D290–D292, I357), on the CPUs glidex reserves, which
+  `hyperstor-install` passes (I358); disks attached with `poll`, their
+  queues polled while busy and for `--poll-us` after (D293, I359). Not
+  yet: discard, packed rings, zero copy and the config-change event.
 
 ### 11.2 NVMe-oF target (D19)
 

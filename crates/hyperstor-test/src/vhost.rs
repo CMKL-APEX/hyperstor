@@ -161,11 +161,34 @@ pub struct Guest {
     config: Vec<u8>,
     /// How long a request may take before the test fails (10 s).
     pub wait: Duration,
+    /// Make requests available without notifying, as a guest does while
+    /// the device polls (D293), and notify only if one isn't taken
+    /// within this long; [`Guest::late_kicks`] counts those.
+    pub kick_after: Option<Duration>,
+    pub late_kicks: u32,
 }
 
 impl Guest {
     /// Connects and sets up queue 0, with or without `EVENT_IDX`.
     pub fn connect(socket: &Path, event_idx: bool) -> Guest {
+        Self::connect_bound(socket, event_idx, None)
+    }
+
+    /// [`Guest::connect`], with the guest's memory bound to NUMA `node`
+    /// first, as a hypervisor binds a guest placed on a node (`mbind` on
+    /// its memfd; G59).
+    pub fn connect_bound(socket: &Path, event_idx: bool, node: Option<u32>) -> Guest {
+        Self::connect_with(socket, event_idx, node, false)
+    }
+
+    /// [`Guest::connect`], with all the guest's memory written first by
+    /// this thread, so its pages are on this thread's node, as an unbound
+    /// guest's pages are where its vCPUs first touched them (G59).
+    pub fn connect_touched(socket: &Path, event_idx: bool) -> Guest {
+        Self::connect_with(socket, event_idx, None, true)
+    }
+
+    fn connect_with(socket: &Path, event_idx: bool, node: Option<u32>, touch: bool) -> Guest {
         // SAFETY: memfd_create with a static name; the descriptor is owned
         // by the File below.
         let fd = unsafe { libc::memfd_create(c"guest".as_ptr(), libc::MFD_CLOEXEC) };
@@ -176,6 +199,28 @@ impl Guest {
         let region =
             MmapRegion::from_file(FileOffset::new(memfd.try_clone().unwrap(), 0), MEM).unwrap();
         let host = region.as_ptr() as u64;
+        if let Some(n) = node {
+            let mut mask = [0u64; 16];
+            mask[n as usize / 64] |= 1 << (n % 64);
+            // SAFETY: mbind (MPOL_BIND) on the mapping just made, of MEM
+            // bytes, with a local mask of 1024 bits.
+            let r = unsafe {
+                libc::syscall(
+                    libc::SYS_mbind,
+                    host as *mut libc::c_void,
+                    MEM,
+                    2 as libc::c_int,
+                    mask.as_ptr(),
+                    1024 as libc::c_ulong,
+                    0 as libc::c_uint,
+                )
+            };
+            assert_eq!(r, 0, "mbind: {}", std::io::Error::last_os_error());
+        }
+        if touch {
+            // SAFETY: the MEM bytes just mapped, which nothing else uses yet.
+            unsafe { std::ptr::write_bytes(host as *mut u8, 0, MEM) };
+        }
         let mem = GuestMemoryMmap::from_regions(vec![
             GuestRegionMmap::new(region, GuestAddress(0)).unwrap(),
         ])
@@ -244,6 +289,8 @@ impl Guest {
             avail: 0,
             used: 0,
             wait: Duration::from_secs(10),
+            kick_after: None,
+            late_kicks: 0,
             config: config.to_vec(),
         }
     }
@@ -319,18 +366,38 @@ impl Guest {
         self.mem
             .write_slice(&self.avail.to_le_bytes(), GuestAddress(AVAIL + 2))
             .unwrap();
-        self.kick.write(1).unwrap();
+        let used_now = |m: &GuestMemoryMmap| {
+            let mut idx = [0u8; 2];
+            m.read_slice(&mut idx, GuestAddress(USED + 2)).unwrap();
+            u16::from_le_bytes(idx)
+        };
+        match self.kick_after {
+            None => self.kick.write(1).unwrap(),
+            Some(d) => {
+                std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+                let t = Instant::now();
+                while used_now(&self.mem) == self.used && t.elapsed() < d {
+                    std::hint::spin_loop();
+                }
+                if used_now(&self.mem) == self.used {
+                    self.late_kicks += 1;
+                    self.kick.write(1).unwrap();
+                }
+            }
+        }
         let t = Instant::now();
         loop {
-            let mut idx = [0u8; 2];
-            self.mem
-                .read_slice(&mut idx, GuestAddress(USED + 2))
-                .unwrap();
-            if u16::from_le_bytes(idx) != self.used {
+            if used_now(&self.mem) != self.used {
                 break;
             }
             assert!(t.elapsed() < self.wait, "no completion");
-            std::thread::sleep(Duration::from_millis(1));
+            // Looking as the device polls (D293), so the next request
+            // follows at once; otherwise at leisure.
+            if self.kick_after.is_some() {
+                std::hint::spin_loop();
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         let elem = USED + 4 + 8 * (self.used % QSIZE) as u64;
         self.used = self.used.wrapping_add(1);
