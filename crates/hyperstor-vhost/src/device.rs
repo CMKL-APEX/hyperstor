@@ -60,6 +60,8 @@ pub struct Disk {
     pub serial: String,
     /// Queues offered.
     pub queues: u16,
+    /// Its rings are polled while busy, not woken by the guest (D293).
+    pub poll: bool,
     pub locks: Locks,
     /// How long a write refused for space is held (04-decisions.md D183).
     pub hold: Duration,
@@ -579,10 +581,28 @@ fn chain_segments(
 
 /// Serves ring `index` until it stops.
 async fn run(shared: Shared, disk: Rc<Disk>, index: usize, generation: u64) {
+    let _polling = disk.poll.then(Polling::new);
+    let window = poll_window();
+    let mut last = Instant::now();
     // Chains made available before the first kick are served at once.
     loop {
-        if !drain(&shared, &disk, index, generation) {
+        let Some(took) = drain(&shared, &disk, index, generation) else {
             return;
+        };
+        // D293: a polled ring looks again, its guest not notifying, while
+        // requests are running and for a window after the last one.
+        if disk.poll {
+            if took || lock(&shared).running > 0 {
+                last = Instant::now();
+            }
+            if last.elapsed() < window {
+                hyperstor_reactor::yield_now().await;
+                continue;
+            }
+            // Quiet: the guest notifies again, unless one just came.
+            if notify_again(&shared, index, generation) {
+                continue;
+            }
         }
         let fd = {
             let s = lock(&shared);
@@ -599,25 +619,82 @@ async fn run(shared: Shared, disk: Rc<Disk>, index: usize, generation: u64) {
     }
 }
 
-/// Takes every available chain and starts a task for each. Returns false
-/// if the ring has stopped.
-fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> bool {
+/// How long a polled ring (D293) keeps looking after it was last busy,
+/// and its reactor's completion spin while it has one, in µs
+/// (`--poll-us`).
+static POLL_WINDOW_US: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(50);
+
+/// Sets the polled rings' window (D293), for every reactor.
+pub fn set_poll_window(d: Duration) {
+    POLL_WINDOW_US.store(
+        d.as_micros().max(1) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn poll_window() -> Duration {
+    Duration::from_micros(POLL_WINDOW_US.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+thread_local! {
+    /// The rings this reactor polls (D293).
+    static POLLING: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Whether this reactor polls a ring (D293): its completion spin is on.
+pub(crate) fn polling() -> bool {
+    POLLING.with(|p| p.get() > 0)
+}
+
+/// A polled ring's task, counted on its reactor while it runs.
+struct Polling;
+
+impl Polling {
+    fn new() -> Self {
+        POLLING.with(|p| p.set(p.get() + 1));
+        crate::reactors::set_spin();
+        Polling
+    }
+}
+
+impl Drop for Polling {
+    fn drop(&mut self) {
+        POLLING.with(|p| p.set(p.get() - 1));
+        crate::reactors::set_spin();
+    }
+}
+
+/// A polled ring going quiet lets its guest notify again. True if a
+/// chain came meanwhile (look again), or the ring has stopped (the next
+/// look ends the task).
+fn notify_again(shared: &Shared, index: usize, generation: u64) -> bool {
+    let mut s = lock(shared);
+    let Some(mem) = s.mem.clone() else {
+        return true;
+    };
+    let v = &mut s.vrings[index];
+    v.generation != generation || v.queue.enable_notification(&*mem).unwrap_or(true)
+}
+
+/// Takes every available chain and starts a task for each: whether it
+/// took any, or `None` if the ring has stopped. A polled ring's guest is
+/// left not notifying (D293).
+fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> Option<bool> {
+    let mut took = false;
     loop {
         let mut s = lock(shared);
         let event_idx = s.event_idx();
-        let Some(mem) = s.mem.clone() else {
-            return false;
-        };
+        let mem = s.mem.clone()?;
         let inflight = s.inflight.clone();
         // Parked for a move: [`resume`] starts the ring again there.
         if s.parked {
-            return false;
+            return None;
         }
         let v = &mut s.vrings[index];
         if v.generation != generation {
-            return false;
+            return None;
         }
-        if event_idx {
+        if event_idx || disk.poll {
             let _ = v.queue.disable_notification(&*mem);
         }
         let mut chains = Vec::new();
@@ -630,12 +707,13 @@ fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> boo
         }
         // With EVENT_IDX, chains added while notifications were off are
         // seen here: go round again.
-        let more = event_idx && v.queue.enable_notification(&*mem).unwrap_or(false);
+        let more = event_idx && !disk.poll && v.queue.enable_notification(&*mem).unwrap_or(false);
         let taken: Vec<(u16, Segments)> = chains
             .iter()
             .map(|c| (c.head_index(), Segments::of(c)))
             .collect();
         s.running += taken.len();
+        took |= !taken.is_empty();
         if let Some(w) = &mut s.watch {
             for (_, segs) in &taken {
                 w.note(&mem, segs);
@@ -654,7 +732,7 @@ fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> boo
             ));
         }
         if !more {
-            return true;
+            return Some(took);
         }
     }
 }

@@ -7,14 +7,14 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] | detach ID [--force]
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] [--poll] | detach ID [--force]
 ```
 
 | Command | Does |
 |---|---|
 | `serve` | Runs the service until SIGINT or SIGTERM. Its volumes stay attached for its next start (see [Restarts](#restarts)) |
 | `ctl hello` | Checks the service answers, and its protocol version |
-| `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, whether the volume was taken elsewhere (`lost`), and the reactor serving it with that reactor's NUMA node (`reactor`, `node`) |
+| `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, whether the volume was taken elsewhere (`lost`), the reactor serving it with that reactor's NUMA node (`reactor`, `node`), and whether it is polled (`poll`) |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
 | `ctl detach ID` | Removes the socket and gives the lease up; refused (`busy`) while a hypervisor stays connected for 2 s, unless `--force` |
 
@@ -29,9 +29,11 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
 | `--networks NAME[,NAME...]` | none | `serve`: the data networks this host reaches storage nodes on, in order: a device's endpoint on the first network it has one on (see the [cluster file](cluster-file.md#endpoint)), else its address |
 | `--cpus LIST` | the first CPU of each NUMA node | `serve`: the CPUs its reactors run on, one reactor pinned to each (`0,64` or `0-1`). See [NUMA nodes](#numa-nodes) |
+| `--poll-us N` | 50 | `serve`: how long a polled disk's queues stay polled after they were last busy, in microseconds (1–10000). See [Polling](#polling) |
 | `--serial S` | empty | `attach`: the disk's serial number as the guest sees it, up to 20 characters |
 | `--take-over` | off | `attach`: the volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then take it |
 | `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder's lease on this volume is blocklisted, and its other volumes go on |
+| `--poll` | off | `attach`: poll the disk's queues while it is busy, for latency-critical VMs. See [Polling](#polling) |
 | `--force` | off | `detach`: detach even while a hypervisor is connected; the VM loses its disk |
 
 Without `--take-over` or `--preempt`, `attach` is refused (`held`) while
@@ -77,13 +79,15 @@ Errors are `{"id": N, "error": {"code": C, "message": M}}`, with codes
 to 58 printable characters; glidex gives its node's name): the lease is
 labelled `vhost:<name>` (`vhost` without one). A `held` error names the
 label of whoever holds the volume, `"holder"`: `vhost:<name>` for
-another node's service, `hyperstorctl` for a tool.
+another node's service, `hyperstorctl` for a tool. `"poll": true`
+polls the disk (see [Polling](#polling)); it is kept across restarts.
 
 ## NUMA nodes
 
 The service runs a reactor, a thread doing all of a disk's I/O, on each
 CPU of `--cpus`: by default the first CPU of each NUMA node, the core
-glidex keeps for the host there. One reactor serves about 35,000 4 KiB
+glidex keeps for the host there. `hyperstor-install` passes the CPUs
+glidex reserves (`--vhost-cpus`). One reactor serves about 35,000 4 KiB
 reads a second. Each disk runs on one reactor: that of the node its
 guest's memory is bound to, which the service reads from the guest's
 memory when the hypervisor connects. Bind a VM's memory to a node for
@@ -95,6 +99,17 @@ disks; once the pages its I/O uses show which node its memory is on,
 its disk moves, once, to that node's reactor (a pause of a few
 milliseconds while requests in flight finish). `ctl list` shows where
 each disk runs.
+
+## Polling
+
+A disk attached with `poll` has its queues watched while it has
+requests running and for 50 µs after (`--poll-us`): the guest makes requests
+available without notifying the service, and its reactor checks for
+completions instead of sleeping. Measured with one VM, 4 KiB reads one
+at a time were about a fifth faster (latency 133 µs to 109 µs) and
+writes a tenth; at queue depth 32 nothing was gained. It costs about a
+core while the disk is busy; idle, it costs nothing. Leave it off unless
+a VM's latency matters that much.
 
 ## Restarts
 

@@ -54,15 +54,21 @@ fn pin(cpu: Option<usize>) {
     }
 }
 
-/// The completion spin each reactor uses: for measurements only
-/// (02-benchmarks.md, 2026-11-11), as hyperstord's `--spin-us`.
-fn set_spin() {
-    if let Some(us) = std::env::var("HS_VHOST_SPIN_US")
+/// Sets this reactor's completion spin: on, for the polling window,
+/// while it runs a ring that polls (D293); otherwise off, or what
+/// `HS_VHOST_SPIN_US` says (for measurements only, 02-benchmarks.md,
+/// 2026-11-11, as hyperstord's `--spin-us`).
+pub(crate) fn set_spin() {
+    let base = std::env::var("HS_VHOST_SPIN_US")
         .ok()
         .and_then(|v| v.parse().ok())
-    {
-        hyperstor_reactor::set_spin(std::time::Duration::from_micros(us));
-    }
+        .map(std::time::Duration::from_micros)
+        .unwrap_or_default();
+    hyperstor_reactor::set_spin(if crate::device::polling() {
+        base.max(crate::device::poll_window())
+    } else {
+        base
+    });
 }
 
 /// Runs jobs sent to this reactor until every sender is gone.

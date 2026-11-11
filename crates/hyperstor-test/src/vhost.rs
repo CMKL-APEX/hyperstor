@@ -161,6 +161,11 @@ pub struct Guest {
     config: Vec<u8>,
     /// How long a request may take before the test fails (10 s).
     pub wait: Duration,
+    /// Make requests available without notifying, as a guest does while
+    /// the device polls (D293), and notify only if one isn't taken
+    /// within this long; [`Guest::late_kicks`] counts those.
+    pub kick_after: Option<Duration>,
+    pub late_kicks: u32,
 }
 
 impl Guest {
@@ -284,6 +289,8 @@ impl Guest {
             avail: 0,
             used: 0,
             wait: Duration::from_secs(10),
+            kick_after: None,
+            late_kicks: 0,
             config: config.to_vec(),
         }
     }
@@ -359,18 +366,38 @@ impl Guest {
         self.mem
             .write_slice(&self.avail.to_le_bytes(), GuestAddress(AVAIL + 2))
             .unwrap();
-        self.kick.write(1).unwrap();
+        let used_now = |m: &GuestMemoryMmap| {
+            let mut idx = [0u8; 2];
+            m.read_slice(&mut idx, GuestAddress(USED + 2)).unwrap();
+            u16::from_le_bytes(idx)
+        };
+        match self.kick_after {
+            None => self.kick.write(1).unwrap(),
+            Some(d) => {
+                std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+                let t = Instant::now();
+                while used_now(&self.mem) == self.used && t.elapsed() < d {
+                    std::hint::spin_loop();
+                }
+                if used_now(&self.mem) == self.used {
+                    self.late_kicks += 1;
+                    self.kick.write(1).unwrap();
+                }
+            }
+        }
         let t = Instant::now();
         loop {
-            let mut idx = [0u8; 2];
-            self.mem
-                .read_slice(&mut idx, GuestAddress(USED + 2))
-                .unwrap();
-            if u16::from_le_bytes(idx) != self.used {
+            if used_now(&self.mem) != self.used {
                 break;
             }
             assert!(t.elapsed() < self.wait, "no completion");
-            std::thread::sleep(Duration::from_millis(1));
+            // Looking as the device polls (D293), so the next request
+            // follows at once; otherwise at leisure.
+            if self.kick_after.is_some() {
+                std::hint::spin_loop();
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         let elem = USED + 4 + 8 * (self.used % QSIZE) as u64;
         self.used = self.used.wrapping_add(1);

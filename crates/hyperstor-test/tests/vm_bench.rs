@@ -23,7 +23,8 @@
 //!   memory bound there (`host_numa_node`) and its process pinned to the
 //!   node's CPUs (`taskset`), as glidex places a VM;
 //! - `HS_VMB_UNBOUND=1`: with `HS_VMB_NODES`, the process pinned but the
-//!   memory not bound, so its disk is placed by its pages (D292).
+//!   memory not bound, so its disk is placed by its pages (D292);
+//! - `HS_VMB_POLL=1`: the disks attached with `poll` (D293).
 //!
 //! The test cluster keeps three copies on three 1 GiB nodes: the guests
 //! write 128 MiB (one VM) or 64 MiB each (scaling) so it never fills,
@@ -336,7 +337,9 @@ fn fio_in_guests() {
             ])
             .ok();
         let id = made.out.split_whitespace().nth(1).unwrap().to_string();
-        let r = svc.attach(&id, "attach");
+        let poll = std::env::var("HS_VMB_POLL").is_ok_and(|v| v == "1");
+        let r = svc.ctl(serde_json::json!({"id": 1, "op": "attach", "args": {
+            "volume": id, "serial": "disk-under-test", "poll": poll}}));
         sockets.push(r["ok"]["socket"].as_str().unwrap().to_string());
     }
     let initrd = c.scratch.path("initrd.cpio");

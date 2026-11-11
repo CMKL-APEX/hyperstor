@@ -2433,7 +2433,7 @@ reserved.
 4. **Open:** hugepage-backed guests (hugetlbfs has its own policy
    handling), and guests large enough to spread over several nodes.
 
-## 2026-11-11: VM disks on a reactor per NUMA node (I354)
+## 2026-11-11: VM disks on a reactor per NUMA node (I355)
 
 Question: does a reactor per NUMA node (D290–D292) lift the one-reactor
 ceiling measured above (I350), and does a guest whose memory isn't
@@ -2480,3 +2480,41 @@ HS_VMB=1 HS_VMB_JOBS= HS_VMB_CPUS=48,80 HS_VMB_NODES=3,5 HS_VMB_VMS=2,4 \
   three copies bind them, as above.
 - Pinning a guest that isn't bound still gets the full gain: the move
   costs nothing measurable over 10 s.
+
+## 2026-11-11: A polled VM disk (D293, I357)
+
+Question: what does a disk attached with `poll` (D293) give a VM, and
+what does it cost? Same host, guest, cluster and harness as the
+sections above; `vm_bench.rs` gained `HS_VMB_POLL=1` (the disk attached
+with `"poll": true`). One VM, its memory bound to node 3 and its process
+pinned there, its disk on the reactor on CPU 48 (`HS_VMB_CPUS=48
+HS_VMB_NODES=3 HS_VMB_VMS=1`), `--poll-us` at its default (50 µs),
+10 s per job, four rounds alternating off and on:
+
+```sh
+HS_VMB=1 HS_VMB_RT=10 HS_VMB_VMS=1 HS_VMB_CPUS=48 HS_VMB_NODES=3 \
+  HS_VMB_JOBS=randread-4k-1,randwrite-4k-1,randread-4k-32 [HS_VMB_POLL=1] \
+  cargo test --release -p hyperstor-test --test vm_bench -- --nocapture
+```
+
+| 4 KiB, one VM | off (4 rounds) | mean | polled (4 rounds) | mean | |
+|---|---|---|---|---|---|
+| reads/s, QD1 | 8,065 · 8,633 · 6,742 · 6,814 | 7,564 | 7,924 · 9,649 · 9,868 · 9,453 | 9,224 | +22% |
+| read latency, QD1 (µs) | 123 · 115 · 148 · 146 | 133 | 126 · 103 · 101 · 105 | 109 | −18% |
+| writes/s, QD1 | 3,750 · 4,053 · 4,019 · 3,800 | 3,906 | 3,922 · 4,175 · 4,486 · 4,384 | 4,242 | +9% |
+| reads/s, QD32 | 35,737 · 35,510 · 32,817 · 32,354 | 34,105 | 26,793 · 33,236 · 32,649 · 33,696 | 31,594 | −7% |
+| service CPU over the three jobs (s of 38) | 19.5 · 19.6 · 20.2 · 20.4 | 19.9 | 36.1 each | 36.1 | +81% |
+
+- **Polling helps one request at a time:** QD1 reads a fifth faster and
+  about 24 µs sooner, p99 too (150–187 µs to 124–154 µs); writes, which
+  wait on three copies, a tenth. The first polled round was the
+  slowest of the four, as if the first run after a build were cold.
+- **Deep queues gain nothing, and may lose a little:** at QD32 the reactor
+  is already busy, and the ring's extra passes take some of its time
+  (−3% leaving out the first polled round).
+- **It costs about a core while the disk is busy:** the reactor doesn't
+  sleep while the polled disk has requests running, so it spins whether
+  or not the VM needs it. Idle, it sleeps once the window passes (the
+  test checks under a quarter of a core over 2 s).
+- This is a larger gain at QD1 than the reactor's completion spin alone
+  gave (+11%, I350): the guest no longer exits to notify.

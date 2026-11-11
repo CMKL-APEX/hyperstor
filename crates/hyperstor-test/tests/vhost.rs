@@ -289,6 +289,82 @@ fn a_detach_leaves_a_connected_disk_alone() {
     svc.stop();
 }
 
+/// D293: a disk attached with `poll` takes requests its guest makes
+/// available without notifying, while busy and just after; one without
+/// waits for the notification. The choice is listed and kept across a
+/// restart, and an idle polled disk lets its reactor sleep.
+#[test]
+fn a_polled_disk_takes_requests_its_guest_doesnt_notify() {
+    let c = Cluster::all_in_one("vhost-poll", 3);
+    let (a, b) = (volume(&c, "16M"), volume(&c, "16M"));
+    let mut svc = Service::start(&c, "vhost-poll", &[]);
+    let r = svc.ctl(serde_json::json!({"id": 1, "op": "attach", "args": {
+        "volume": a, "serial": "polled", "poll": true}}));
+    let sa = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
+    let sb = PathBuf::from(svc.attach(&b, "attach")["ok"]["socket"].as_str().unwrap());
+    let polled = |svc: &Service| -> Vec<(String, bool)> {
+        let l = svc.ctl(serde_json::json!({"id": 2, "op": "list"}));
+        let mut v: Vec<(String, bool)> = l["ok"]["disks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| (d["volume"].as_str().unwrap().to_string(), d["poll"] == true))
+            .collect();
+        v.sort();
+        v
+    };
+    let mut want = vec![(a.clone(), true), (b.clone(), false)];
+    want.sort();
+    assert_eq!(polled(&svc), want);
+    let data = pattern(9, 4096);
+    const READS: u32 = 200;
+    for event_idx in [false, true] {
+        let mut g = Guest::connect(&sa, event_idx);
+        g.write(8192, &data);
+        g.kick_after = Some(std::time::Duration::from_millis(20));
+        for _ in 0..READS {
+            assert!(g.read(8192, 4096) == data, "read back differs");
+        }
+        // Most are taken without a notification; a busy host may let the
+        // window pass now and then.
+        assert!(
+            g.late_kicks <= READS - 10,
+            "event_idx {event_idx}: {} of {READS} needed a notification",
+            g.late_kicks
+        );
+    }
+    let mut g = Guest::connect(&sb, true);
+    g.write(8192, &data);
+    g.kick_after = Some(std::time::Duration::from_millis(5));
+    for _ in 0..20 {
+        assert!(g.read(8192, 4096) == data);
+    }
+    assert_eq!(
+        g.late_kicks, 20,
+        "not polled: each waits for its notification"
+    );
+    drop(g);
+    // Idle, a polled disk's reactor sleeps: well under a core.
+    let g = Guest::connect(&sa, true);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let ticks = || {
+        let s = std::fs::read_to_string(format!("/proc/{}/stat", svc.pid())).unwrap();
+        let f: Vec<u64> = s[s.rfind(')').unwrap() + 2..]
+            .split_whitespace()
+            .map(|x| x.parse().unwrap_or(0))
+            .collect();
+        f[11] + f[12]
+    };
+    let before = ticks();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let used = ticks() - before;
+    assert!(used < 50, "{used} ticks in 2 s idle");
+    drop(g);
+    svc.restart();
+    assert_eq!(polled(&svc), want, "kept across a restart");
+    svc.stop();
+}
+
 /// The host's NUMA nodes with CPUs, and each one's first CPU.
 fn nodes() -> Vec<(u32, usize)> {
     let mut out: Vec<(u32, usize)> = std::fs::read_dir("/sys/devices/system/node")
