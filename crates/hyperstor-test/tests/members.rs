@@ -245,8 +245,9 @@ impl Group {
 }
 
 /// Members added and removed at run time (D87): a fourth member, joined
-/// with a meta token, is a learner then a voter; removed again; a removal
-/// that would leave two voters is refused.
+/// with a meta token, added before it runs, stays a learner (I351);
+/// started and added again, a voter; removed again; a removal that would
+/// leave two voters is refused.
 #[test]
 fn members_change_at_run_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -274,8 +275,60 @@ fn members_change_at_run_time() {
         })
         .collect::<Vec<_>>()
         .join(",");
-    g.add_host(3, &list, None);
-    let (raft, map) = (g.m[3].raft.clone(), g.m[3].map.clone());
+    // Added before it runs (I351): a learner that never caught up, not a
+    // voter, and the group's three voters unchanged.
+    let mut m4 = g.install_host(3, &list, None);
+    let (raft, map) = (m4.raft.clone(), m4.map.clone());
+    let early = g.ctl(
+        l,
+        &[
+            "member", "add", "--id", "4", "--raft", &raft, "--map", &map, "--wait", "3",
+        ],
+    );
+    assert!(
+        early.code == 1 && early.has("didn't catch up in 3 s") && early.has("stays a learner"),
+        "{}",
+        early.out
+    );
+    let r = g.ctl(l, &["member", "list"]).ok();
+    assert!(
+        r.out
+            .lines()
+            .any(|x| x.starts_with("4 ") && x.contains(" learner")),
+        "{}",
+        r.out
+    );
+    assert_eq!(
+        r.out
+            .lines()
+            .filter(|x| x.contains(" voter") || x.contains(" leader"))
+            .count(),
+        3,
+        "{}",
+        r.out
+    );
+    // The learner's number on other addresses: refused.
+    let elsewhere = g.ctl(
+        l,
+        &[
+            "member",
+            "add",
+            "--id",
+            "4",
+            "--raft",
+            "127.0.0.1:1",
+            "--map",
+            "127.0.0.1:2",
+        ],
+    );
+    assert!(
+        elsewhere.code == 1 && elsewhere.has("already a learner"),
+        "{}",
+        elsewhere.out
+    );
+    // Started, then added again: it catches up and votes.
+    m4.start(&g.s, &[]);
+    g.m.push(m4);
     let r = g
         .ctl(
             l,

@@ -3504,16 +3504,19 @@ where
             return Ok(Next::Exit(0));
         }
         "member add" => {
-            // A learner catches up first: give it time.
+            // A learner catches up first (`--wait`, else 120 s): give it time.
+            let wait = a.wait.unwrap_or(0);
+            let secs = if wait == 0 { 120 } else { wait };
             client
                 .add_member_with_options(
                     pb::AddMemberRequest {
                         id: id()?,
                         raft_address: a.raft.clone().unwrap_or_default(),
                         map_address: a.map.clone().unwrap_or_default(),
+                        catch_up_secs: wait,
                         ..Default::default()
                     },
-                    CallOptions::default().with_timeout(Duration::from_secs(150)),
+                    CallOptions::default().with_timeout(Duration::from_secs(u64::from(secs) + 30)),
                 )
                 .await?
                 .into_owned()

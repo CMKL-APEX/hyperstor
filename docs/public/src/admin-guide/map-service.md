@@ -155,7 +155,10 @@ hyperstorctl member add --id 4 --raft 192.0.2.13:8851 --map 192.0.2.13:8849
 hyperstorctl member list
 ```
 
-The new member is a learner until it has the log, then a voter. `member
+The new member is a learner until it has the log, then a voter; add it
+only once it runs. If it doesn't catch up within two minutes (`--wait
+SECS` sets another limit), it stays a learner and `member add` says so:
+run it again once the member runs, or `member remove` it. `member
 remove --id N` takes one out; fewer than three voters survive no failure,
 so going below three needs `--force`. Replacing a member on another host
 is add, then remove. Storage nodes keep the member list they were

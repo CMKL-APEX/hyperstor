@@ -133,6 +133,8 @@ pub enum MemberOp {
     /// makes it a voter.
     Add {
         member: Member,
+        /// How long it may take to catch up.
+        catch_up: std::time::Duration,
         reply: hyperstor_reactor::chan::OneSender<Result<Members, String>>,
     },
     /// Removes a member; refused below three voters unless `force`.
@@ -424,8 +426,12 @@ async fn run(
                     MemberOp::List(reply) => {
                         let _ = reply.send(members_now(&node, me, &heard));
                     }
-                    MemberOp::Add { member, reply } => {
-                        let _ = reply.send(add_member(&node, me, &heard, member).await);
+                    MemberOp::Add {
+                        member,
+                        catch_up,
+                        reply,
+                    } => {
+                        let _ = reply.send(add_member(&node, me, &heard, member, catch_up).await);
                     }
                     MemberOp::Remove { id, force, reply } => {
                         let _ = reply.send(remove_member(&node, me, &heard, id, force).await);
@@ -521,39 +527,80 @@ fn not_leading(node: &ClusterNode<MapSchema>) -> String {
     }
 }
 
-/// How long a new member may take to catch up before it votes.
-const CATCH_UP: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long a new member may take to catch up before it votes, unless
+/// the request says.
+pub const CATCH_UP: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Adds `member` as a learner and makes it a voter once it holds the whole
+/// log (D87, I351). openraft's own wait counts a learner within
+/// `replication_lag_threshold` (5000) entries as caught up, one that never
+/// answered included, so a short log made a stopped member a voter at
+/// once: this waits until the learner has acknowledged the leader's last
+/// entry instead. A learner that doesn't catch up in `catch_up` stays one:
+/// adding it again resumes the wait, removing it takes it out.
 async fn add_member(
     node: &ClusterNode<MapSchema>,
     me: RaftId,
     heard: &Heard,
     member: Member,
+    catch_up: std::time::Duration,
 ) -> Result<Members, String> {
     if !node.is_leader() {
         return Err(not_leading(node));
     }
     let now = members_now(node, me, heard);
-    if now
-        .voters
-        .iter()
-        .chain(&now.learners)
-        .any(|m| m.id == member.id)
-    {
+    if now.voters.iter().any(|m| m.id == member.id) {
         return Err(format!("member {} is already in the group", member.id));
     }
-    // A learner first: it receives the log, and votes once it has it.
-    tokio::time::timeout(CATCH_UP, node.add_learner(member.id, &node_addr(&member)))
-        .await
-        .map_err(|_| {
-            format!(
-                "member {} didn't catch up in {} s: is it running, and reachable at {}?",
-                member.id,
-                CATCH_UP.as_secs(),
-                member.raft
-            )
-        })?
-        .map_err(|e| e.to_string())?;
+    let late = || {
+        format!(
+            "member {} didn't catch up in {} s: is it running, and reachable at {}? \
+             It stays a learner: add it again to wait more, or remove it",
+            member.id,
+            catch_up.as_secs(),
+            member.raft
+        )
+    };
+    let deadline = tokio::time::Instant::now() + catch_up;
+    match now.learners.iter().find(|m| m.id == member.id) {
+        Some(l) if l.raft != member.raft || l.map != member.map => {
+            return Err(format!(
+                "member {} is already a learner at {}: remove it to add it elsewhere",
+                member.id, l.raft
+            ));
+        }
+        // Added before and not caught up then: wait again.
+        Some(_) => {}
+        None => {
+            tokio::time::timeout_at(deadline, node.add_learner(member.id, &node_addr(&member)))
+                .await
+                .map_err(|_| late())?
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    // The learner has the log once it has acknowledged the leader's last
+    // entry, the one that added it among them.
+    let target = node.raft.metrics().borrow().last_log_index;
+    let caught_up = |m: &openraft::RaftMetrics<RaftId, openraft::BasicNode>| {
+        m.replication
+            .as_ref()
+            .and_then(|r| r.get(&member.id))
+            .is_some_and(|l| l.as_ref().map(|l| l.index) >= target)
+    };
+    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let waited = node
+        .raft
+        .wait(Some(left))
+        .metrics(
+            |m| caught_up(m) || m.state != openraft::ServerState::Leader,
+            "the new member to catch up",
+        )
+        .await;
+    match waited {
+        Ok(m) if caught_up(&m) => {}
+        Ok(_) => return Err(not_leading(node)),
+        Err(_) => return Err(late()),
+    }
     let mut voters = node.voters();
     voters.insert(member.id);
     node.set_voters(voters).await.map_err(|e| e.to_string())?;

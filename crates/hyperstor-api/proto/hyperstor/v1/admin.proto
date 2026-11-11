@@ -428,6 +428,9 @@ message AddMemberRequest {
   uint64 id = 1;
   string raft_address = 2 [json_name = "raft_address"];
   string map_address = 3 [json_name = "map_address"];
+  // How long the new member may take to catch up before the call fails,
+  // leaving it a learner; 0 is 120 s.
+  uint32 catch_up_secs = 4 [json_name = "catch_up_secs"];
 }
 
 message AddMemberResponse {
