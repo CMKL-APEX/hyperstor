@@ -212,6 +212,38 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
     );
     assert!(head.starts_with("http/1.1 413"), "{head}");
     assert!(head.contains("connection: close"), "{head}");
+    // Over 256 KiB needs a person logged in: without a valid session or
+    // token, refused unread, a made-up cookie included (#329's follow-up).
+    for cookie in ["", "Cookie: hs_session=made-up\r\n"] {
+        let mut s = connect(lo, port, None);
+        let (head, _) = exchange(
+            &mut s,
+            &format!(
+                "POST /no-such-page.php HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{cookie}Content-Length: {}\r\n\r\n",
+                300_000
+            ),
+            b"",
+        );
+        assert!(head.starts_with("http/1.1 413"), "{cookie}: {head}");
+        assert!(head.contains("connection: close"), "{head}");
+    }
+    // A body that stops arriving: given up after 10 s.
+    let mut s = connect(lo, port, None);
+    let t = std::time::Instant::now();
+    let (head, _) = exchange(
+        &mut s,
+        &format!(
+            "POST /no-such-page.php HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Length: 1000\r\n\r\n"
+        ),
+        b"only some",
+    );
+    assert!(head.starts_with("http/1.1 408"), "{head}");
+    assert!(head.contains("connection: close"), "{head}");
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(9),
+        "{:?}",
+        t.elapsed()
+    );
 
     // Plain HTTP on the port: sent to HTTPS.
     let mut tcp = std::net::TcpStream::connect((lo, port)).unwrap();
