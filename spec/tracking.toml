@@ -1098,6 +1098,16 @@ tests = [
     "hyperstor_meta::api::realms::tests::realms_see_their_operations_and_name_their_creations",
 ]
 
+[[milestone.item]]
+what = "Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool"
+spec = ["20-tenants.md §24.4"]
+status = "planned"
+
+[[milestone.item]]
+what = "Two-level fair share in the reactors: tenants share each priority class by weight, then volumes within a tenant"
+spec = ["20-tenants.md §24.5", "D62", "D46"]
+status = "planned"
+
 [[milestone]]
 id = "HS16"
 title = "Sites and replication between clusters"

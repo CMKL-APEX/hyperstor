@@ -27,12 +27,15 @@
 | `hyperstor-authd` | yes | A small root helper that checks people's passwords with PAM for the management service, so it never runs as root |
 | `hyperstor-ublk` | yes | Serves a volume as a Linux block device (`/dev/ublkbN`) through the kernel's ublk driver |
 | `hyperstor-vhost` | yes, partly | Serves volumes to VMs over vhost-user-blk, one service per compute node; glidex attaches and detaches volumes through its control socket. Discard, adaptive polling and zero copy are planned |
-| NVMe-oF target, S3 gateway, GPU-direct library | planned | Further front ends on the same object layer |
+| `hyperstor-s3` | yes | The S3 gateway: buckets and objects over S3's HTTP API, objects' data in chunks and buckets' indexes in key-value ranges, access keys read from the map service; one or more per realm |
+| `hyperstor-smart` | yes | A small root helper that reads NVMe drives' health logs for `hyperstord`, which runs unprivileged |
+| NVMe-oF target, GPU-direct library | planned | Further front ends on the same object layer |
 
 ### Ports
 
 | Port | Use |
 |---|---|
+| 8848 | S3 gateway (HTTP or HTTPS) |
 | 8849 | Map protocol: storage nodes and clients fetch the map, heartbeats, leases |
 | 8850 | Cluster API (gRPC-compatible, over mutual TLS) |
 | 8851 | Raft between map service members (mutual TLS) |
