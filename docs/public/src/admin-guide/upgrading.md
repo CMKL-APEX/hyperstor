@@ -80,6 +80,44 @@ The installer takes care of these; nothing needs doing by hand:
 - Hosts follow the map service's current members: storage hosts take
   the member list from the cluster API on every run, so a member added
   or removed since they were installed is picked up.
+- `hyperstor-vhost` runs a reactor on each NUMA node, on the CPUs
+  glidex reserves for the host; where glidex reserves none, on each
+  node's first CPU, and the installer says so. `--vhost-cpus` names
+  other CPUs, and is kept. The service restarts once; VMs keep their
+  disks.
+- Keys are written with their final modes from the start, and
+  `/etc/hyperstor/pki` is set to `0751`, so other users can't list it.
+  Each service reaches its own files by name, as before.
+
+## What clients and operators notice
+
+- **S3 clients.** As in S3, every `x-amz-*` header a request carries
+  must be signed, except `x-amz-content-sha256`; otherwise the answer is
+  403 `AccessDenied`. The AWS SDKs and CLI sign theirs. A tool that adds
+  `x-amz-*` headers to a presigned URL's request, beyond those the URL
+  signs, gets 403.
+- **Logins to the web UI.** After 10 failed logins from one address in
+  5 minutes, logins from that address are refused for the rest of the
+  window (`rate_limited`). Behind a proxy or a tunnel, install mgmt with
+  `--mgmt-trusted-proxies` or `--mgmt-proxy-ca` so that it sees each
+  person's address; otherwise everyone behind the proxy shares the
+  proxy's (see [Behind a proxy](../reference/hyperstor-mgmt.md#behind-a-proxy)).
+- **Connections to mgmt and the S3 gateway.** Each has 10 s to send a
+  request's headers, and a kept connection with no request closes after
+  2 minutes. Browsers and SDKs open a new one. mgmt takes request
+  bodies up to 256 KiB from anyone and up to 4 MiB with a session or API
+  token; larger ones get `413`.
+- **VM disks.** A request carries at most 8 MiB, which the disk tells
+  the guest. Linux guests keep well under it by default
+  (`/sys/block/vdX/queue/max_sectors_kb`); one whose `max_sectors_kb`
+  was raised past 8192 gets I/O errors for larger requests and should
+  lower it.
+- **Volume clients** wait up to 30 s for a PG that can't serve yet (a
+  split, a primary moving) instead of failing after about two seconds;
+  see [Guarantees](../user-guide/guarantees.md#errors).
+- **Map service members** added with `hyperstorctl member add` vote
+  only once they have caught up with the leader's log (see
+  [Adding and removing members](map-service.md#adding-and-removing-members)).
 
 ## Converting devices to v0.0.8's format
 
