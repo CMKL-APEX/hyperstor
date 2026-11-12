@@ -94,6 +94,12 @@ stopped, or the client went) are cleaned up a day later.
   theirs.
 - A request's body may go 60 s without a byte arriving; past that the
   request fails.
+- XML bodies are bounded by what S3's largest requests need:
+  CompleteMultipartUpload's at about 5 MiB and 100,001 elements (10,000
+  parts, each with every checksum), DeleteObjects' at about 7 MiB and
+  8,002 elements (1000 keys of 1024 bytes written as character
+  references). A longer body is answered 400 `MaxMessageLengthExceeded`;
+  more elements, 400 `MalformedXML`.
 - At most 4096 connections are open at once (fewer when the open-file
   limit is lower: half of it). Past that, new connections wait until
   one closes.
