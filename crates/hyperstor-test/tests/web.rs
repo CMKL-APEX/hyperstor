@@ -3,7 +3,8 @@
 //! its files change (an ACME client's renewals, D109), the node's
 //! Tailscale certificate for its ts.net names with HSTS, and plain HTTP
 //! sent to HTTPS; a request body no one reads leaves the connection
-//! open (#329), and a request's head must come within 10 s (I355).
+//! open (#329), a request's head must come within 10 s (I355), and odd
+//! paths are answered (I371).
 
 use hyperstor_test::*;
 use std::io::{Read, Write};
@@ -227,6 +228,16 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
         assert!(head.starts_with("http/1.1 413"), "{cookie}: {head}");
         assert!(head.contains("connection: close"), "{head}");
     }
+    // People's paths with odd parts are answered, not dropped: a roles
+    // path without a user's name is not found, and mgmt goes on serving.
+    let ann = c.login("ann", Some(&c.claim_code())).unwrap();
+    for odd in ["/auth/users/roles", "/auth/users//roles"] {
+        let (code, head, b) = c.as_session(&ann, "PUT", odd, r#"{"roles":["viewer"]}"#);
+        assert_eq!(code, 404, "{odd}: {head}{b}");
+    }
+    let (code, _, w) = c.as_session(&ann, "GET", "/auth/whoami", "");
+    assert_eq!(code, 200, "{w}");
+
     // A body that stops arriving: given up after 10 s.
     let mut s = connect(lo, port, None);
     let t = std::time::Instant::now();

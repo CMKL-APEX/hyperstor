@@ -1575,6 +1575,7 @@ tests = [
     "hyperstor_mgmt::people::tests::the_first_claim_makes_a_security_admin_once",
     "hyperstor_mgmt::tests::named_hosts_join_the_allowlist",
     "hyperstor_mgmt::tests::ui_files_stay_in_their_directory",
+    "hyperstor_mgmt::tests::a_users_roles_path_names_one_user",
 ]
 
 [[milestone.item]]

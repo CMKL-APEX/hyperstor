@@ -1321,14 +1321,15 @@ fn percent_decode(v: &str) -> String {
     while i < b.len() {
         match b[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => {
-                match u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
-                    Ok(x) => {
-                        out.push(x);
-                        i += 2;
-                    }
-                    Err(_) => out.push(b'%'),
-                }
+            // Two hex digits, and nothing else (`from_str_radix` would
+            // take a sign: `%+1`).
+            b'%' if i + 2 < b.len()
+                && b[i + 1].is_ascii_hexdigit()
+                && b[i + 2].is_ascii_hexdigit() =>
+            {
+                let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
+                out.push(hex(b[i + 1]) << 4 | hex(b[i + 2]));
+                i += 2;
             }
             c => out.push(c),
         }
@@ -1543,7 +1544,10 @@ async fn with_login(
             }
         }
         (&http::Method::PUT, p2) if p2.starts_with("/auth/users/") && p2.ends_with("/roles") => {
-            let name = p2["/auth/users/".len()..p2.len() - "/roles".len()].to_string();
+            let Some(name) = user_of_roles(p2) else {
+                return error(404, "not_found", "no such path");
+            };
+            let name = name.to_string();
             let target = format!("user {name}");
             let reach = match authorize_in(l, &p, "People.SetRoles", &target, only) {
                 Ok(r) => r,
@@ -1670,6 +1674,14 @@ async fn with_login(
         }
         _ => respond(405, "text/plain", "method not allowed\n"),
     }
+}
+
+/// The user named in `/auth/users/{name}/roles`, or `None` when `path`
+/// has no name there (`/auth/users/roles`, `/auth/users//roles`) or one
+/// with a `/`.
+fn user_of_roles(path: &str) -> Option<&str> {
+    let name = path.strip_prefix("/auth/users/")?.strip_suffix("/roles")?;
+    (!name.is_empty() && !name.contains('/')).then_some(name)
 }
 
 /// The cluster API's path for a call under `/api/`.
@@ -1838,6 +1850,36 @@ mod tests {
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz"), "%zz");
         assert_eq!(percent_decode("%41"), "A");
+        // Odd input is kept as it came, never a panic.
+        for (odd, want) in [
+            ("%", "%"),
+            ("%4", "%4"),
+            ("%+1", "% 1"),
+            ("%-1", "%-1"),
+            ("%\u{e9}1", "%\u{e9}1"),
+            ("\u{e9}%", "\u{e9}%"),
+            ("%%41", "%A"),
+            ("%ff", "\u{fffd}"),
+        ] {
+            assert_eq!(percent_decode(odd), want, "{odd:?}");
+        }
+    }
+
+    #[test]
+    fn a_users_roles_path_names_one_user() {
+        assert_eq!(user_of_roles("/auth/users/ann/roles"), Some("ann"));
+        assert_eq!(
+            user_of_roles("/auth/users/ann@example.com/roles"),
+            Some("ann@example.com")
+        );
+        for odd in [
+            "/auth/users/roles",
+            "/auth/users//roles",
+            "/auth/users/a/b/roles",
+            "/auth/users/ann",
+        ] {
+            assert_eq!(user_of_roles(odd), None, "{odd}");
+        }
     }
 
     #[test]
