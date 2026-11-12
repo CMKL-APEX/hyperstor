@@ -589,7 +589,10 @@ tests = [
 what = "VMs boot from volumes under Cloud Hypervisor and QEMU"
 spec = ["11-frontends.md §11.1", "16-glidex.md §17", "D118", "I158"]
 status = "done"
-tests = ["vm::virtual_machines_boot_with_a_volume_as_their_disk"]
+tests = [
+    "vm::virtual_machines_boot_with_a_volume_as_their_disk",
+    "vm::virtual_machines_boot_through_uefi_firmware",
+]
 
 [[milestone.item]]
 what = "Reactors per NUMA node: a disk on its guest's node's reactor, its connection and lease moved there"

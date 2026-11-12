@@ -1541,3 +1541,17 @@ or ublk disk would have seen an I/O error.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 258 | How a client survives a PG that can't serve for a while: try `Unavailable`, `StaleMap` and `NotPrimary` again by time, up to about 30 s, other failures still by count (recommended); the primary holds requests for a splitting PG until the split ends; or a shorter split pause, waiting only for the PG's own queued writes | By time | D296 |
+
+## VM disk requests over 8 MiB (2026-11-12)
+
+v0.0.8 capped a `hyperstor-vhost` request at the 8 MiB its `size_max`
+and `seg_max` add up to (I361). A boot test through UEFI firmware found
+that OVMF and Cloud Hypervisor's firmware ignore those limits and read a
+whole file in one request: a VM whose firmware loads a file over 8 MiB
+(here a 20.8 MB EFI program) didn't boot, under both hypervisors. GRUB
+reads in smaller requests, so a boot through shim and GRUB was not
+affected.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 259 | How `hyperstor-vhost` answers a request over 8 MiB: serve it in pieces of at most 8 MiB, up to 1 GiB a request (recommended); raise the cap and allocate whole; or keep 8 MiB and document it | Pieces | D297 |

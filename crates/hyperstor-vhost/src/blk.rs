@@ -24,13 +24,15 @@ pub const SECTOR: u64 = 512;
 /// a page of any size guests use (up to 64 KiB).
 pub const SEG_MAX: u32 = 128;
 pub const SIZE_MAX: u32 = 64 << 10;
-/// Data bytes in one request at most: all a driver keeping to `seg_max`
-/// and `size_max` sends (8 MiB). A read's buffer is allocated, and a
-/// write's data read from the guest, whole, so a longer request is
-/// answered `IOERR` before either. Firmware that doesn't take
-/// `size_max` sends a request's data in one segment; it fits too, as long
-/// as it is at most this.
-pub const REQUEST_MAX: u64 = SEG_MAX as u64 * SIZE_MAX as u64;
+/// A request's data is served in pieces of at most this many bytes, all
+/// a driver keeping to `seg_max` and `size_max` sends (8 MiB): a piece's
+/// buffer is all a request holds at once. UEFI firmware (OVMF, Cloud
+/// Hypervisor's) doesn't take `size_max` and reads a whole file in one
+/// request, often more.
+pub const PIECE: u64 = SEG_MAX as u64 * SIZE_MAX as u64;
+/// Data bytes in one request at most (1 GiB); a longer request is
+/// answered `IOERR`. Room for the largest file firmware loads at once.
+pub const REQUEST_MAX: u64 = 1 << 30;
 /// Descriptors in one chain at most: the data segments, and the header
 /// and the status besides.
 pub const DESCRIPTORS_MAX: usize = SEG_MAX as usize + 2;
@@ -193,6 +195,13 @@ pub const S_OK: u8 = VIRTIO_BLK_S_OK as u8;
 pub const S_IOERR: u8 = VIRTIO_BLK_S_IOERR as u8;
 pub const S_UNSUPP: u8 = VIRTIO_BLK_S_UNSUPP as u8;
 
+/// How many of the bytes `at..end` the piece starting at `at` takes: up
+/// to the next multiple of [`PIECE`], so only a request's own ends can be
+/// partial blocks.
+pub fn piece(at: u64, end: u64) -> u64 {
+    ((at / PIECE + 1) * PIECE).min(end) - at
+}
+
 /// The whole volume blocks that bytes `off..off + len` are in.
 pub fn blocks(off: u64, len: u64) -> (u64, u64) {
     (off / BLOCK * BLOCK, (off + len).div_ceil(BLOCK) * BLOCK)
@@ -268,11 +277,11 @@ mod tests {
     /// or allocated; one at the limits is a request.
     #[test]
     fn requests_past_the_limits_are_refused() {
-        let size = 1 << 30;
+        let size = 4 << 30;
         let rd = header(VIRTIO_BLK_T_IN, 0);
         let wr = header(VIRTIO_BLK_T_OUT, 0);
         let max = REQUEST_MAX;
-        assert_eq!(REQUEST_MAX, 8 << 20);
+        assert_eq!(REQUEST_MAX, 1 << 30);
         assert_eq!(
             decode(&rd, 16, max + 1, DESCRIPTORS_MAX, size),
             Ok(Request::Read { off: 0, len: max })
@@ -306,6 +315,31 @@ mod tests {
         assert_eq!(decode(&rd, 16, 0, 1024, size), Err(Bad::Malformed));
     }
 
+    /// Pieces end on multiples of [`PIECE`]: a request's middle is in
+    /// whole pieces, its ends may be shorter.
+    #[test]
+    fn requests_are_served_in_pieces() {
+        let pieces = |off: u64, len: u64| {
+            let mut at = off;
+            let mut out = Vec::new();
+            while at < off + len {
+                let n = piece(at, off + len);
+                out.push((at, n));
+                at += n;
+            }
+            out
+        };
+        assert_eq!(pieces(0, 4096), vec![(0, 4096)]);
+        assert_eq!(pieces(0, PIECE), vec![(0, PIECE)]);
+        assert_eq!(pieces(0, PIECE + 512), vec![(0, PIECE), (PIECE, 512)]);
+        assert_eq!(
+            pieces(1536, 2 * PIECE),
+            vec![(1536, PIECE - 1536), (PIECE, PIECE), (2 * PIECE, 1536)]
+        );
+        assert_eq!(pieces(REQUEST_MAX, 0), vec![]);
+        assert_eq!(pieces(0, REQUEST_MAX).len() as u64, REQUEST_MAX / PIECE);
+    }
+
     #[test]
     fn the_config_space_names_the_size_and_queues() {
         let c = config(10 << 30, 4);
@@ -324,7 +358,8 @@ mod tests {
         assert_eq!(u32::from_le_bytes(c[12..16].try_into().unwrap()), SEG_MAX);
         assert!(features() & (1 << VIRTIO_BLK_F_SIZE_MAX) != 0);
         assert!(features() & (1 << VIRTIO_BLK_F_SEG_MAX) != 0);
-        assert!(REQUEST_MAX >= SEG_MAX as u64 * SIZE_MAX as u64);
+        assert_eq!(PIECE, SEG_MAX as u64 * SIZE_MAX as u64);
+        const { assert!(REQUEST_MAX >= PIECE) };
         assert_eq!(blocks(1536, 1024), (0, 4096));
         assert_eq!(blocks(3584, 1024), (0, 8192));
         assert_eq!(blocks(4096, 4096), (4096, 8192));

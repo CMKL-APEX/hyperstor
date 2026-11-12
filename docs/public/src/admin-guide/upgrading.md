@@ -107,11 +107,9 @@ The installer takes care of these; nothing needs doing by hand:
   2 minutes. Browsers and SDKs open a new one. mgmt takes request
   bodies up to 256 KiB from anyone and up to 4 MiB with a session or API
   token; larger ones get `413`.
-- **VM disks.** A request carries at most 8 MiB, which the disk tells
-  the guest. Linux guests keep well under it by default
-  (`/sys/block/vdX/queue/max_sectors_kb`); one whose `max_sectors_kb`
-  was raised past 8192 gets I/O errors for larger requests and should
-  lower it.
+- **VM disks.** Requests of up to 1 GiB are served, 8 MiB at a time, so
+  a VM's firmware can load large files (such as a unified kernel image)
+  in one request.
 - **Volume clients** wait up to 30 s for a PG that can't serve yet (a
   split, a primary moving) instead of failing after about two seconds;
   see [Guarantees](../user-guide/guarantees.md#errors).

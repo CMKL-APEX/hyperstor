@@ -335,7 +335,12 @@ impl Guest {
         h.extend(0u32.to_le_bytes());
         h.extend(sector.to_le_bytes());
         self.mem.write_slice(&h, hdr).unwrap();
-        let status = data + (8 << 20);
+        // The last byte of guest memory, past any request's data.
+        let status = MEM as u64 - 1;
+        assert!(
+            data + out.len().max(in_len as usize) as u64 <= status,
+            "a request's data fits in the guest's memory"
+        );
         self.mem.write_slice(&[0xff], GuestAddress(status)).unwrap();
         // Data in two descriptors, to cross a segment boundary.
         let mut n = 0u16;

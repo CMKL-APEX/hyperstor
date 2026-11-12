@@ -620,3 +620,271 @@ fn a_guest_waits_on_a_write_held_while_full() {
     svc.stop();
     short.stop();
 }
+
+/// A firmware image: `var` names it, else `default` (under `$HOME` when
+/// relative), if readable.
+fn firmware(var: &str, default: &str) -> Option<PathBuf> {
+    let f = std::env::var(var).map(PathBuf::from).unwrap_or_else(|_| {
+        let d = PathBuf::from(default);
+        if d.is_absolute() {
+            d
+        } else {
+            PathBuf::from(std::env::var("HOME").unwrap()).join(d)
+        }
+    });
+    std::fs::File::open(&f).is_ok().then_some(f)
+}
+
+fn run(what: &str, cmd: &mut Command) {
+    let o = cmd
+        .output()
+        .unwrap_or_else(|e| panic!("{what}: {e} (is it installed?)"));
+    assert!(
+        o.status.success(),
+        "{what}: {}\n{}",
+        o.status,
+        String::from_utf8_lossy(&o.stderr)
+    );
+}
+
+/// GRUB as one EFI program, `BOOTX64.EFI`, with `grub.cfg` and `files`
+/// (name in GRUB's memdisk, source) inside it.
+fn grub_efi(out: &Path, cfg: &str, files: &[(&str, &Path)]) {
+    let cfg_path = out.with_extension("cfg");
+    std::fs::write(&cfg_path, cfg).unwrap();
+    let mut c = Command::new("grub-mkstandalone");
+    c.args([
+        "-O",
+        "x86_64-efi",
+        "--modules=part_gpt fat search search_fs_file linux serial terminal normal",
+        "--locales=",
+        "--fonts=",
+        "--themes=",
+        "-o",
+    ])
+    .arg(out)
+    .arg(format!("boot/grub/grub.cfg={}", cfg_path.display()));
+    for (name, src) in files {
+        c.arg(format!("{name}={}", src.display()));
+    }
+    run("grub-mkstandalone", &mut c);
+}
+
+/// A 64 MiB disk: a GPT whose one partition, from 1 MiB, is an EFI system
+/// partition (FAT) holding `files` (path in it, source).
+fn esp_disk(path: &Path, files: &[(&str, &Path)]) {
+    let esp = path.with_extension("esp");
+    let _ = std::fs::remove_file(&esp);
+    run(
+        "mkfs.vfat",
+        Command::new("mkfs.vfat")
+            .args(["-C", "-n", "ESP"])
+            .arg(&esp)
+            .arg("63488"),
+    );
+    for d in ["::/EFI", "::/EFI/BOOT"] {
+        run("mmd", Command::new("mmd").arg("-i").arg(&esp).arg(d));
+    }
+    for (to, from) in files {
+        run(
+            "mcopy",
+            Command::new("mcopy")
+                .arg("-i")
+                .arg(&esp)
+                .arg(from)
+                .arg(format!("::{to}")),
+        );
+    }
+    let f = std::fs::File::create(path).unwrap();
+    f.set_len(64 << 20).unwrap();
+    drop(f);
+    run(
+        "sgdisk",
+        Command::new("sgdisk")
+            .args(["-n", "1:2048:0", "-t", "1:ef00"])
+            .arg(path),
+    );
+    let mut disk = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    std::io::Seek::seek(&mut disk, std::io::SeekFrom::Start(1 << 20)).unwrap();
+    std::io::copy(&mut std::fs::File::open(&esp).unwrap(), &mut disk).unwrap();
+}
+
+/// The command line booting through `fw` under `hypervisor`, from the
+/// volume served at `socket`.
+fn firmware_machine(hypervisor: &str, fw: &Path, vars: &Path, socket: &str) -> Vec<String> {
+    let fw = fw.to_str().unwrap().to_string();
+    if hypervisor == "cloud-hypervisor" {
+        [
+            "cloud-hypervisor",
+            "--firmware",
+            &fw,
+            "--cpus",
+            "boot=2",
+            "--memory",
+            "size=1G,shared=on",
+            "--disk",
+            &format!("vhost_user=true,socket={socket},num_queues=2,queue_size=128"),
+            "--serial",
+            "tty",
+            "--console",
+            "off",
+        ]
+        .map(String::from)
+        .to_vec()
+    } else {
+        [
+            "qemu-system-x86_64",
+            "-enable-kvm",
+            "-cpu",
+            "host",
+            "-smp",
+            "2",
+            "-m",
+            "1G",
+            "-object",
+            "memory-backend-memfd,id=mem,size=1G,share=on",
+            "-numa",
+            "node,memdev=mem",
+            "-drive",
+            &format!("if=pflash,format=raw,readonly=on,file={fw}"),
+            "-drive",
+            &format!("if=pflash,format=raw,file={}", vars.display()),
+            "-chardev",
+            &format!("socket,id=disk,path={socket},reconnect=1"),
+            "-device",
+            "vhost-user-blk-pci,chardev=disk,num-queues=2,bootindex=1",
+            "-nographic",
+            "-nodefaults",
+            "-serial",
+            "stdio",
+            "-no-reboot",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+}
+
+/// VMs boot through UEFI firmware from a volume: OVMF under QEMU and
+/// Cloud Hypervisor's own build. Two disks: on one the firmware itself
+/// reads a large EFI program (GRUB with the kernel and initramfs inside,
+/// about 18 MiB, past a request's 8 MiB); on the other GRUB reads the
+/// kernel and initramfs from the EFI system partition, as distributions
+/// boot. Needs what [`virtual_machines_boot_with_a_volume_as_their_disk`]
+/// does, plus `grub-mkstandalone` (x86_64-efi), `mkfs.vfat`, mtools,
+/// `sgdisk`, and the firmware: `HS_VM_OVMF` (default
+/// `/usr/share/OVMF/OVMF_CODE_4M.fd`, with `OVMF_VARS_4M.fd` beside it)
+/// and `HS_VM_CLOUDHV` (default `~/.glidex/CLOUDHV.fd`); a hypervisor
+/// whose firmware is missing is skipped.
+#[test]
+fn virtual_machines_boot_through_uefi_firmware() {
+    if std::env::var("HS_VM").is_err() {
+        eprintln!(
+            "skipped: set HS_VM=1 (needs /dev/kvm, a kernel image, busybox, both hypervisors and their firmware)"
+        );
+        return;
+    }
+    let kernel = kernel().expect("a readable kernel image (HS_VM_KERNEL)");
+    let ovmf = firmware("HS_VM_OVMF", "/usr/share/OVMF/OVMF_CODE_4M.fd");
+    let cloudhv = firmware("HS_VM_CLOUDHV", ".glidex/CLOUDHV.fd");
+    let c = Cluster::all_in_one("vm-fw", 3);
+    let initrd = c.scratch.path("initrd.cpio");
+    initramfs(&initrd);
+    let line =
+        "linux /vmlinuz console=ttyS0 quiet panic=-1 hs=firmware\ninitrd /initrd.cpio\nboot\n";
+    let serial = "serial --unit=0 --speed=115200\nterminal_input serial\nterminal_output serial\nset timeout=0\n";
+    // GRUB, the kernel and the initramfs in one EFI program the firmware
+    // loads.
+    let big = c.scratch.path("big.efi");
+    grub_efi(
+        &big,
+        &format!("{serial}{line}"),
+        &[("vmlinuz", &kernel), ("initrd.cpio", &initrd)],
+    );
+    let big_len = std::fs::metadata(&big).unwrap().len();
+    assert!(big_len > 8 << 20, "{big_len} bytes");
+    // A small GRUB that reads them from the partition.
+    let small = c.scratch.path("small.efi");
+    grub_efi(
+        &small,
+        &format!("{serial}search --no-floppy --file --set=root /vmlinuz\n{line}"),
+        &[],
+    );
+    let disks = [
+        (
+            "firmware reads",
+            vec![("/EFI/BOOT/BOOTX64.EFI", big.clone())],
+        ),
+        (
+            "GRUB reads",
+            vec![
+                ("/EFI/BOOT/BOOTX64.EFI", small.clone()),
+                ("/vmlinuz", kernel.clone()),
+                ("/initrd.cpio", initrd.clone()),
+            ],
+        ),
+    ];
+    let svc = Service::start(&c, "vhost-fw", &["--queues", "2"]);
+    let mut report = Vec::new();
+    for (n, (what, files)) in disks.iter().enumerate() {
+        let image = c.scratch.path(&format!("disk{n}.img"));
+        let files: Vec<(&str, &Path)> = files.iter().map(|(t, f)| (*t, f.as_path())).collect();
+        esp_disk(&image, &files);
+        for hv in ["cloud-hypervisor", "qemu"] {
+            let Some(fw) = (if hv == "qemu" { &ovmf } else { &cloudhv }) else {
+                eprintln!("{hv}: no firmware, skipped");
+                continue;
+            };
+            let made = c
+                .ctl(&["create-volume", "--size", "64M", "--name", "fw"])
+                .ok();
+            let id = made.out.split_whitespace().nth(1).unwrap().to_string();
+            c.ctl(&[
+                "write-volume",
+                "--id",
+                &id,
+                "--file",
+                image.to_str().unwrap(),
+                "--sparse",
+            ])
+            .ok();
+            let r = svc.attach(&id, "attach");
+            let socket = r["ok"]["socket"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{r}"))
+                .to_string();
+            // OVMF writes its variables: a copy of the template each boot.
+            let vars = c.scratch.path(&format!("vars-{n}-{hv}.fd"));
+            if hv == "qemu" {
+                std::fs::copy(fw.with_file_name("OVMF_VARS_4M.fd"), &vars)
+                    .expect("OVMF_VARS_4M.fd beside the firmware");
+            }
+            let cmd = firmware_machine(hv, fw, &vars, &socket);
+            // Every boot runs, and the report says which failed.
+            let t = Instant::now();
+            let booted = std::panic::catch_unwind(|| boot(hv, &cmd));
+            let ok = match &booted {
+                Ok(lines) => {
+                    eprintln!("{hv}, {what}: {lines:?}");
+                    lines.contains(&format!("HS size {}", (64u64 << 20) / 512))
+                }
+                Err(_) => false,
+            };
+            report.push((
+                ok,
+                format!(
+                    "{hv}, {what}: {} after {:?}",
+                    if ok { "booted" } else { "FAILED" },
+                    t.elapsed()
+                ),
+            ));
+        }
+    }
+    let lines: Vec<&str> = report.iter().map(|(_, l)| l.as_str()).collect();
+    eprintln!(
+        "firmware boots ({big_len} bytes loaded by the firmware):\n{}",
+        lines.join("\n")
+    );
+    svc.stop();
+    assert!(!report.is_empty(), "no firmware found");
+    assert!(report.iter().all(|(ok, _)| *ok), "{lines:#?}");
+}
