@@ -1,4 +1,4 @@
-//! The CRC32C of one 4 KiB block (spec/01-implementation-notes.md I369).
+//! The CRC32C of one 4 KiB block (spec/01-implementation-notes.md I376).
 //!
 //! The engine and the protocol checksum every block of 4096 bytes. The
 //! `crc32c` crate's loop serves every length; this one is cut to 4096: three

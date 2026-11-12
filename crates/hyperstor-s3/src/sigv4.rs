@@ -622,6 +622,15 @@ mod tests {
             check("GET", "/test.txt", &long, &h, AT),
             Err(AuthError::Malformed("X-Amz-Expires"))
         );
+        // A time of 16 bytes that isn't ASCII is malformed, whatever
+        // bytes its characters span.
+        for odd in ["201%E2%82%AC05T000000Z", "20130%C3%A94T000000Z"] {
+            let q = q.replace("20130524T000000Z", odd);
+            assert_eq!(
+                check("GET", "/test.txt", &q, &h, AT),
+                Err(AuthError::Malformed("date"))
+            );
+        }
     }
 
     /// `h` with an `authorization` header that signs `signed` of its

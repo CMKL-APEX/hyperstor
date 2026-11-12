@@ -22,7 +22,7 @@ usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --iden
 | `--tls DIR` | | Holds `s3.crt` (the certificate chain, leaf first) and `s3.key`: the name clients connect to must be in the certificate. Read at start |
 | `--api ADDR[,ADDR...]` | | The cluster API of the map service's members, tried in turn: the access keys and placements come from there, every 5 seconds |
 | `--identity DIR` | | With `--api`: the gateway's own certificate, `s3.crt` and `s3.key`, of role `s3`, and the cluster's `root.crt`. Only an `s3` certificate may read the keys. It names the gateway's addresses, so `--tls` may be the same directory where clients trust the cluster's root |
-| `--realm NAME` | `default` | With `--api`: the realm this gateway serves. It knows only the keys of that realm's tenants, and its placements: another realm's key is unknown here (`InvalidAccessKeyId`) |
+| `--realm NAME` | `default` | With `--api`: the realm this gateway serves. It knows only the keys of that realm's tenants, and its placements: another realm's key is unknown here (`InvalidAccessKeyId`). The map service answers a realm other than `default` only to a gateway bound to it by its certificate's name (`hyperstorctl realm host --host NAME --realm R`); until then the gateway retries |
 | `--domain NAME[,NAME...]` | | The gateway's domains: a request to `bucket.NAME` names its bucket in the host (virtual-hosted), one to `NAME` or any other host in its path. Needs a wildcard DNS name and certificate for `*.NAME`; a wildcard covers one label, so buckets with dots in their names are reached path-style |
 | `--keys FILE` | | Instead of `--api`, for running without the cluster API: the access keys, one per line: `ID SECRET TENANT`; `#` starts a comment. Readable by its owner only (`chmod 600`), or the gateway won't start |
 | `--data-pool NAME` | | With `--keys`: the pool new buckets keep their objects' bytes in |
@@ -94,6 +94,12 @@ stopped, or the client went) are cleaned up a day later.
   theirs.
 - A request's body may go 60 s without a byte arriving; past that the
   request fails.
+- XML bodies are bounded by what S3's largest requests need:
+  CompleteMultipartUpload's at about 5 MiB and 100,001 elements (10,000
+  parts, each with every checksum), DeleteObjects' at about 7 MiB and
+  8,002 elements (1000 keys of 1024 bytes written as character
+  references). A longer body is answered 400 `MaxMessageLengthExceeded`;
+  more elements, 400 `MalformedXML`.
 - At most 4096 connections are open at once (fewer when the open-file
   limit is lower: half of it). Past that, new connections wait until
   one closes.

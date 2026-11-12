@@ -122,6 +122,15 @@ impl Realms {
         self.name(self.realm_of(tenant))
     }
 
+    /// The realms an S3 gateway may serve, by the name in its
+    /// certificate (I370): those it is bound to as a host is (D251), or
+    /// `default` alone while it is bound to none. A gateway learns only
+    /// these realms' tenants' keys, so another realm's keys need a
+    /// binding an administrator made.
+    pub fn gateway_realms(&self, gateway: &str) -> Vec<u32> {
+        self.hosts.get(gateway).cloned().unwrap_or_else(|| vec![0])
+    }
+
     /// Whether `realm` may use `pool` (D249): it's on the pool's list, or
     /// the pool has none.
     pub fn may_use(&self, realm: u32, pool: u32) -> bool {
@@ -512,6 +521,11 @@ mod tests {
         set_host(&db, "hv1", &[b, 0]).unwrap();
         let (hosts, tenants) = load(&db).unwrap().map_view();
         assert_eq!(hosts.get("hv1"), Some(&vec![b, 0]));
+        // A gateway is bound by its certificate's name, as a host is;
+        // unbound, it serves `default` alone (I370).
+        let now = load(&db).unwrap();
+        assert_eq!(now.gateway_realms("hv1"), [b, 0]);
+        assert_eq!(now.gateway_realms("gw"), [0]);
         assert_eq!(tenants.get(&5), Some(&a));
         assert!(matches!(
             delete(&db, "blue"),

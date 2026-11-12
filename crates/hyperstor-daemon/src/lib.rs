@@ -3384,9 +3384,14 @@ impl ShardState {
         token: u64,
         payload: IoBuf,
     ) -> Msg {
-        let Ok(ops) = decode_ops(&payload) else {
+        let Some(ops) = decode_ops_as(self.version(), &payload) else {
             return err(Code::Invalid, &self.map(), "malformed operation list");
         };
+        // As for any operation list (I374): checked before the holder is
+        // quiesced, so a list refused for its data holds nothing up.
+        if let Err((code, why)) = check_write_crcs(&ops) {
+            return err(code, &self.map(), why);
+        }
         let held = if token == 0 {
             match self
                 .hold(to, key.clone(), hyperstor_client::random_u64().max(1))

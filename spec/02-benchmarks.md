@@ -2519,12 +2519,12 @@ HS_VMB=1 HS_VMB_RT=10 HS_VMB_VMS=1 HS_VMB_CPUS=48 HS_VMB_NODES=3 \
 - This is a larger gain at QD1 than the reactor's completion spin alone
   gave (+11%, I350): the guest no longer exits to notify.
 
-## 2026-11-12: a 4 KiB block's CRC32C by three streams and PCLMULQDQ (HS5b, I369)
+## 2026-11-12: a 4 KiB block's CRC32C by three streams and PCLMULQDQ (HS5b, I376)
 
 A development VM: 12 vCPUs of AMD EPYC 7742 (Zen 2; SSE4.2, PCLMULQDQ and
 AVX2, no AVX-512 or VPCLMULQDQ), Linux 6.8.0, Rust 1.99.1, release builds.
 Before: main at ac8c6db0 with `hyperstor-bench crc` timing 4 KiB blocks
-(d19c51a4); after: the codec change on top of it (`crc4k`, I369).
+(d19c51a4); after: the codec change on top of it (`crc4k`, I376).
 
 `HS_BENCH_SECS=2 taskset -c 8 hyperstor-bench crc`, alternately, five
 rounds each; medians, with the range of the five.

@@ -988,9 +988,19 @@ async fn list_buckets(state: &State, tenant: u32) -> Result<Response<Body>, ApiE
 
 /// The most a request's body may hold when it isn't an object.
 const SMALL_BODY: usize = 64 << 10;
-/// The most a DeleteObjects body may hold: 1000 keys of up to 1024
-/// bytes, escaped.
-const DELETE_BODY: usize = 8 << 20;
+/// Room in an XML body beside its elements: the prolog, the root's
+/// tags and namespace, and layout.
+const XML_SLACK: usize = 64 << 10;
+/// The most a DeleteObjects body may hold: 1000 objects, each a key of
+/// up to 1024 bytes written as character references at worst (6 bytes
+/// a byte, `&#x1F;`), and 1 KiB for its tags, VersionId, ETag and
+/// layout. About 7 MiB.
+const DELETE_BODY: usize = MAX_DELETE * (6 * 1024 + 1024) + XML_SLACK;
+/// The most elements a DeleteObjects body may hold: the root, `Quiet`,
+/// and for each object itself, `Key`, `VersionId`, `ETag`,
+/// `LastModifiedTime` and `Size`, with room for two more. Reading
+/// takes 64 bytes an element at most beside the body (xml.rs).
+pub const DELETE_ELEMENTS: usize = 2 + MAX_DELETE * 8;
 
 /// A small body (CreateBucket's), whole, checked as a PUT's is.
 async fn small_body(
@@ -1164,8 +1174,9 @@ async fn delete_objects(
 ) -> Result<Response<Body>, ApiError> {
     let malformed = |why: &str| ApiError::new(400, "MalformedXML", why.to_string());
     let text = std::str::from_utf8(body).map_err(|_| malformed("the body isn't UTF-8"))?;
-    let doc = crate::xml::parse(text).map_err(malformed)?;
-    if doc.name != "Delete" {
+    let doc = crate::xml::parse(text, DELETE_ELEMENTS).map_err(malformed)?;
+    let doc = doc.root();
+    if doc.name() != "Delete" {
         return Err(malformed("not a Delete"));
     }
     let quiet = doc.text_of("Quiet").is_some_and(|q| q.trim() == "true");
@@ -1342,8 +1353,14 @@ fn checksum_xml(x: &mut Xml, sum: &Option<(Algorithm, Vec<u8>)>, parts: Option<u
     }
 }
 
-/// The most a CompleteMultipartUpload body may hold: 10,000 parts.
-const COMPLETE_BODY: usize = 4 << 20;
+/// The most a CompleteMultipartUpload body may hold: 10,000 parts, each
+/// 512 bytes: its `PartNumber`, its quoted ETag escaped, all five
+/// checksums (275 bytes together) and layout. About 5 MiB.
+const COMPLETE_BODY: usize = crate::MAX_PARTS as usize * 512 + XML_SLACK;
+/// The most elements a CompleteMultipartUpload body may hold: the root,
+/// and for each part itself, `PartNumber`, `ETag` and five checksums,
+/// with room for two more.
+pub const COMPLETE_ELEMENTS: usize = 1 + crate::MAX_PARTS as usize * 10;
 
 /// An upload id as shown: 32 hexadecimal digits.
 fn show_upload(id: u128) -> String {
@@ -1450,8 +1467,9 @@ async fn complete_upload(
 ) -> Result<Response<Body>, ApiError> {
     let malformed = |why: &str| ApiError::new(400, "MalformedXML", why.to_string());
     let text = std::str::from_utf8(body).map_err(|_| malformed("the body isn't UTF-8"))?;
-    let doc = crate::xml::parse(text).map_err(malformed)?;
-    if doc.name != "CompleteMultipartUpload" {
+    let doc = crate::xml::parse(text, COMPLETE_ELEMENTS).map_err(malformed)?;
+    let doc = doc.root();
+    if doc.name() != "CompleteMultipartUpload" {
         return Err(malformed("not a CompleteMultipartUpload"));
     }
     let mut named = Vec::new();
@@ -2671,6 +2689,48 @@ mod tests {
         assert_eq!(
             placement_of(&[0xff], "x").map_err(|e| e.code),
             Err("MalformedXML")
+        );
+    }
+
+    /// The bounds on XML bodies admit S3's largest: 1000 keys of 1024
+    /// bytes written as character references, and 10,000 parts with
+    /// every checksum, laid out; a body past them is refused.
+    #[test]
+    fn xml_bounds_admit_s3s_largest_bodies() {
+        let mut d = String::from(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n  <Quiet>true</Quiet>\n",
+        );
+        for _ in 0..MAX_DELETE {
+            d.push_str(&format!(
+                "  <Object>\n    <Key>{}</Key>\n    <VersionId>null</VersionId>\n    <ETag>&quot;{:032x}&quot;</ETag>\n    <LastModifiedTime>2026-11-12T00:00:00.000Z</LastModifiedTime>\n    <Size>5368709120</Size>\n  </Object>\n",
+                "&#x1F;".repeat(1024),
+                u128::MAX
+            ));
+        }
+        d.push_str("</Delete>");
+        assert!(d.len() <= DELETE_BODY, "{} > {DELETE_BODY}", d.len());
+        let doc = crate::xml::parse(&d, DELETE_ELEMENTS).unwrap();
+        assert_eq!(doc.root().all("Object").count(), MAX_DELETE);
+
+        let mut c = String::from(
+            "<CompleteMultipartUpload xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n",
+        );
+        for n in 1..=crate::MAX_PARTS {
+            c.push_str(&format!(
+                "  <Part>\n    <PartNumber>{n}</PartNumber>\n    <ETag>&quot;{n:032x}&quot;</ETag>\n    <ChecksumCRC32>AAAAAA==</ChecksumCRC32>\n    <ChecksumCRC32C>AAAAAA==</ChecksumCRC32C>\n    <ChecksumCRC64NVME>AAAAAAAAAAA=</ChecksumCRC64NVME>\n    <ChecksumSHA1>{}</ChecksumSHA1>\n    <ChecksumSHA256>{}</ChecksumSHA256>\n  </Part>\n",
+                "A".repeat(28),
+                "A".repeat(44)
+            ));
+        }
+        c.push_str("</CompleteMultipartUpload>");
+        assert!(c.len() <= COMPLETE_BODY, "{} > {COMPLETE_BODY}", c.len());
+        let doc = crate::xml::parse(&c, COMPLETE_ELEMENTS).unwrap();
+        assert_eq!(doc.root().all("Part").count(), crate::MAX_PARTS as usize);
+        // Elements past the bound: refused, answered MalformedXML.
+        let many = format!("<Delete>{}</Delete>", "<Object/>".repeat(DELETE_ELEMENTS));
+        assert_eq!(
+            crate::xml::parse(&many, DELETE_ELEMENTS),
+            Err("too many elements")
         );
     }
 

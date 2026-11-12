@@ -71,9 +71,11 @@ fn num<T: std::str::FromStr>(s: &str) -> Option<T> {
     s.parse().ok()
 }
 
-/// `yyyymmddThhmmssZ` as Unix seconds.
+/// `yyyymmddThhmmssZ` as Unix seconds. ASCII only: the length is in
+/// bytes and the fields are sliced by byte, so anything else is refused
+/// before slicing.
 pub fn parse_amz(s: &str) -> Option<u64> {
-    if s.len() != 16 || s.as_bytes()[8] != b'T' || !s.ends_with('Z') {
+    if s.len() != 16 || !s.is_ascii() || s.as_bytes()[8] != b'T' || !s.ends_with('Z') {
         return None;
     }
     secs_of(
@@ -166,6 +168,10 @@ mod tests {
             "2013052T0000000Z",
             "20130524T000000",
             "+0130524T000000Z",
+            // 16 bytes with a 'T' at byte 8, but a character of three
+            // bytes across the year's and month's fields.
+            "201\u{20ac}05T000000Z",
+            "20130\u{e9}4T000000Z",
         ] {
             assert_eq!(parse_amz(bad), None, "{bad}");
         }

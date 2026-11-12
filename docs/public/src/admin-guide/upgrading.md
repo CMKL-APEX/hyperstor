@@ -102,6 +102,9 @@ The installer takes care of these; nothing needs doing by hand:
   `--mgmt-trusted-proxies` or `--mgmt-proxy-ca` so that it sees each
   person's address; otherwise everyone behind the proxy shares the
   proxy's (see [Behind a proxy](../reference/hyperstor-mgmt.md#behind-a-proxy)).
+- **Web UI sessions.** Over HTTPS the session cookie is named
+  `__Host-hs_session`, which browsers keep to the exact host. Sessions
+  from before the upgrade aren't recognised: everyone logs in once more.
 - **Connections to mgmt and the S3 gateway.** Each has 10 s to send a
   request's headers, and a kept connection with no request closes after
   2 minutes. Browsers and SDKs open a new one. mgmt takes request
@@ -113,6 +116,11 @@ The installer takes care of these; nothing needs doing by hand:
 - **Volume clients** wait up to 30 s for a PG that can't serve yet (a
   split, a primary moving) instead of failing after about two seconds;
   see [Guarantees](../user-guide/guarantees.md#errors).
+- **S3 gateways** get only the keys of their realm. A gateway serves a
+  realm other than `default` once bound to it: the installer binds a
+  map service host's gateway itself, and a gateway that joined with an
+  `s3` token needs `hyperstorctl realm host --host NAME --realm R` once
+  (its install prints the command). Gateways of `default` need nothing.
 - **Map service members** added with `hyperstorctl member add` vote
   only once they have caught up with the leader's log (see
   [Adding and removing members](map-service.md#adding-and-removing-members)).

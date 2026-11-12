@@ -18,6 +18,7 @@
 //! taking requests, those in flight finish, and it moves.
 
 use crate::blk::{self, Bad, Request};
+use crate::budget::Budget;
 use crate::inflight::Inflight;
 use hyperstor_client::ClientError;
 use hyperstor_client::volume::Attached;
@@ -291,6 +292,8 @@ struct State {
     /// For a guest whose memory isn't bound: where its pages are, until
     /// it is placed by them.
     watch: Option<Watch>,
+    /// Bytes its requests may hold in buffers at once (I375).
+    budget: Budget,
 }
 
 /// The guest pages a connection's requests used lately, to find the node
@@ -404,6 +407,7 @@ impl State {
             running: 0,
             parked: false,
             watch: None,
+            budget: Budget::new(crate::budget::CONNECTION_BYTES),
         }
     }
 
@@ -856,7 +860,10 @@ async fn serve(
         // Past the volume or the limits it advertises: refused before a
         // buffer is allocated or guest memory read.
         Some(Err(Bad::Range | Bad::TooLarge)) => (blk::S_IOERR, 1),
-        Some(Ok(r)) => run_request(&disk, mem, &segs, r, writable_len).await,
+        Some(Ok(r)) => {
+            let budget = lock(&shared).budget.clone();
+            run_request(&disk, &budget, mem, &segs, r, writable_len).await
+        }
     };
     if write_stream(mem, &segs.writable, writable_len - 1, &[status]).is_none() {
         return complete(&shared, index, generation, mem, head, 0);
@@ -864,9 +871,21 @@ async fn serve(
     complete(&shared, index, generation, mem, head, used);
 }
 
+/// The most bytes a read or write of `len` at `off` holds in buffers at
+/// once: the volume blocks it covers, read or merged whole ([`read_at`],
+/// [`write_at`]).
+fn buffer_bytes(off: u64, len: u64) -> u64 {
+    let (start, end) = blk::blocks(off, len);
+    end - start
+}
+
 /// Returns the status and how many bytes were written into the chain.
+/// Each buffer is taken from the connection's `budget` while it is held,
+/// and only then (I375): a write waiting for space between attempts
+/// holds none.
 async fn run_request(
     disk: &Disk,
+    budget: &Budget,
     mem: &GuestMemoryMmap,
     segs: &Segments,
     req: Request,
@@ -874,11 +893,13 @@ async fn run_request(
 ) -> (u8, u32) {
     match req {
         // In pieces of at most `blk::PIECE`, one after another: a request
-        // holds one piece's buffer at a time, however long it is.
+        // holds one piece's buffer at a time, however long it is, taken
+        // from the connection's budget while it is held.
         Request::Read { off, len } => {
             let mut at = off;
             while at < off + len {
                 let n = blk::piece(at, off + len);
+                let _taken = budget.take(buffer_bytes(at, n)).await;
                 let Ok(data) = read_at(&disk.volume, at, n).await else {
                     return (blk::S_IOERR, 1);
                 };
@@ -894,6 +915,7 @@ async fn run_request(
             while at < off + len {
                 let n = blk::piece(at, off + len);
                 let write = || async {
+                    let _taken = budget.take(buffer_bytes(at, n)).await;
                     let data = read_stream(mem, &segs.readable, 16 + (at - off), n).ok_or(None)?;
                     write_at(disk, at, data).await.map_err(Some)
                 };
@@ -919,8 +941,10 @@ async fn run_request(
                 while at < off + len {
                     let next = (at / blk::ZERO_PIECE + 1) * blk::ZERO_PIECE;
                     let n = next.min(off + len) - at;
-                    let zero =
-                        || async { write_at(disk, at, vec![0; n as usize]).await.map_err(Some) };
+                    let zero = || async {
+                        let _taken = budget.take(buffer_bytes(at, n)).await;
+                        write_at(disk, at, vec![0; n as usize]).await.map_err(Some)
+                    };
                     if held(disk, zero).await.is_err() {
                         return (blk::S_IOERR, 1);
                     }
