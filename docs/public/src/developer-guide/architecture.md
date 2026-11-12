@@ -53,7 +53,7 @@ costs only its own 100 ms slot ([failure detection](replication.md#failure-detec
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `hyperstor-codec` | Fixed little-endian encoding and CRC32C, for disk and wire | — |
+| `hyperstor-codec` | Fixed little-endian encoding and CRC32C (from `crc-fast` or `crc32c`, chosen for the CPU), for disk and wire | — |
 | `hyperstor-reactor` | The io_uring executor: tasks, TCP, timers, cross-thread channels | — |
 | `hyperstor-engine` | The local storage engine: device superblock, shards, log, paged checkpoints, index, allocator, device back ends, the check for other systems' signatures | codec |
 | `hyperstor-placement` | Pure functions: hashing and weighted rendezvous placement | — |

@@ -39,12 +39,19 @@ HS_BENCH_SECS=3 hyperstor-bench engine /path/dev.img 2   # HS_DEFER_MAX=0: redir
 |---|---|
 | A 4 KiB write through the engine on a memory device | about 5 µs (135,000 /s one at a time, 195,000 /s at batch 32) |
 | A 4 KiB read through the engine on a memory device | 762,000 /s |
-| CRC32C | 6.75 GB/s on one core |
+| CRC32C, 1 MiB calls, one core | 45 GB/s on host A (`crc-fast`), 15 GB/s on host B (`crc32c`) |
+| CRC32C of a 4 KiB block | 90 ns on host A (105 ns not in cache); 220 ns on host B (330 ns not in cache) |
 | Placement of one PG, 1,024 devices, 3 copies | 2.2 µs by host, 1.3 µs by rack |
 | Log replay | about 270 MiB/s; open takes about 0.3 s plus 4.5 ms per MiB replayed |
 | Log space per update, batch 32 | 128 B (257 B with checkpoints) |
 | Commit p99 during fuzzy checkpoints | 109 µs (whole checkpoints: up to 3.6 ms) |
 | Index memory after random overwrites | 2 GiB per TiB with dense maps, against 33 GiB with run maps |
+
+CRC32C comes from `crc-fast` where the CPU has wide carry-less multiplies
+(AVX-512 VPCLMULQDQ, or Arm's PMULL), and from `crc32c` elsewhere:
+`crc-fast` is about twice as fast on host A but 1.7 times as slow on host B
+for blocks not in cache. `hyperstor-bench crc` names the one chosen and
+times both.
 
 ### Paged checkpoints (host B)
 

@@ -20,8 +20,8 @@ acting and up sets), and every storage node with its state, last
 heartbeat, I/O, write and read p99 latency, space, log use and map
 epoch. Both refresh every two seconds.
 
-The web UI's footer names the installed build: its release (`v0.0.7`,
-or `v0.0.7+166` for a build 166 commits after it), its branch and its
+The web UI's footer names the installed build: its release (`v0.0.8`,
+or `v0.0.8+12` for a build 12 commits after it), its branch and its
 commit, each linked to the code on GitHub.
 
 **Reaching it.** mgmt listens on every address of the map service's host,
