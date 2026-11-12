@@ -266,7 +266,7 @@ impl Running {
     fn update(&mut self, b: &[u8]) {
         match self {
             Running::Crc32(h) => h.update(b),
-            Running::Crc32c(c) => *c = crc32c::crc32c_append(*c, b),
+            Running::Crc32c(c) => *c = hyperstor_codec::crc32c_append(*c, b),
             Running::Digest(c) => c.update(b),
         }
     }

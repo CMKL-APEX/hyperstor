@@ -139,6 +139,7 @@ covered by tests that run on every change.
 | Adaptive polling: a storage reactor polls for a window after activity before it sleeps (`hyperstord --spin-us`, default 200 µs) | Done |
 | Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place, a client's write sent from its own buffer; then zero-copy sends (`SEND_ZC`) | In progress |
 | CRC32C at hardware speed (`crc32c` 0.6.9): 41 µs per MiB, from 184 | Done |
+| CRC32C by the faster library for the CPU: `crc-fast` with AVX-512 VPCLMULQDQ or on Arm (about 2× on a 4 KiB block), `crc32c` elsewhere | Done |
 | The engine takes the CRCs that came with write data, checked on arrival, instead of computing them again | Done |
 | Writes in operation lists (S3 object data) carry the writer's CRCs to every copy's media, checked on arrival; plain writes to peers of the protocol before | Done |
 | Buffers not zeroed before they are overwritten: frames' receive buffers and the engine's aligned copies of write data | Done |

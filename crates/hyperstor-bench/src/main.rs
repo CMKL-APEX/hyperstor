@@ -2327,6 +2327,48 @@ fn main() {
                 "CRC32C: {:.2} GB/s",
                 (n << 20) as f64 / t.elapsed().as_secs_f64() / 1e9
             );
+            // Both libraries, on the engine's and the protocol's unit (one
+            // CRC a 4 KiB block) and on 1 MiB calls, over a buffer that
+            // stays in cache and one that doesn't (D298).
+            use hyperstor_codec::Crc32cImpl;
+            println!("chosen for this CPU: {}", Crc32cImpl::chosen().name());
+            let mut x = 0x9e37_79b9_7f4a_7c15u64;
+            let big: Vec<u8> = (0..(64usize << 20))
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    x as u8
+                })
+                .collect();
+            for lib in [Crc32cImpl::Crate, Crc32cImpl::Fast] {
+                for (what, size, region) in [
+                    ("4 KiB blocks of 64 KiB", 4096usize, 64usize << 10),
+                    ("4 KiB blocks of 64 MiB", 4096, 64 << 20),
+                    ("1 MiB calls over 64 MiB", 1 << 20, 64 << 20),
+                ] {
+                    let t = Instant::now();
+                    let (mut n, mut at, mut acc) = (0u64, 0usize, 0u32);
+                    while t.elapsed() < Duration::from_secs_f64(secs) {
+                        for _ in 0..16 {
+                            acc ^= hyperstor_codec::crc32c_with(
+                                lib,
+                                std::hint::black_box(&big[at..at + size]),
+                            );
+                            at = (at + size) % region;
+                            n += 1;
+                        }
+                    }
+                    std::hint::black_box(acc);
+                    let e = t.elapsed().as_secs_f64();
+                    println!(
+                        "{:8}, {what}: {:.2} GB/s, {:.0} ns a call",
+                        lib.name(),
+                        (n * size as u64) as f64 / e / 1e9,
+                        e * 1e9 / n as f64
+                    );
+                }
+            }
         }
         _ => {
             eprintln!("usage: hyperstor-bench engine|raw <file> [size_gib] | mem | crc");
