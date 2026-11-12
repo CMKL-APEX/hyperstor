@@ -788,6 +788,7 @@ spec = ["13-protocol.md §13.1", "D279", "I323"]
 status = "done"
 tests = [
     "cluster::operation_list_writes_keep_the_writers_crcs",
+    "cluster::a_snapshots_operation_list_checks_its_writes_crcs",
     "cluster::checksummed_writes_reach_nodes_of_the_protocol_before",
     "hyperstor_daemon::tests::checksummed_writes_are_checked_and_unknown_to_older_nodes",
 ]
