@@ -10,7 +10,10 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   chunk's PG and primary in its map, and sends the pieces to the owning
   reactors in parallel.
 - **Retries.** On `StaleMap`, `NotPrimary` or a lost connection, it
-  fetches the map delta and resends. On `Blocklisted` it stops and
+  fetches the map delta and resends. While the primary answers
+  `Unavailable`, `StaleMap` or `NotPrimary` (a PG splitting or fenced
+  for a map change), it tries again for up to 30 s; other failures
+  give up after 20 tries, about 2 s (D296). On `Blocklisted` it stops and
   reports the volume as lost to its user (the VM sees I/O errors).
 - **Readahead.** The client detects sequential reads per volume and per
   queue, and reads ahead up to the next two chunks, cancelled when the

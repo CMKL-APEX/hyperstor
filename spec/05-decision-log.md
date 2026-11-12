@@ -1530,3 +1530,14 @@ with power-loss protection is measured.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 257 | Whether one-block commit rounds use FUA: not yet, until G57 is measured on a drive with power-loss protection (recommended); yes, where the drive can; or every round | Yes, where the drive can | D295 |
+
+## Writes while a PG splits (2026-11-12)
+
+A CI run failed a write during a PG split: "gave up after 20 attempts:
+PG splitting" after about 1.9 s, with the runner's commits taking up to
+0.8 s (#351). The same retry loop carries every volume write, so a VM
+or ublk disk would have seen an I/O error.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 258 | How a client survives a PG that can't serve for a while: try `Unavailable`, `StaleMap` and `NotPrimary` again by time, up to about 30 s, other failures still by count (recommended); the primary holds requests for a splitting PG until the split ends; or a shorter split pause, waiting only for the PG's own queued writes | By time | D296 |
