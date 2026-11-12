@@ -475,6 +475,56 @@ impl Guest {
         out
     }
 
+    /// `n` reads of `len` bytes at `off` made available all at once (up
+    /// to 32), each a header and one buffer holding the data and the
+    /// status, all into the same buffer: so the device has many large
+    /// requests in flight in little guest memory. Waits for every one;
+    /// returns the bytes the device said each wrote.
+    pub fn read_together(&mut self, n: u16, off: u64, len: u32) -> Vec<u32> {
+        assert!(n <= QSIZE / 2 && (len as u64) < (MEM as u64) - BUFS - 0x1000);
+        let data = BUFS + 0x1000;
+        for k in 0..n {
+            let h = BUFS + 16 * k as u64;
+            let mut hdr = T_IN.to_le_bytes().to_vec();
+            hdr.extend(0u32.to_le_bytes());
+            hdr.extend((off / 512).to_le_bytes());
+            self.mem.write_slice(&hdr, GuestAddress(h)).unwrap();
+            self.desc(2 * k, h, 16, false, false);
+            self.desc(2 * k + 1, data, len + 1, true, true);
+            let slot = AVAIL + 4 + 2 * (self.avail % QSIZE) as u64;
+            self.mem
+                .write_slice(&(2 * k).to_le_bytes(), GuestAddress(slot))
+                .unwrap();
+            self.avail = self.avail.wrapping_add(1);
+        }
+        self.mem
+            .write_slice(&self.avail.to_le_bytes(), GuestAddress(AVAIL + 2))
+            .unwrap();
+        self.kick.write(1).unwrap();
+        let want = self.used.wrapping_add(n);
+        let t = Instant::now();
+        loop {
+            let mut idx = [0u8; 2];
+            self.mem
+                .read_slice(&mut idx, GuestAddress(USED + 2))
+                .unwrap();
+            if u16::from_le_bytes(idx) == want {
+                break;
+            }
+            assert!(t.elapsed() < self.wait, "no completion");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut out = Vec::new();
+        while self.used != want {
+            let elem = USED + 4 + 8 * (self.used % QSIZE) as u64;
+            self.used = self.used.wrapping_add(1);
+            let mut e = [0u8; 8];
+            self.mem.read_slice(&mut e, GuestAddress(elem)).unwrap();
+            out.push(u32::from_le_bytes(e[4..8].try_into().unwrap()));
+        }
+        out
+    }
+
     pub fn read(&mut self, off: u64, len: u32) -> Vec<u8> {
         let (s, d, w) = self.request(T_IN, off / 512, &[], len);
         assert_eq!((s, w), (S_OK, len + 1), "read {len} at {off}");

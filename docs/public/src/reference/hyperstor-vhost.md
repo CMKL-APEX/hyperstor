@@ -111,6 +111,14 @@ writes a tenth; at queue depth 32 nothing was gained. It costs about a
 core while the disk is busy; idle, it costs nothing. Leave it off unless
 a VM's latency matters that much.
 
+## Memory per connection
+
+Each request holds a buffer of its data while it runs (up to 8 MiB). A
+hypervisor's connection may hold up to 64 MiB in them at once; a
+request that would go past that waits for the connection's earlier ones
+to finish, and none is refused for it. Linux guests send at most
+1280 KiB per request, so they don't reach it.
+
 ## Restarts
 
 Stopping or restarting the service doesn't detach its volumes. It keeps

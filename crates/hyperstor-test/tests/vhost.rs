@@ -298,6 +298,54 @@ fn a_detach_leaves_a_connected_disk_alone() {
     svc.stop();
 }
 
+/// The service's peak resident memory since it was last reset, in bytes
+/// (`VmHWM`); resetting it to what is resident now (`clear_refs` 5).
+fn peak_rss(pid: u32, reset: bool) -> u64 {
+    let kb = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .unwrap()
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.split_whitespace().next()?.parse::<u64>().ok())
+        .unwrap();
+    if reset {
+        std::fs::write(format!("/proc/{pid}/clear_refs"), "5").unwrap();
+    }
+    kb << 10
+}
+
+/// I375: a connection's requests hold at most
+/// `budget::CONNECTION_BYTES` in buffers at once. 32 reads of 8 MiB in
+/// flight together (256 MiB of buffers) all complete, whole, while the
+/// service's memory grows by far less than they would hold together.
+#[test]
+fn a_connections_requests_keep_to_its_memory_budget() {
+    let c = Cluster::all_in_one("vhost-budget", 3);
+    let id = volume(&c, "16M");
+    let svc = Service::start(&c, "vhost-budget", &[]);
+    let socket = PathBuf::from(svc.attach(&id, "attach")["ok"]["socket"].as_str().unwrap());
+    let mut g = Guest::connect(&socket, true);
+    g.wait = std::time::Duration::from_secs(60);
+    let len = 8u32 << 20;
+    let data = pattern(11, len as usize);
+    g.write(0, &data);
+    // Warm: one alone, then the peak from here.
+    assert!(g.read(0, len) == data);
+    peak_rss(svc.pid(), true);
+    let before = peak_rss(svc.pid(), false);
+    let written = g.read_together(32, 0, len);
+    assert_eq!(written, vec![len + 1; 32], "every read completes whole");
+    let grew = peak_rss(svc.pid(), false).saturating_sub(before);
+    eprintln!("peak grew {} MiB", grew >> 20);
+    assert!(
+        grew < 192 << 20,
+        "peak memory grew {} MiB for 256 MiB of reads in flight",
+        grew >> 20
+    );
+    assert!(g.read(0, len) == data, "and the disk goes on");
+    drop(g);
+    svc.stop();
+}
+
 /// D293: a disk attached with `poll` takes requests its guest makes
 /// available without notifying, while busy and just after; one without
 /// waits for the notification. The choice is listed and kept across a
