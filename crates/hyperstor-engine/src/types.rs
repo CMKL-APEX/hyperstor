@@ -211,6 +211,9 @@ pub enum EngineError {
     Checksum { lblock: u64 },
     #[error("unaligned read")]
     Unaligned,
+    /// A read longer than [`crate::shard::MAX_READ`].
+    #[error("read of {0} bytes is longer than one read may be")]
+    TooLong(u64),
     #[error("checkpoint needs more space than is free")]
     NoSpace,
 }

@@ -162,13 +162,20 @@ impl Client {
             None => v.layers(),
         };
         // A copy run again finds its volume: emptied, then filled again.
+        // A copy keeps its source's tenant (D258), as a clone does.
         match self.volume(new_id).await? {
-            Some(n) if n.pool == pool && n.size == v.size && n.lineage == new_id => {
+            Some(n)
+                if n.pool == pool
+                    && n.size == v.size
+                    && n.lineage == new_id
+                    && n.tenant == v.tenant =>
+            {
                 self.drop_data(pool, new_id, n.size, &[0]).await?;
             }
             Some(_) => return Err(ClientError::VolumeExists(new_id)),
             None => {
-                self.create_volume(pool, v.size, Some(new_id), name).await?;
+                self.create_volume_for(pool, v.size, Some(new_id), name, v.tenant)
+                    .await?;
             }
         }
         let r = async {

@@ -11,6 +11,7 @@
 //! in the end ([`S3::clean`]).
 
 pub mod chunked;
+mod conn;
 pub mod dates;
 pub mod gateway;
 pub mod keys;

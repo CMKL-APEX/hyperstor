@@ -56,13 +56,14 @@ use hyperstor_api::proto::hyperstor::v1 as pb;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--proxy-ca FILE] [--trusted-proxies CIDR,...] [--proxy-only] [--ui DIR]";
 
 mod audit_ship;
 mod conn;
 mod front;
+mod limits;
 mod members;
 mod oidc;
 mod people;
@@ -107,6 +108,10 @@ struct Login {
     /// An identity provider.
     oidc: Option<oidc::Oidc>,
     engine: glidex_auth::cedar::Engine<policy::Hyperstor>,
+    /// Failed password logins per client address.
+    failures: limits::Attempts,
+    /// Logins begun with the identity provider per client address.
+    starts: limits::Attempts,
 }
 
 struct State {
@@ -285,6 +290,16 @@ fn main() {
             authd,
             oidc,
             engine: policy::engine(),
+            failures: limits::Attempts::new(
+                limits::LOGIN_FAILURES,
+                limits::LOGIN_WINDOW,
+                limits::ADDRESSES,
+            ),
+            starts: limits::Attempts::new(
+                limits::OIDC_STARTS,
+                limits::OIDC_WINDOW,
+                limits::ADDRESSES,
+            ),
         });
         let state = Arc::new(State {
             members,
@@ -557,15 +572,41 @@ fn audit(principal: &str, op: &str, target: &str, result: &str) {
     let t = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    // The time as a number of seconds, as the map service writes it.
-    let line = serde_json::json!({
-        "audit": 1, "time": t.as_millis() as f64 / 1000.0,
-        "principal": principal, "op": op, "target": target, "result": result,
-    })
-    .to_string();
+    let line = audit_line(t.as_millis() as f64 / 1000.0, principal, op, target, result);
     eprintln!("{line}");
     // And into the cluster's audit log in .meta (D112).
     audit_ship::push(line);
+}
+
+/// An audit record's line, its fields bounded by [`field`] so that a line
+/// always fits the map service's 4096 bytes (`audit_log::append`); the
+/// time as a number of seconds, as the map service writes it.
+fn audit_line(time: f64, principal: &str, op: &str, target: &str, result: &str) -> String {
+    serde_json::json!({
+        "audit": 1, "time": time,
+        "principal": field(principal, 256), "op": field(op, 128),
+        "target": field(target, 512), "result": field(result, 512),
+    })
+    .to_string()
+}
+
+/// `s` with control characters as `?`, cut to at most `max` bytes on a
+/// character boundary, a cut one ending in `…`.
+fn field(s: &str, max: usize) -> String {
+    const MORE: &str = "…";
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_control() { '?' } else { c })
+            .collect()
+    };
+    if s.len() <= max {
+        return clean(s);
+    }
+    let mut end = max - MORE.len();
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    clean(&s[..end]) + MORE
 }
 
 /// Whether `host` (a `Host` header) names this machine's loopback, or one
@@ -919,7 +960,18 @@ fn people_error(e: people::Error) -> Resp {
         people::Error::NotFound => error(404, "not_found", "not found"),
         people::Error::Exists => error(409, "already_exists", "already exists"),
         people::Error::Unavailable(m) => error(503, "unavailable", &m),
+        people::Error::Busy => too_many(Duration::from_secs(60), &people::Error::Busy.to_string()),
     }
+}
+
+/// 429, with how long to wait in `Retry-After`.
+fn too_many(wait: Duration, message: &str) -> Resp {
+    let mut r = error(429, "rate_limited", message);
+    r.headers_mut().insert(
+        http::header::RETRY_AFTER,
+        http::HeaderValue::from(wait.as_secs().max(1)),
+    );
+    r
 }
 
 /// Checks `action` for `p`: `Err` with the response to send if refused.
@@ -1124,12 +1176,11 @@ async fn oidc_start(state: &State, l: &Login, req: Req) -> Resp {
     // Kept in the map service, so that any mgmt behind the same name
     // finishes it (I310).
     let kept = match begun {
-        Ok((s, p)) => l
-            .people
-            .keep_login(&p)
-            .await
-            .map(|()| s)
-            .map_err(|e| e.to_string()),
+        Ok((s, p)) => match l.people.keep_login(&p).await {
+            Ok(()) => Ok(s),
+            Err(people::Error::Busy) => return people_error(people::Error::Busy),
+            Err(e) => Err(e.to_string()),
+        },
         Err(e) => Err(e),
     };
     match kept {
@@ -1333,8 +1384,27 @@ async fn with_login(
             let Ok(r) = serde_json::from_slice::<LoginReq>(&body) else {
                 return error(400, "invalid_argument", "expected {user, password}");
             };
-            let who = format!("user:{} from {}", r.user, peer.ip());
+            // An address that failed too often waits, before the PAM
+            // helper is asked (its own limit is everyone's).
+            if let Some(wait) = l.failures.wait(peer.ip(), Instant::now()) {
+                return too_many(wait, "too many failed attempts; try again later");
+            }
+            // Only a name of a user name's shape is written down: another
+            // is no one's.
+            let who = if people::valid_name(&r.user) {
+                format!("user:{} from {}", r.user, peer.ip())
+            } else {
+                format!("user:<invalid> from {}", peer.ip())
+            };
+            if !people::valid_name(&r.user) {
+                l.failures.note(peer.ip(), Instant::now());
+                audit(&who, "Login", "mgmt", "refused");
+                return error(401, "login_failed", "wrong user name or password");
+            }
             if let Err(resp) = check_password(l, &r.user, &r.password).await {
+                if resp.status() == http::StatusCode::UNAUTHORIZED {
+                    l.failures.note(peer.ip(), Instant::now());
+                }
                 audit(&who, "Login", "mgmt", "refused");
                 return resp;
             }
@@ -1356,6 +1426,10 @@ async fn with_login(
             };
         }
         (&http::Method::POST, "/auth/oidc/start") => {
+            if let Some(wait) = l.starts.wait(peer.ip(), Instant::now()) {
+                return too_many(wait, "too many logins begun; try again later");
+            }
+            l.starts.note(peer.ip(), Instant::now());
             return oidc_start(state, l, req).await;
         }
         (&http::Method::GET, oidc::CALLBACK) => {
@@ -1665,6 +1739,22 @@ pub fn parse_metrics(text: &str) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_fields_are_bounded_and_plain() {
+        assert_eq!(field("ok, pam", 256), "ok, pam");
+        assert_eq!(field("a\nb\u{1b}c", 256), "a?b?c");
+        let cut = field(&"é".repeat(300), 256);
+        assert!(cut.len() <= 256 && cut.ends_with('…'), "{cut}");
+        assert!(cut.trim_end_matches('…').chars().all(|c| c == 'é'));
+        // The worst case, every byte one escaped in JSON, still fits the
+        // map service's 4096 bytes.
+        let q = "\"".repeat(5000);
+        let line = audit_line(1e12, &q, &q, &q, &q);
+        assert!(line.len() <= 4096, "{}", line.len());
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(v["principal"].as_str().unwrap().ends_with('…'));
+    }
 
     #[test]
     fn the_build_names_its_commit_and_release() {

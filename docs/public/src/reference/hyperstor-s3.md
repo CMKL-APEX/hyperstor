@@ -61,7 +61,10 @@ Path-style requests (`https://host/bucket/key`) and, with `--domain`,
 virtual-hosted ones (`https://bucket.s3.example.com/key`), signed with
 Signature Version 4 in the `Authorization` header or in a presigned URL
 (up to 7 days); clients must use version 4. Requests more than 15
-minutes from the gateway's clock are refused. Either way the bucket is
+minutes from the gateway's clock are refused. As in S3, every `x-amz-*`
+header a request carries must be among those it signs (presigned URLs
+included), except `x-amz-content-sha256`; otherwise the answer is 403
+`AccessDenied`. Either way the bucket is
 the signing key's tenant's: no host name or path names another tenant's.
 
 | Request | Notes |

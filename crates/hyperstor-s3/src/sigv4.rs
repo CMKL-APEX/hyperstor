@@ -31,6 +31,8 @@ pub enum AuthError {
     Skewed,
     Expired,
     Unsupported(&'static str),
+    /// An `x-amz-*` header the signature doesn't cover ([`unsigned_header`]).
+    NotSigned(String),
 }
 
 /// What the body's hash in the signature says.
@@ -296,7 +298,35 @@ pub fn verify(
     // In constant time.
     hmac::verify(&key, string_to_sign(s, &canonical).as_bytes(), &got)
         .map_err(|_| AuthError::Mismatch)?;
+    if let Some(h) = unsigned_header(s, headers) {
+        return Err(AuthError::NotSigned(h));
+    }
     Ok(key)
+}
+
+/// The first `x-amz-*` header of the request that its signature doesn't
+/// cover, which S3 refuses ("There were headers present in the request
+/// which were not signed"), in a signed header and a presigned URL
+/// alike: such headers change what a request does (a copy's source, an
+/// object's metadata, its checksum), so they must be signed with it.
+///
+/// - `x-amz-content-sha256` needn't be listed: its value is the
+///   canonical request's last line, so it is signed anyway.
+/// - Nor `x-amz-date` in a signed header, whose value is in the string
+///   to sign. A presigned URL's time is its `X-Amz-Date` parameter, so
+///   there the header is refused unless signed.
+/// - `x-amzn-*` (a trace id, which SDKs never sign) isn't `x-amz-*`.
+pub fn unsigned_header(s: &Signed, headers: &http::HeaderMap) -> Option<String> {
+    headers
+        .keys()
+        .map(http::HeaderName::as_str)
+        .find(|n| {
+            n.starts_with("x-amz-")
+                && *n != "x-amz-content-sha256"
+                && !(*n == "x-amz-date" && s.expires.is_none())
+                && !s.signed_headers.iter().any(|h| h == n)
+        })
+        .map(str::to_string)
 }
 
 /// The chain of an `aws-chunked` body's signatures: each chunk's signs
@@ -592,6 +622,93 @@ mod tests {
             check("GET", "/test.txt", &long, &h, AT),
             Err(AuthError::Malformed("X-Amz-Expires"))
         );
+    }
+
+    /// `h` with an `authorization` header that signs `signed` of its
+    /// headers, as a client would.
+    fn signed_by(h: &[(&str, &str)], signed: &str) -> http::HeaderMap {
+        let mut m = headers(h);
+        m.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_str(&auth(signed, "00")).unwrap(),
+        );
+        let s = parse("", &m).unwrap();
+        let canonical = canonical_request(&s, "PUT", "/b/k", "", &m).unwrap();
+        let key = signing_key(SECRET, &s.date, &s.region);
+        let sig = hex(hmac::sign(&key, string_to_sign(&s, &canonical).as_bytes()).as_ref());
+        m.insert(
+            http::header::AUTHORIZATION,
+            http::HeaderValue::from_str(&auth(signed, &sig)).unwrap(),
+        );
+        m
+    }
+
+    #[test]
+    fn x_amz_headers_must_be_signed_as_s3_requires() {
+        let base = [
+            ("host", "examplebucket.s3.amazonaws.com"),
+            ("x-amz-content-sha256", "UNSIGNED-PAYLOAD"),
+            ("x-amz-date", "20130524T000000Z"),
+            ("x-amz-copy-source", "/b/other"),
+            ("x-amz-meta-a", "1"),
+            // Not x-amz-: SDKs never sign it.
+            ("x-amzn-trace-id", "Root=1"),
+            ("content-type", "text/plain"),
+        ];
+        let put = |h: &http::HeaderMap| check("PUT", "/b/k", "", h, AT);
+        // Every x-amz- header signed, as SDKs sign them: good.
+        let all = "host;x-amz-content-sha256;x-amz-copy-source;x-amz-date;x-amz-meta-a";
+        assert!(put(&signed_by(&base, all)).is_ok());
+        // x-amz-content-sha256 and x-amz-date are signed whether listed or
+        // not: the first is the canonical request's last line, the second
+        // in the string to sign.
+        let mut h = signed_by(&base, "host;x-amz-copy-source;x-amz-meta-a");
+        assert!(put(&h).is_ok());
+        h.insert("x-amz-date", "20130524T000001Z".parse().unwrap());
+        assert_eq!(put(&h), Err(AuthError::Mismatch));
+        // One left out, or added after signing: refused, though the
+        // signature matches.
+        let h = signed_by(&base, "host;x-amz-copy-source;x-amz-date");
+        assert_eq!(put(&h), Err(AuthError::NotSigned("x-amz-meta-a".into())));
+        let mut h = signed_by(&base[..3], "host;x-amz-date");
+        assert!(put(&h).is_ok());
+        h.insert("x-amz-metadata-directive", "REPLACE".parse().unwrap());
+        assert_eq!(
+            put(&h),
+            Err(AuthError::NotSigned("x-amz-metadata-directive".into()))
+        );
+    }
+
+    #[test]
+    fn a_presigned_url_takes_no_x_amz_header_it_doesnt_sign() {
+        // AWS's example, which signs only host.
+        let q = "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20130524T000000Z&X-Amz-Expires=86400&X-Amz-SignedHeaders=host&X-Amz-Signature=aeeed9bbccd4d02ee5c0109b86d86835f995330da4c265957d157751f604d404";
+        let get = |extra: &[(&str, &str)]| {
+            let mut h = vec![("host", "examplebucket.s3.amazonaws.com")];
+            h.extend_from_slice(extra);
+            check("GET", "/test.txt", q, &headers(&h), AT)
+        };
+        // Headers S3 doesn't ask to be signed still pass.
+        assert!(
+            get(&[
+                ("range", "bytes=0-1"),
+                ("if-none-match", "\"x\""),
+                ("x-amzn-trace-id", "Root=1"),
+            ])
+            .is_ok()
+        );
+        for h in [
+            "x-amz-copy-source",
+            "x-amz-copy-source-range",
+            "x-amz-metadata-directive",
+            "x-amz-meta-a",
+            "x-amz-checksum-crc32",
+            "x-amz-tagging",
+            // The URL's time is its query's.
+            "x-amz-date",
+        ] {
+            assert_eq!(get(&[(h, "1")]), Err(AuthError::NotSigned(h.into())), "{h}");
+        }
     }
 
     #[test]

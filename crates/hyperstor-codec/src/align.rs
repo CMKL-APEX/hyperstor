@@ -65,9 +65,14 @@ impl AlignedBuf {
     }
 
     /// A buffer of `len` bytes, rounded up to whole blocks, from `get`.
+    /// Callers bound their lengths well below the address space (a read
+    /// is at most a frame's payload, or an object); a length that can't
+    /// be rounded up or laid out is a bug, and stops here rather than
+    /// wrapping to a smaller buffer.
     fn with(len: usize, get: impl FnOnce(Layout) -> *mut u8) -> Self {
         let len = round_up(len.max(BLOCK));
-        let layout = Layout::from_size_align(len, BLOCK).expect("valid layout");
+        let layout = Layout::from_size_align(len, BLOCK)
+            .unwrap_or_else(|_| panic!("a buffer of {len} bytes can't be laid out"));
         let p = get(layout);
         let ptr = NonNull::new(p).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
         Self { ptr, len }
@@ -119,9 +124,16 @@ impl std::fmt::Debug for AlignedBuf {
     }
 }
 
-/// Rounds `n` up to a multiple of [`BLOCK`].
+/// Rounds `n` up to a multiple of [`BLOCK`], or none if that doesn't fit
+/// a `usize`.
+pub fn checked_round_up(n: usize) -> Option<usize> {
+    n.checked_next_multiple_of(BLOCK)
+}
+
+/// Rounds `n` up to a multiple of [`BLOCK`]. Panics if that doesn't fit a
+/// `usize`, rather than wrapping to a smaller length.
 pub fn round_up(n: usize) -> usize {
-    n.div_ceil(BLOCK) * BLOCK
+    checked_round_up(n).unwrap_or_else(|| panic!("{n} bytes can't be rounded up to whole blocks"))
 }
 
 #[cfg(test)]
@@ -137,6 +149,25 @@ mod tests {
         b[8191] = 7;
         let c = AlignedBuf::from_slice(&b[..10]);
         assert_eq!(c.len(), BLOCK);
+    }
+
+    /// Rounding up is exact to the last whole block below `usize::MAX`,
+    /// and a length past it is refused rather than wrapped to zero.
+    #[test]
+    fn rounding_up_never_wraps() {
+        assert_eq!(checked_round_up(0), Some(0));
+        assert_eq!(checked_round_up(1), Some(BLOCK));
+        assert_eq!(checked_round_up(BLOCK), Some(BLOCK));
+        let last = usize::MAX - (BLOCK - 1);
+        assert_eq!(checked_round_up(last), Some(last));
+        assert_eq!(checked_round_up(last - 1), Some(last));
+        assert_eq!(checked_round_up(last + 1), None);
+        assert_eq!(checked_round_up(usize::MAX), None);
+        assert!(std::panic::catch_unwind(|| round_up(usize::MAX)).is_err());
+        // A length that rounds up but can't be laid out stops before any
+        // allocation.
+        assert!(std::panic::catch_unwind(|| AlignedBuf::zeroed(last)).is_err());
+        assert!(std::panic::catch_unwind(|| AlignedBuf::zeroed(usize::MAX)).is_err());
     }
 
     /// I327: a copy is aligned and holds the data, then zeros to the end

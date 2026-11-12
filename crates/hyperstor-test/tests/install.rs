@@ -123,6 +123,42 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
     );
 }
 
+/// Keys are readable by their owner (and the group that needs them)
+/// only, the pki directory lists nothing to others, nothing is left
+/// beside, and the daily renewal runs with a closed umask. A pki
+/// directory an earlier install made 0755 is narrowed on the next run.
+#[test]
+fn key_files_and_the_pki_directory_have_their_final_modes() {
+    use std::os::unix::fs::PermissionsExt;
+    let _one = one_at_a_time();
+    let s = Scratch::new("key-modes");
+    let root = s.path("root");
+    install(&root, &["--all-in-one", "--nodes", "1", "--size-gib", "1"]);
+    let pki = root.join("etc/hyperstor/pki");
+    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    let check = || {
+        assert_eq!(mode(&pki) & 0o007, 0o001, "pki directory {:o}", mode(&pki));
+        let mut keys = 0;
+        for e in std::fs::read_dir(&pki).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            assert!(!name.ends_with(".hs-new"), "{name} left beside");
+            if name.ends_with(".key") {
+                keys += 1;
+                let m = mode(&e.path());
+                assert!(m == 0o600 || m == 0o640, "{name} is {m:o}");
+            }
+        }
+        assert!(keys >= 4, "{keys} keys");
+    };
+    check();
+    let renew =
+        std::fs::read_to_string(root.join("etc/systemd/system/hyperstor-renew.service")).unwrap();
+    assert!(renew.contains("\nUMask=0077\n"), "{renew}");
+    std::fs::set_permissions(&pki, std::fs::Permissions::from_mode(0o755)).unwrap();
+    install(&root, &[]);
+    check();
+}
+
 /// Bad input is refused with a usage message, and nothing is written.
 #[test]
 fn bad_flags_are_refused() {
