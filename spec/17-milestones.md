@@ -25,7 +25,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS12 | The S3 gateway over HTTP (14-s3.md §14.1, 14-s3.md §14.2) on replicated pools (D191–D199), with access keys from mgmt or glidex and Cedar. EC data pools once HS7 lands. | HS11 |
 | HS13 | S3 over RDMA, with DC queue pairs (14-s3.md §14.3), tested against cuObject and hipObject clients. | HS6, HS12 |
 | HS14+ | The distributed filesystem, per 00-filesystem.md. | HS11b, HS13 |
-| HS15 | Tenancy (20-tenants.md §24): tenant ids on lineages, buckets, filesystems and ranges; per-`(pool, tenant)` counters and quotas; two-level fair share in the reactors (D62); the glidex project mapping. | HS4, HS10b, AD3 |
+| HS15 | Tenancy (20-tenants.md §24): tenant ids on lineages, buckets, filesystems and ranges; projects under tenants, named per volume and bucket, and moved between tenants (§24.9, D299–D304); per-`(pool, project)` counters and quotas with caps per tenant; two-level fair share in the reactors (D62); the glidex mapping of directories, tenants and projects. | HS4, HS10b, AD3 |
 | HS16 | Sites and replication (21-federation.md §25.2, §25.3): `site` as a failure domain with the preflight limit (G19); `hyperstor-sync` for snapshots and S3 objects, with policies, lag health and cross-cluster trust. | HS4, HS12, AD3 |
 | HS17 | The global namespace (21-federation.md §25.4–§25.6): range homes, read-through replicas, forwarded writes, the partition queue with its allowlist (D66), cache-pool sources (D67), the federated view in `hyperstor-mgmt` and glidex (D68); G20. | HS11, HS16 |
 | HS18 | Pools and devices at run time (24-pools-and-devices.md §27, D163–D176), on the branch `feature/elastic-pools` until its required stages are in: devices added to running nodes, with the installer's `--device`, explicit ids and the format rule (stage 1); classes and class sets (2); pools made, changed and deleted (3); devices removed (4); PG splits and their autoscaler (5). | HS2, AD0 |
@@ -34,7 +34,8 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | AD1 | `hyperstor-install` with `check`, join tokens (D57) and `--all-in-one`. | AD0 |
 | AD2 | `hyperstor-mgmt` read-only (D50): health, map, metrics, watch fan-out, UI pages without actions; G17. Needs `glidex-auth` extracted (D52, a glidex change). | AD0 |
 | AD3 | UI and CLI writes, Cedar roles, step-up, trash (D54), audit, operations. | AD2 |
-| AD4 | glidex's Storage section and `storage-admin` role (a glidex change). | AD3, HS3 |
+| AD4 | glidex: links from each hyperstor datastore to its mgmt and usage per project on the tenant's page (19-administration.md §23.12, D310; a glidex change). | AD5 |
+| AD5 | People from glidex directories (19-administration.md §23.12, D305–D311): `glidex-trust` extracted (a glidex change), offers, redeem and the feed, logins through a directory with its passkeys and IdPs, grants from the feed, `hyperstorctl` logins, the account picker, reports. | AD3, HS15's records |
 | — | A libfabric transport, when a site has UET, EFA or Slingshot NICs with production drivers (D30). Queued, no milestone yet. | HS6 |
 
 ## 22. Questions

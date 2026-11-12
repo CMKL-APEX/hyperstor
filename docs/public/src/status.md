@@ -37,6 +37,7 @@ covered by tests that run on every change.
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
 | AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
+| AD5: People from glidex directories | Planned |
 | AD4: Storage administration in glidex | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -287,3 +288,9 @@ covered by tests that run on every change.
 | Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean | Done |
 | The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns | Done |
 | Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hyperstorctl cert renew | Done |
+
+## AD5: People from glidex directories
+
+| Feature | Status |
+|---|---|
+| mgmt trusts glidex directories: offers, redeem, the feed replica, logins through a directory, grants from the feed | Planned |

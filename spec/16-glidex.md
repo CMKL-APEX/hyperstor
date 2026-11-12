@@ -51,8 +51,9 @@ PR #114) and adds a `hyperstor` driver behind the `StorageDriver` trait
   UI's shared components.
 - **web-ui.md, security.md §7.3:** a Storage section and a
   `storage-admin` role (19-administration.md §23.7, AD4).
-- **tenancy.md:** the project-to-tenant-id mapping and tenant weights
-  (D61, D62, 20-tenants.md §24); sites or regions of a glidex deployment
+- **19-tenancy.md:** directories as realms, tenants as tenants and
+  projects as projects, a directory trusted by `hyperstor-mgmt` as by a
+  cluster, and tenant weights (D62, D299–D304, 20-tenants.md §24.9); sites or regions of a glidex deployment
   as the federation (D68, 21-federation.md §25.6).
 - **tenancy.md, credentials.md:** S3 access keys per project, and
   Cedar actions for buckets and objects (14-s3.md §14.2).

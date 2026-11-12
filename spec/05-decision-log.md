@@ -1568,3 +1568,22 @@ out of cache on every CPU.
 |---|---|---|---|
 | 260 | Which library computes CRC32C: `crc-fast` where the CPU has AVX-512 VPCLMULQDQ or Arm's PMULL, `crc32c` elsewhere (recommended); `crc32c` only; or `crc-fast` everywhere | By CPU, in v0.0.8 | D298 |
 
+## Tenants, projects and glidex's directories (2026-11-12)
+
+Asked how hyperstor-mgmt and the web UI could take glidex's directories,
+logins (passkeys, OIDC) and tenants. Hyperstor's tenant was only a
+number on lineages, buckets and keys, and D61 planned to map glidex's
+projects to it, which would have made "tenant" name two levels. The
+owner proposed a project under the tenant instead, glidex's tenants as
+hyperstor's, and realms as directories, for their gateways; asked the
+remaining questions with a recommendation each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 261 | The levels: realm ↔ directory, tenant ↔ tenant, a new project ↔ project | The owner's proposal | D299, D300 |
+| 262 | Who manages a realm's resources under glidex: the operator, unless it grants `role@realm` (recommended); or the directory's owners | The operator | D301 |
+| 263 | S3 gateways: one per realm, so per directory, several realms per gateway later (recommended); or several realms per gateway now | One per realm | D302 |
+| 264 | Project ids: unique in the cluster (recommended); or per tenant | Unique in the cluster | D300 |
+| 265 | Whether a project can move to another tenant: no, as glidex today (recommended); or yes | Yes: design for it | D303 |
+| 266 | Whether the operator tenant's storage is in its directory's realm (recommended); or a realm of its own | Its directory's realm | D304 |
+
