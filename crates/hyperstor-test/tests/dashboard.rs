@@ -59,6 +59,15 @@ fn people_log_in_and_do_what_their_roles_allow() {
         "{}",
         ann.set_cookie
     );
+    // `__Host-hs_session` and `Secure` over HTTPS, `hs_session` without
+    // `Secure` over plain HTTP (I372).
+    let name = c.session_cookie_name();
+    assert!(
+        ann.set_cookie.starts_with(&format!("{name}="))
+            && ann.set_cookie.contains("; Secure") == name.starts_with("__Host-"),
+        "{}",
+        ann.set_cookie
+    );
     assert_eq!(c.login("bob", Some(&code)).unwrap_err().0, 400);
     let (_, _, m) = c.dashboard("GET", "/auth/methods", &host);
     assert_eq!(json(&m)["claim_open"], false, "{m}");
