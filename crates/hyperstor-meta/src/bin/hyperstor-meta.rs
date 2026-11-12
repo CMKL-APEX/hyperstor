@@ -315,6 +315,9 @@ fn main() {
         b
     });
     let restore = restore.or(forced.map(|(_, b)| b));
+    // A restore, or a forced start: the store is empty until the group's
+    // first commit writes the backup (I111).
+    let restoring = restore.is_some();
     let map = match &restore {
         Some(b) => b.map().unwrap_or_else(|e| {
             eprintln!("--restore: {e}");
@@ -472,12 +475,25 @@ fn main() {
                 settings.clone(),
                 Duration::from_secs(3600),
             ));
-            eprintln!(
-                "hyperstor-meta: cluster API on {}",
-                api.local_addr().expect("address")
-            );
+            // Restored, the API opens once the backup is in the store
+            // (#344): until then the store has no tokens, no revocations
+            // and no settings, and health would answer from the backup's
+            // map alone. The group's first commit writes it, at once.
+            // Its own task: the map port serves storage nodes meanwhile.
             let store = replica.as_ref().map(|r| r.db.clone());
-            hyperstor_meta::api::spawn(api, socket, tx, addr, tls, signing, store, every);
+            hyperstor_reactor::spawn(async move {
+                if restoring && let Some(db) = &store {
+                    eprintln!("hyperstor-meta: the cluster API opens once the backup is written");
+                    while !hyperstor_meta::store::has_map(db).unwrap_or(false) {
+                        hyperstor_reactor::time::sleep(Duration::from_millis(20)).await;
+                    }
+                }
+                eprintln!(
+                    "hyperstor-meta: cluster API on {}",
+                    api.local_addr().expect("address")
+                );
+                hyperstor_meta::api::spawn(api, socket, tx, addr, tls, signing, store, every);
+            });
         }
         hyperstor_meta::serve(l, meta).await
     });

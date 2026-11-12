@@ -135,7 +135,10 @@ sudo rm /etc/hyperstor/meta-once.env
 ```
 
 `/etc/hyperstor/meta-once.env` holds options for one start; the restored
-store stays in the data directory, and the next start needs none.
+store stays in the data directory, and the next start needs none. The
+cluster API opens only once the backup is written into the store, so
+`hyperstorctl status --wait` answers then, never from a half-restored
+store.
 It is a map service of one; with several
 members, the others join it again. Changes made after the backup was
 taken are lost: hosts joined since then join again.
