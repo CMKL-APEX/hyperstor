@@ -1898,5 +1898,14 @@ tests = [
 ]
 
 [[milestone]]
+id = "AD5"
+title = "People from glidex directories"
+
+[[milestone.item]]
+what = "mgmt trusts glidex directories: offers, redeem, the feed replica, logins through a directory, grants from the feed"
+spec = ["19-administration.md §23.12", "D305", "D306", "D307", "D308", "D309", "D310", "D311"]
+status = "planned"
+
+[[milestone]]
 id = "AD4"
 title = "Storage administration in glidex"

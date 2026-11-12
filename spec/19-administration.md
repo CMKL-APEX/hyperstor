@@ -343,9 +343,11 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   the CLI.
 - **Charts** come from mgmt's sampled counters (1 s to 5 s, kept 1 h).
   Grafana dashboards ship as JSON for longer history.
-- **Under glidex**, there is no hyperstor UI. glidex's UI gets a
-  Storage section (pools, health, nodes) for a new `storage-admin`
-  role; tenants see their volumes as glidex disks (16-glidex.md §17, §20).
+- **Under glidex**, mgmt runs as well (D305, amending D50): people sign
+  in at their glidex directory, with its passkeys or IdP, and their
+  grants come from its feed (§23.12). glidex's UI links each hyperstor
+  datastore here and shows usage per project; tenants see their volumes
+  as glidex disks (16-glidex.md §17, §20).
 
 ### 23.8 Identities and certificates
 
@@ -398,7 +400,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 
 ### 23.9 People: authentication and authorization
 
-#### 23.9.1 Authentication (standalone)
+#### 23.9.1 Authentication (standalone; from glidex directories, §23.12)
 
 Reused from glidex (D52), from a crate extracted into the glidex
 repository (`glidex-auth`) and taken as a pinned git dependency, as
@@ -515,7 +517,133 @@ evidence.
 | AD1 | `hyperstor-install` with `check`, join tokens, `--all-in-one` | AD0 |
 | AD2 | `hyperstor-mgmt` read-only: health, map, metrics, watch fan-out; UI pages without actions | AD0; `glidex-auth` extracted (a glidex change) |
 | AD3 | UI and CLI writes, Cedar roles, step-up, trash, audit, operations | AD2 |
-| AD4 | glidex: the Storage section and `storage-admin` role in glidex's UI | AD3, HS3 |
+| AD4 | glidex: links from each hyperstor datastore to its mgmt and usage per project on the tenant's page (D310; was a Storage section and `storage-admin` role in glidex's UI) | AD5 |
+| AD5 | People from glidex directories (§23.12): `glidex-trust` extracted, offers, redeem and the feed, logins through a directory, grants from the feed, `hyperstorctl` logins, the account picker, reports | AD3, HS15's records (20-tenants.md §24.9) |
+
+### 23.12 People from glidex directories (D305–D311)
+
+Drafted 2026-11-12, open for review; not built. With realms as
+directories, tenants as tenants and projects as projects (20-tenants.md
+§24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
+directories the way a glidex cluster does (glidex 19-tenancy.md §7,
+§12): a person signs in once at their organization's directory, with
+its passkeys, IdP or password, and reaches glidex and hyperstor alike.
+Standalone logins (§23.9.1) stay.
+
+**mgmt runs under glidex too (D305; amends D50 and §23.7).** It is
+hyperstor's human edge whether or not glidex is installed. Why: one
+hyperstor cluster may serve several glidex clusters (glidex storage.md
+S24), S3 clients and bare-metal hosts, so no one glidex UI can be its
+administration; D50's "glidex's control plane is the human edge"
+assumed one glidex per hyperstor.
+
+**The trust (D306).** To a directory, a hyperstor cluster is one more
+cluster, through glidex's own handshake and feed:
+
+| Step | glidex (19-tenancy.md) | hyperstor |
+|---|---|---|
+| Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the installer, kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
+| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate |
+| Redeem | the tenant's admin runs `gxctl tenant opt-in --offer` at the directory (D65) | unchanged: the directory redeems at mgmt, which pins the directory's keys; the first redeemed offer of a directory makes its realm (or links the one named) |
+| Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica as rows of the map service's store, where people's records are now (D98); every mgmt reads them |
+| Reports | admission, cap, counts of VMs, disks, networks (D70) | admission, caps per pool, counts of volumes, buckets and bytes per project; glidex shows them on the tenant's page (a glidex change) |
+| Ending | either side ends it (D66) | the same; the realm and its tenants stay, unlinked, until an operator removes them |
+
+The operator's own directory is trusted the same way when the operator
+takes the cluster over (`hyperstorctl cluster set-operator`, as glidex's
+`gxctl cluster set-operator`, §12.1), so operator staff sign in with
+their organization's IdP. The cluster side of all this is in
+`glidex-control-plane` today; it moves into a crate, `glidex-trust`
+(relying party: the cluster key, signed peer assertions, redeem, feed
+client, replica tables' shape, token checks), as `glidex-auth` did
+(D52). Why one handshake: organizations already trust their glidex
+clusters this way, and a second mechanism would be a second thing to
+audit and get wrong.
+
+**Logins (D307).**
+
+- **Browser:** mgmt is the directory's OIDC client `cluster:<hyperstor
+  cluster id>` (glidex D69). The login page offers "Sign in with
+  `<directory>`" for each trusted directory, and an email field that
+  finds the directory by its tenants' verified domains from the feed
+  (glidex D61), then the local methods. Authorization Code with PKCE;
+  the login's state in the map service as now (D278). mgmt checks the
+  ID token against the JWKS of the directory's last feed, `aud`, the
+  user in the replica and enabled, and makes a session as now (§23.9.1),
+  bound to the directory and its `sid`.
+- **Passkeys and MFA** are the directory's: mgmt never handles WebAuthn.
+  `amr` says whether the login was multi-factor; step-up asks the
+  directory for a fresh login (`max_age`, `prompt=login`), so a passkey
+  answers it as a password does (glidex passkeys P5).
+- **CLI:** `hyperstorctl --mgmt URL` takes a directory's access token
+  (`aud` = this cluster, glidex D55), checked offline as for a session.
+  `hyperstorctl auth login --directory URL` gets one by the directory's
+  device grant and keeps its refresh token, as `gxctl auth login`;
+  `gxctl auth token --cluster ID` hands one over too. A glidex API token
+  (`gxt_`) that lists this cluster is accepted from its hash in the
+  feed (glidex §7.4).
+- **Logout** ends mgmt's session and tells the directory (glidex D72).
+- **Local logins stay** (PAM through `hyperstor-authd`, mgmt's own OIDC,
+  `hst_` tokens, the claim code): for a cluster without glidex, and for
+  break-glass when a directory is unreachable, as glidex keeps PAM and
+  host sockets on their cluster (glidex D23, §7.5).
+
+**Who may do what (D308).**
+
+| From | Grants | Kept |
+|---|---|---|
+| Members of the operator tenant | cluster-wide roles (`viewer` … `security-admin`) and `role@realm` | in mgmt, granted by a `security-admin`, to directory users and teams of the operator's directory only (a Cedar `forbid` for anyone else, as glidex D4) |
+| A glidex tenant's links | `tenant-admin` → `storage-admin@tenant` and `security-admin@tenant`; `tenant-auditor` → `viewer@tenant` with its tenant's audit | the feed: written at the directory, never in mgmt (glidex D12) |
+| A glidex project's links | `owner` and `editor` → `storage-admin@project`; `operator` → `operator@project`; `viewer` → `viewer@project` | the feed |
+| Local accounts | as now (§23.9.2) | mgmt |
+
+A directory user's grants come from the feed, so a person removed or
+disabled at their IdP loses them as the feed arrives (glidex D20). Step-up
+actions (§23.9.2) stay the same list.
+
+**Partitions (D309)**, as glidex D13: cut off from a directory, mgmt
+keeps that directory's sessions until they end and its access tokens
+until they expire; past the directory's `max_staleness` (default 1 h,
+the operator's) it refuses them, since a revocation may be missing.
+Local logins and other directories' people keep working; storage never
+depends on it.
+
+**One UI (D310).** mgmt's UI already uses glidex's components (D97). It
+gains glidex's account picker (one account per directory in one browser,
+glidex D71) and a tenant and project picker beside the realm picker;
+people, teams, projects and their roles link to the directory's own
+pages, since those are written there. glidex's UI links each hyperstor
+datastore to its mgmt (one sign-on makes it one step) and shows the
+reports' usage per project on the tenant's page. AD4's Storage section
+in glidex becomes those links and that usage; administering storage
+stays in mgmt's UI. Why: one UI for hyperstor, whoever uses it, instead
+of a second copy of its pages in glidex.
+
+**glidex's datastore driver (D311).** A glidex cluster still acts as its
+own `mgmt` identity (glidex storage.md S20), now naming each disk's
+project. The operator binds that identity to the realms it may act in,
+as hosts and gateways are bound (D251, I370); the map service refuses a
+project outside them. Why: one glidex cluster can't make volumes in
+another directory's projects, whatever it names.
+
+**Changes in glidex** (glidex pull requests): the `glidex-trust` crate;
+reports with storage counts, shown on the tenant's page; links from a
+hyperstor datastore to its mgmt; `gxctl auth token --cluster` if it
+isn't there. Nothing changes in directories themselves: a hyperstor
+cluster is a cluster to them.
+
+**Tests:** `glidex-trust` gets a fake directory (issuer, JWKS, token
+endpoint, feed), as `glidex-tls` has a fake tailscaled; `hyperstor-test`
+signs in through it in a browser test and with `hyperstorctl`, checks
+grants from the feed, a disabled user, a partition past
+`max_staleness`, and a local login while the directory is down. One
+ignored test runs against a real glidex directory on a pilot host.
+
+**Order of work (AD5):** `glidex-trust` extracted (a glidex change);
+the cluster key, offers, redeem and the feed replica; browser logins
+through a directory; grants from the feed with `role@tenant` and
+`role@project` (with HS15's records); `hyperstorctl` logins; the
+account picker; reports; the driver's projects and identity binding.
 
 ## Decisions and host checks
 

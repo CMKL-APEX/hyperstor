@@ -14,7 +14,8 @@ and are open to review.
 ### 24.1 Goals
 
 - **Policy above, enforcement below.** Who a tenant is, and what its
-  people may do, is decided in glidex (projects, tenancy.md) or in
+  people may do, is decided in glidex (tenants and projects, glidex
+  19-tenancy.md, §24.9) or in
   `hyperstor-mgmt` (accounts, 19-administration.md §23.9). The cluster API
   and the data path only ever see tenant *ids*.
 - **No tenant lookup on the I/O path.** A reactor learns a request's
@@ -32,7 +33,7 @@ of every object:
 
 | Container | Where the tenant id is stored | Set when |
 |---|---|---|
-| Volume lineage | the lineage object in `.meta` (06-metadata.md §4.2); every volume and clone of the lineage inherits it | the first volume of the lineage is created; optional, 0 (none, realm `default`) by default (D258) |
+| Volume lineage | the lineage object in `.meta` (06-metadata.md §4.2); every volume and clone of the lineage inherits it. To be replaced by a project per volume, named in its header (§24.9, D300), with the lineage's tenant kept for volumes made before | the first volume of the lineage is created; optional, 0 (none, realm `default`) by default (D258) |
 | S3 bucket | the bucket record in `hyperstor-kv` (14-s3.md §14.1) | bucket creation |
 | Filesystem | the filesystem record in `hyperstor-kv` (00-filesystem.md F12) | filesystem creation |
 | KV range | the range's owning filesystem or bucket; ranges used directly by an application carry their own | range creation |
@@ -42,8 +43,9 @@ Why containers rather than the engine's object key (D34): the engine
 never needs the tenant to find or check an object, so putting it in
 every key would grow the index for nothing; the containers are where
 space is counted and access is decided anyway. A tenant id is a 32-bit
-number issued by meta; glidex maps its project ids to it (16-glidex.md
-§17).
+number issued by meta. Glidex's tenants map to hyperstor's tenants,
+and its projects to hyperstor's projects, a level below (§24.9, D299;
+this replaces D61's mapping of glidex projects to tenants).
 
 ### 24.3 Isolation
 
@@ -97,7 +99,7 @@ Each reactor's queueing (10-volumes.md §10.5) gains a level:
 1. **Class** first: `latency`, then `normal`, then `bulk` with its floor
    (D46).
 2. Within a class, **tenants** share by weight (default 1; set by the
-   operator, or by glidex from the project's plan).
+   operator, or by glidex from the tenant's plan).
 3. Within a tenant, **volumes** share by weight, as before.
 
 - QoS limits (IOPS and bandwidth with a burst) stay per volume and are
@@ -230,3 +232,176 @@ gains a realm level is open for the owner's review, with HS15.
 gateway came with D243 and D244, before S3 stage 4 (I288); host binding,
 realm-scoped administrators and the NFS side come with HS15 and the NFS
 work (22-nfs.md, still proposed).
+
+### 24.9 Projects, and glidex's directories and tenants (D299–D304)
+
+Proposed 2026-11-12 (05-decision-log.md points 261–266): the model and
+its mapping to glidex are the owner's choices; the transfer of a
+project (D303) and per-volume ownership (D300) are drafted for review.
+Not built. It amends D61's mapping (a glidex project was to be a
+hyperstor tenant) so that the same word means the same thing on both
+sides.
+
+**Three levels (D299).**
+
+| glidex (19-tenancy.md) | hyperstor | What it holds here |
+|---|---|---|
+| directory | **realm** (§24.8) | the pools it may use (D249), its S3 gateway, domain and certificate (D250), host bindings (D251) |
+| tenant | **tenant** | a bucket namespace (D243), S3 keys (D231), a cap on space, a fair share of I/O (§24.5) |
+| project | **project** (new) | volumes and buckets, and their space, counted against a quota per pool (§24.4) |
+| members of the cluster's operator tenant | cluster-wide roles (19-administration.md §23.9.2) | everything, as now |
+
+- A glidex tenant is in exactly one directory (glidex D2), as a hyperstor
+  tenant is in exactly one realm (D248): the two rules agree.
+- Without glidex nothing changes for whoever ignores the new level:
+  realms, tenants and projects are made by hand, and each tenant has a
+  **default project** that takes every container that names none.
+- Why: a realm already carries what a directory's organizations share
+  (pools, an endpoint and its certificate), a hyperstor tenant already
+  carries what an organization owns (bucket names, keys), and a project
+  is where glidex sets quotas. Mapping glidex's project to hyperstor's
+  tenant, as D61 planned, would have made "tenant" name two levels in
+  one unified UI.
+
+**Records (D300).**
+
+| Record | Fields | Kept |
+|---|---|---|
+| Realm | as now, plus an optional link to a glidex directory (its issuer, which a directory keeps through a standby's promote) | the map |
+| Tenant | `id`, `name`, `realm`, an optional link (directory, glidex tenant id); today a tenant is only a number | the map |
+| Project | `id`, `tenant`, `name`, an optional glidex project id, `state` (`active`, `moving`) | the map |
+
+- **Ids** are 32-bit, issued by the map service and unique in the
+  cluster, projects as tenants (point 264). A container names its
+  project alone, and the project names its tenant: one lookup, and a
+  transfer (below) changes one record.
+- **A tenant's default project** is a project like the others, made with
+  the tenant.
+- **Glidex links are by directory, not by glidex cluster.** Two glidex
+  clusters may share one hyperstor cluster (glidex storage.md S24); the
+  same glidex tenant must be the same hyperstor tenant on both.
+
+**Ownership is per volume, not per lineage (D300).** A volume's header
+names its project. D258 put the tenant on the lineage, which clones
+inherit, but a glidex disk is a clone of its image's `golden` snapshot
+(16-glidex.md §17): every disk made from one image is in the image's
+lineage, whoever owns it. So:
+
+- a volume, its snapshots and its trashed copies are its project's;
+- a clone may be in another project, or another tenant's, than its
+  parent; its own blocks count to its project, and the blocks it still
+  reads from its parent count to the parent's;
+- cloning from another project's snapshot needs the right to read that
+  snapshot (glidex's identity has it for its images);
+- a header that names no project (volumes made before) belongs to the
+  default project of its lineage's tenant (D258), 0's being the
+  cluster's own.
+
+Buckets name their project in the bucket record (the table record's
+appended bytes, 14-s3.md §14.9); their names stay per tenant (D243).
+An S3 key stays a tenant's, and may name the project its new buckets go
+to (the tenant's default project otherwise).
+
+**Quotas and fair share.** Quotas are per `(pool, project)`, from
+glidex's per-cluster project quotas, with a cap per `(pool, tenant)`,
+from the operator's admission caps (glidex 19-tenancy.md §11); both are
+checked where space is allocated (§24.4), never per I/O. Fair share
+stays tenant, then volume (§24.5, D62): fairness matters most between
+organizations, and a level for projects is one more queue on every
+reactor. Projects get one later if one starves its siblings.
+
+**Administration (D301).**
+
+- A **realm's resources** (its pools, gateway and certificate, host
+  bindings) stay the operator's, through cluster-wide roles, unless the
+  operator grants `role@realm` (D263) to a directory's staff. A
+  directory's owners have no rights on a cluster beyond what its
+  operator gives them (glidex D7), and hyperstor is hardware.
+- A **tenant's** administrators manage its projects' volumes and
+  buckets, its keys and its people's grants, through a new grant
+  `role@tenant` beside `role@realm` (D263). Under glidex, a
+  `tenant-admin` is `storage-admin@tenant` and `security-admin@tenant`;
+  a project's roles are `role@project` likewise, for volumes and
+  buckets of that project only.
+- mgmt names the tenants and projects a call reaches as it names realms
+  (D262); the map service applies them the same way, answering a
+  container outside them as one that doesn't exist.
+
+**Gateways (D302).** One S3 gateway per realm, so per directory: a
+university's labs that share a directory share its S3 domain. Tenants
+are kept apart within it as now (their own bucket names and keys), and
+directories by their gateways (D250, I370). A gateway serving several
+realms waits until an operator hosts many directories (glidex
+19-tenancy.md §1), which one gateway each would make costly.
+
+**The operator's own storage (D304).** The operator tenant is a tenant
+of its directory's realm like the others; its members' cluster-wide
+roles are separate from it.
+
+**From glidex.** mgmt trusts each glidex directory through glidex's
+handshake (glidex 19-tenancy.md §12; 19-administration.md §23.12), and its feed
+is the authority for the records above:
+
+- a directory's first admitted tenant makes its realm;
+- a tenant admitted makes a tenant; a project made, renamed or deleted
+  in the feed does the same here (a project with containers isn't
+  deleted: it is marked and reported, as glidex refuses deleting a
+  tenant that still holds resources);
+- a project whose tenant changes in the feed starts a transfer (below);
+- glidex's datastore driver creates each disk in its project
+  (`--project`), and the map service refuses a project outside the
+  realms that glidex cluster's identity is bound to (D311), which a bare
+  `--tenant` from glidex's machine identity can't ensure.
+
+#### 24.9.1 Moving a project to another tenant (D303)
+
+A project may move to another tenant, of the same realm or another
+(an organization splitting, a lab moving to the university's own
+tenant). It is a long operation (19-administration.md §23.3,
+`Operation`), resumable after a failover, audited once and per bucket.
+
+**Checks first; any failure refuses it, naming what to fix:**
+
+| Check | Why |
+|---|---|
+| The new tenant's realm may use every pool the project's volumes and buckets are in (D249) | a realm's data stays in its operator's pools |
+| Every host holding a lease on the project's volumes may attach in the new realm (D251) | a bound host would otherwise lose its disks at the next lease |
+| No bucket of the project has a name the new tenant already holds | names are per tenant (D243); the operator renames first |
+| The new tenant's caps per pool hold the project's space, unless a cluster administrator forces it | a transfer is no way around a cap; forced, the tenant is over its cap as a full pool is (§24.4) |
+
+**Then, in order:**
+
+1. The project becomes `moving`: new volumes and buckets in it are
+   refused (`project_moving`, retry), its existing containers serve as
+   before.
+2. Each bucket moves in one atomic operation on store 1's root
+   (25-kv-ranges.md §28.3): its `t` entry is written under the new
+   tenant's name and the old one deleted, and its `i` entry renamed.
+   The table id, its ranges and its rows don't change, so no data is
+   copied. Gateways must stop resolving the old name before the old
+   tenant's keys stop reaching it: how the root's cached entries are
+   dropped on a gateway is to settle when built (a bump of the bucket
+   record's epoch, checked as range epochs are, is the first candidate).
+3. The project's record names the new tenant, in one Raft write.
+   Volumes need nothing: their headers name the project. Storage nodes
+   learn the project's tenant from the map, as they learn tenants'
+   realms (D259); a reactor re-keys an open volume's fair-share queue
+   at that map, and leases go on.
+4. The project is `active` again. Keys of the old tenant that named it
+   as their default project name the old tenant's default project
+   instead.
+
+A failover between steps resumes the operation where it stopped; until
+it ends, the project's buckets may be under either tenant, each
+consistent on its own.
+
+**What doesn't move:** the project's clones in other projects stay
+where they are, and may now read through another tenant's snapshot;
+the transfer lists them and refuses nothing, since glidex's images are
+shared across tenants that way by design. Space counters per tenant are
+sums over projects, so they follow at once.
+
+**Who:** a cluster administrator, always. Within one realm, someone
+with `storage-admin` on both tenants too. Under glidex, mgmt starts it
+when the feed moves the project. Across realms, only a cluster
+administrator, since it moves data across a directory's boundary.
