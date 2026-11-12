@@ -34,7 +34,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | AD1 | `hyperstor-install` with `check`, join tokens (D57) and `--all-in-one`. | AD0 |
 | AD2 | `hyperstor-mgmt` read-only (D50): health, map, metrics, watch fan-out, UI pages without actions; G17. Needs `glidex-auth` extracted (D52, a glidex change). | AD0 |
 | AD3 | UI and CLI writes, Cedar roles, step-up, trash (D54), audit, operations. | AD2 |
-| AD4 | glidex: links from each hyperstor datastore to its mgmt and usage per project on the tenant's page (19-administration.md §23.12, D310; a glidex change). | AD5 |
+| AD4 | glidex: a tenant's volumes, buckets, keys and usage per project inline in glidex's UI through mgmt's API, and links from each hyperstor datastore to its mgmt (19-administration.md §23.12, D310; a glidex change). | AD5 |
 | AD5 | People from glidex directories (19-administration.md §23.12, D305–D311): `glidex-trust` extracted (a glidex change), offers, redeem and the feed, logins through a directory with its passkeys and IdPs, grants from the feed, `hyperstorctl` logins, the account picker, reports. | AD3, HS15's records |
 | — | A libfabric transport, when a site has UET, EFA or Slingshot NICs with production drivers (D30). Queued, no milestone yet. | HS6 |
 

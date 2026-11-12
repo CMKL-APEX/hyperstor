@@ -1587,3 +1587,19 @@ remaining questions with a recommendation each:
 | 265 | Whether a project can move to another tenant: no, as glidex today (recommended); or yes | Yes: design for it | D303 |
 | 266 | Whether the operator tenant's storage is in its directory's realm (recommended); or a realm of its own | Its directory's realm | D304 |
 
+## People from glidex directories, reviewed (2026-11-12)
+
+The owner reviewed D305–D311 (19-administration.md §23.12), drafted
+with #359, before stage 4 of #360; asked with options and a
+recommendation each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 267 | Whether mgmt runs under glidex: yes, as hyperstor's admin UI (recommended); or not, as D50 said | Yes | D305 |
+| 268 | How mgmt trusts a directory: glidex's handshake and feed through a `glidex-trust` crate (recommended); the same protocol in hyperstor's own code; or plain OIDC without a feed | The crate | D306 |
+| 269 | mgmt's local logins once directories are trusted: kept (recommended); break-glass only; or none | Kept | D307 |
+| 270 | Roles: cluster-wide to the operator tenant's members, tenant and project roles mapped from the feed only (recommended); also grantable in mgmt; or new storage roles in glidex | As proposed | D308 |
+| 271 | Cut off from a directory: as glidex D13, until `max_staleness` (recommended); until each credential expires; or refused at once | As glidex D13 | D309 |
+| 272 | The UI: mgmt's, with links and usage in glidex (recommended); that, plus a tenant's storage pages inline in glidex through mgmt's API; or glidex only under glidex | Inline in glidex too | D310 |
+| 273 | Keeping a glidex cluster to its directories' projects: its identity bound to realms (recommended); checked against its admissions; or trusted | Bound to realms | D311 |
+
