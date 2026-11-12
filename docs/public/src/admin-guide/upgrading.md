@@ -115,6 +115,11 @@ The installer takes care of these; nothing needs doing by hand:
 - **Volume clients** wait up to 30 s for a PG that can't serve yet (a
   split, a primary moving) instead of failing after about two seconds;
   see [Guarantees](../user-guide/guarantees.md#errors).
+- **S3 gateways** get only the keys of their realm. A gateway serves a
+  realm other than `default` once bound to it: the installer binds a
+  map service host's gateway itself, and a gateway that joined with an
+  `s3` token needs `hyperstorctl realm host --host NAME --realm R` once
+  (its install prints the command). Gateways of `default` need nothing.
 - **Map service members** added with `hyperstorctl member add` vote
   only once they have caught up with the leader's log (see
   [Adding and removing members](map-service.md#adding-and-removing-members)).

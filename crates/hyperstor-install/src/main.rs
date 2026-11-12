@@ -4170,6 +4170,10 @@ fn install(
     if let Some(done) = s3_default_placement(root, s, &p, if real && !no_start { 30 } else { 1 }) {
         changed.push(done);
     }
+    // The gateway's realm binding (I370), once the map service answers.
+    if let Some(done) = s3_realm_binding(root, &p, if real && !no_start { 30 } else { 1 }) {
+        changed.push(done);
+    }
     if !(real && !no_start) && !restart.is_empty() {
         // Not started here: say what a real run would restart.
         changed.push(format!("would restart {}", restart.join(" ")));
@@ -4301,6 +4305,80 @@ fn s3_default_placement(root: &Path, s: &Settings, p: &Plan, tries: u32) -> Opti
             }
             Err(_) => {}
         }
+    }
+    None
+}
+
+/// The realm a gateway serves other than `default` (I370): the map
+/// service gives it that realm's keys only once it is bound to it by its
+/// certificate's name. On a map service member the installer binds it
+/// with the administrator's certificate, as `hyperstorctl realm host`
+/// does, unless it is bound already; a gateway that joined with an s3
+/// token can't, so the command to run is printed. A realm that doesn't
+/// exist yet is said, not failed: the rest of the install stands.
+fn s3_realm_binding(root: &Path, p: &Plan, tries: u32) -> Option<String> {
+    let g = p.s3.as_ref()?;
+    let realm = g.realm.as_str();
+    if realm.is_empty() || realm == "default" {
+        return None;
+    }
+    let dir = under(root, "/etc/hyperstor/pki");
+    let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
+    let id = hyperstor_pki::identity_in(&read("s3.crt"))?.id;
+    let command = format!("hyperstorctl realm host --host {id} --realm {realm}");
+    if p.meta.is_none() || !dir.join("admin.crt").exists() {
+        println!(
+            "The gateway serves realm {realm} once bound to it: on a map service host, run\n  {command}"
+        );
+        return None;
+    }
+    let mut last = String::new();
+    for i in 0..tries {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
+        let tls =
+            hyperstor_pki::client_config(&read("admin.crt"), &read("admin.key"), &read("root.crt"))
+                .ok()?;
+        let (host, want) = (id.clone(), realm.to_string());
+        let r = api_call(&p.api, tls, |c| async move {
+            let client = hyperstor_api::RealmServiceClient::new(c.0, c.1);
+            let have = client
+                .list_realms(hyperstor_api::ListRealmsRequest::default())
+                .await?
+                .into_owned();
+            let Some(r) = have.realms.iter().find(|r| r.name == want) else {
+                return Ok(None);
+            };
+            if r.hosts.contains(&host) {
+                return Ok(Some(false));
+            }
+            client
+                .set_host_realms(hyperstor_api::SetHostRealmsRequest {
+                    host,
+                    realms: vec![want],
+                    ..Default::default()
+                })
+                .await?;
+            Ok(Some(true))
+        });
+        match r {
+            Ok(Some(true)) => return Some(format!("S3 gateway {id} bound to realm {realm}")),
+            Ok(Some(false)) => return None,
+            Ok(None) => {
+                println!(
+                    "Realm {realm} doesn't exist, so the gateway serves nothing yet: run\n  hyperstorctl realm create --name {realm}\n  {command}\n(or install again once the realm exists)"
+                );
+                return None;
+            }
+            Err(e) => last = e,
+        }
+    }
+    if tries > 1 {
+        eprintln!(
+            "hyperstor-install: binding the S3 gateway to realm {realm} through {}: {last}; run\n  {command}",
+            p.api
+        );
     }
     None
 }

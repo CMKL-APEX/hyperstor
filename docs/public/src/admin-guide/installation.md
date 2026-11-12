@@ -308,7 +308,8 @@ hyperstorctl pool create --name acme-data --classes hdd    # or share a pool
 hyperstorctl realm pool --pool 3 --realm acme              # only acme may use pool 3
 hyperstorctl s3 placement set --realm acme --name default --data-pool acme-data --index-pool flash
 hyperstorctl realm tenant --tenant 42 --realm acme
-hyperstorctl token create --role s3 --name gw-acme1      # a gateway for acme, then
+sudo hyperstor-install install --s3 --s3-realm acme      # a member's gateway: bound by the installer
+hyperstorctl token create --role s3 --name gw-acme1      # or a gateway host of its own, then
 hyperstorctl realm host --host gw-acme1 --realm acme     # bind it to acme
 sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s3 --s3-realm acme
 ```
@@ -318,10 +319,17 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s
 - A gateway reads a realm's keys only if it is bound to that realm by
   the name in its certificate: the token's name for one that joined
   with an `s3` token, the member's number for one installed on a map
-  service host (`hyperstorctl cert list` shows those issued at a join). A gateway bound
-  to nothing reads `default`'s keys alone, so a cluster without realms
-  needs no binding. Until it is bound, a gateway for another realm logs
-  `isn't bound to realm` and tries again every few seconds.
+  service host (`hyperstorctl cert list` shows those issued at a join).
+  A gateway bound to nothing reads `default`'s keys alone, so a cluster
+  without realms needs no binding. Until it is bound, a gateway for
+  another realm logs `isn't bound to realm` and tries again every few
+  seconds.
+- On a map service host, `install --s3 --s3-realm R` binds the host's
+  gateway to R itself, on this run and every later one; if R doesn't
+  exist yet it says what to run, and the next install binds it. A
+  gateway that joined with an `s3` token can't bind itself: its install
+  prints the `hyperstorctl realm host` command to run on a map service
+  host.
 - A realm's placements may name only pools it may use. A pool with no
   list (`realm pool --realm any`) is open to every realm.
 - Bucket names are per tenant: two tenants may both have `photos`, and

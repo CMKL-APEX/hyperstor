@@ -178,10 +178,10 @@ strict multi-tenancy without a cluster per customer.
   `InvalidAccessKeyId`, as for an unknown key (in the spirit of D244).
   The map service gives a gateway the keys of a realm only if the
   gateway is bound to it by its certificate's name, as hosts are
-  (D251), and `default`'s alone while it is bound to none (I370, open
-  for review). An NFS metadata server address serves one realm's
-  exports. Why: a
-  leaked key or a misdirected client works only at its own realm's
+  (D251), and `default`'s alone while it is bound to none; the installer
+  binds a map service host's gateway to its `--s3-realm` itself
+  (I370). An NFS metadata server address serves one realm's exports.
+  Why: a leaked key or a misdirected client works only at its own realm's
   endpoint, and each realm can have its own names.
 - **Hosts (D251).** A host is unbound by default: it may attach volumes
   of any realm, each attach authorized by capability as now (§24.3). An

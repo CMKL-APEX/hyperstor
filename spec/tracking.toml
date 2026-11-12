@@ -1004,6 +1004,7 @@ status = "done"
 tests = [
     "s3::a_realm_has_its_own_gateway_keys_and_pools",
     "s3::a_gateway_gets_only_the_keys_of_its_realms",
+    "s3::the_installer_binds_a_members_gateway_to_its_realm",
     "hyperstor_meta::realms::tests::realms_hold_tenants_and_pools",
     "hyperstor_meta::realms::tests::realm_names_are_placement_names_but_default",
 ]
