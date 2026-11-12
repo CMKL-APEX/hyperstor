@@ -8,7 +8,7 @@
 //! multiplies by constants that say how many bits follow each stream.
 //!
 //! The method is Peter Cawley's, from "Faster CRC32-C on x86"
-//! (https://www.corsix.org/content/fast-crc32c-4k, 2022-08-01; his
+//! (<https://www.corsix.org/content/fast-crc32c-4k>, 2022-08-01; his
 //! repository github.com/corsix/fast-crc32 is MIT or zlib licensed). The code
 //! here is written again in Rust; its two constants are x^n mod P, which
 //! `tests::the_constants_are_x_to_the_n_mod_p` computes and compares.
