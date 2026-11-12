@@ -566,6 +566,14 @@ fn a_gateway_joins_with_an_s3_token() {
         assert_eq!(step(&["create", "joined"]), "created");
         assert_eq!(step(&["roundtrip", "joined"]), "roundtrip ok");
     }
+    // For another realm a joined gateway can't bind itself (I370): the
+    // command to run on a map service host is printed.
+    let r = run(&host, &["--s3-realm".into(), "acme".into()]).ok();
+    assert!(
+        r.has("hyperstorctl realm host --host gw2 --realm acme"),
+        "{}",
+        r.out
+    );
     // The default placement, once removed, stays removed.
     c.ctl(&["s3", "placement", "delete", "--name", "default"])
         .ok();
@@ -756,6 +764,9 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
             .then_some(())
     });
     let me = identity(&c, hyperstor_pki::Role::S3, "acme-gateway");
+    // A gateway serves a realm other than default once bound to it (I370).
+    c.ctl(&["realm", "host", "--host", "acme-gateway", "--realm", "acme"])
+        .ok();
     let acme_port = free_ports(1);
     let acme_log = c.scratch.path("acme.log");
     let _acme = Gateway(
@@ -828,4 +839,197 @@ fn a_realm_has_its_own_gateway_keys_and_pools() {
         "{}",
         r.out
     );
+}
+
+/// A gateway started by hand with identity `id`, serving `realm`, its
+/// log at `name`.log; and its port.
+fn gateway(c: &Cluster, id: &Path, realm: &str, name: &str) -> (Gateway, u16) {
+    let port = free_ports(1);
+    let log_path = c.scratch.path(&format!("{name}.log"));
+    let g = Gateway(
+        Command::new(bin_dir().join("hyperstor-s3"))
+            .args(["--meta", &c.map, "--api", &c.api, "--realm", realm])
+            .args(["--tls", id.to_str().unwrap()])
+            .args(["--identity", id.to_str().unwrap()])
+            .args(["--listen", &format!("127.0.0.1:{port}")])
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(&log_path).unwrap())
+            .spawn()
+            .unwrap(),
+        log_path,
+    );
+    (g, port)
+}
+
+/// I370: a gateway's certificate reaches only the keys of the realms it
+/// is bound to by its name, or `default`'s while it is bound to none;
+/// bound, it serves its own realm's keys and knows no other's.
+#[test]
+fn a_gateway_gets_only_the_keys_of_its_realms() {
+    let mut c = Cluster::all_in_one("s3bound", 3);
+    install(&c.root, &[]);
+    c.ctl(&["realm", "create", "--name", "acme"]).ok();
+    c.ctl(&["realm", "tenant", "--tenant", "2", "--realm", "acme"])
+        .ok();
+    // Pool vol has no list, so acme may use it too.
+    c.ctl(&[
+        "s3",
+        "placement",
+        "set",
+        "--realm",
+        "acme",
+        "--name",
+        "default",
+        "--data-pool",
+        "vol",
+        "--index-pool",
+        "vol",
+    ])
+    .ok();
+    let (id1, secret1) = new_key(&c);
+    let made = c.ctl(&["s3", "key", "create", "--tenant", "2"]).ok();
+    let line = made.out.lines().next().unwrap().to_string();
+    let (id2, secret2) = line.split_once(' ').unwrap();
+    let (id2, secret2) = (id2.to_string(), secret2.trim().to_string());
+
+    // The installed gateway is bound to nothing: default's keys, as an
+    // install without realms has them.
+    c.start_s3();
+    let default_log = c.scratch.path("s3.log");
+    wait_for("default's gateway's keys", 30, || {
+        log(&default_log)
+            .contains("1 access keys, 1 placements")
+            .then_some(())
+    });
+
+    // Unbound, a gateway asking for acme's keys gets none of them.
+    let gw = identity(&c, hyperstor_pki::Role::S3, "gw-acme");
+    let (_acme, acme_port) = gateway(&c, &gw, "acme", "acme");
+    let acme_log = c.scratch.path("acme.log");
+    wait_for("acme's gateway refused", 30, || {
+        log(&acme_log)
+            .contains("isn't bound to realm \"acme\"")
+            .then_some(())
+    });
+    assert!(
+        !log(&acme_log).contains("access keys"),
+        "{}",
+        log(&acme_log)
+    );
+
+    // Bound to acme, the same gateway gets acme's key and placement: it
+    // retries until it may.
+    c.ctl(&["realm", "host", "--host", "gw-acme", "--realm", "acme"])
+        .ok();
+    wait_for("acme's gateway's keys", 30, || {
+        log(&acme_log)
+            .contains("1 access keys, 1 placements")
+            .then_some(())
+    });
+    // Bound to acme, its certificate doesn't reach default's keys.
+    let (_other, _) = gateway(&c, &gw, "default", "other");
+    let other_log = c.scratch.path("other.log");
+    wait_for("default refused to acme's gateway", 30, || {
+        log(&other_log)
+            .contains("isn't bound to realm \"default\"")
+            .then_some(())
+    });
+    assert!(
+        !log(&other_log).contains("access keys"),
+        "{}",
+        log(&other_log)
+    );
+
+    let Some(python) = sdk_python() else { return };
+    let ca = c.pki().join("root.crt");
+    let at = |port: u16, id: &str, secret: &str, s: &[&str]| sdk(&python, port, &ca, id, secret, s);
+    assert_eq!(
+        at(acme_port, &id2, &secret2, &["create", "photos"]),
+        "created"
+    );
+    assert_eq!(
+        at(acme_port, &id2, &secret2, &["roundtrip", "photos"]),
+        "roundtrip ok"
+    );
+    assert_eq!(
+        at(acme_port, &id1, &secret1, &["denied"]),
+        "InvalidAccessKeyId"
+    );
+    assert_eq!(at(c.s3_port, &id1, &secret1, &["denied"]), "allowed");
+    assert_eq!(
+        at(c.s3_port, &id2, &secret2, &["denied"]),
+        "InvalidAccessKeyId"
+    );
+}
+
+/// I370: `hyperstor-install --s3-realm` on a map service member binds its
+/// gateway to the realm itself, once the realm exists; a run before says
+/// what to do, and a run after keeps the binding.
+#[test]
+fn the_installer_binds_a_members_gateway_to_its_realm() {
+    let mut c = Cluster::all_in_one("s3instrealm", 3);
+    install(&c.root, &[]);
+    // Before the realm exists: said, and the install still succeeds.
+    let early = install(&c.root, &["--s3-realm", "acme"]);
+    assert!(
+        early.has("Realm acme doesn't exist") && early.has("hyperstorctl realm create --name acme"),
+        "{}",
+        early.out
+    );
+    c.ctl(&["realm", "create", "--name", "acme"]).ok();
+    c.ctl(&["realm", "tenant", "--tenant", "2", "--realm", "acme"])
+        .ok();
+    c.ctl(&[
+        "s3",
+        "placement",
+        "set",
+        "--realm",
+        "acme",
+        "--name",
+        "default",
+        "--data-pool",
+        "vol",
+        "--index-pool",
+        "vol",
+    ])
+    .ok();
+    // The saved options carry the realm: a plain rerun binds the gateway.
+    let bound = install(&c.root, &[]);
+    assert!(bound.has("bound to realm acme"), "{}", bound.out);
+    let list = c.ctl(&["realm", "list"]).ok();
+    let acme = list
+        .out
+        .lines()
+        .find(|l| l.starts_with("acme"))
+        .unwrap_or_default()
+        .to_string();
+    let cert = std::fs::read_to_string(c.pki().join("s3.crt")).unwrap();
+    let id = hyperstor_pki::identity_in(&cert).unwrap().id;
+    // REALM ID TENANTS POOLS HOSTS: the member's gateway is acme's host.
+    let hosts = acme.split_whitespace().nth(4).unwrap_or_default();
+    assert_eq!(hosts, id, "{}", list.out);
+    // Again: nothing to bind, no error.
+    let again = install(&c.root, &[]);
+    assert!(!again.has("bound to realm"), "{}", again.out);
+    assert!(!again.has("doesn't exist"), "{}", again.out);
+
+    let made = c.ctl(&["s3", "key", "create", "--tenant", "2"]).ok();
+    let line = made.out.lines().next().unwrap().to_string();
+    let (id2, secret2) = line.split_once(' ').unwrap();
+    let (id2, secret2) = (id2.to_string(), secret2.trim().to_string());
+    let (id1, secret1) = new_key(&c);
+    c.start_s3();
+    let gw_log = c.scratch.path("s3.log");
+    wait_for("the member's gateway's acme keys", 30, || {
+        log(&gw_log)
+            .contains("1 access keys, 1 placements")
+            .then_some(())
+    });
+    assert!(!log(&gw_log).contains("isn't bound"), "{}", log(&gw_log));
+    let Some(python) = sdk_python() else { return };
+    let ca = c.pki().join("root.crt");
+    let at = |id: &str, secret: &str, s: &[&str]| sdk(&python, c.s3_port, &ca, id, secret, s);
+    assert_eq!(at(&id2, &secret2, &["create", "photos"]), "created");
+    assert_eq!(at(&id2, &secret2, &["roundtrip", "photos"]), "roundtrip ok");
+    assert_eq!(at(&id1, &secret1, &["denied"]), "InvalidAccessKeyId");
 }

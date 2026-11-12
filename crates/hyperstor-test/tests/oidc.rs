@@ -65,8 +65,9 @@ fn come_back(c: &Cluster, state: &str, browser: Option<&str>) -> (u16, String, S
 
 /// The session a callback's answer set, with its CSRF value.
 fn session_of(c: &Cluster, head: &str) -> Session {
-    let id = set_cookie(head, "hs_session").expect("a session cookie");
-    let cookie = format!("hs_session={id}");
+    let name = c.session_cookie_name();
+    let id = set_cookie(head, name).expect("a session cookie");
+    let cookie = format!("{name}={id}");
     let (code, _, w) = c.web(
         "GET",
         "/auth/whoami",
@@ -184,7 +185,7 @@ fn people_log_in_with_an_identity_provider() {
         idp.next_id_token("hyperstor", claims);
         let (code, head, body) = come_back(&c, &state, Some(&browser));
         assert_eq!(code, 403, "{body}");
-        assert!(set_cookie(&head, "hs_session").is_none());
+        assert!(set_cookie(&head, c.session_cookie_name()).is_none());
     }
 
     // Someone else: no roles until a security administrator gives some.

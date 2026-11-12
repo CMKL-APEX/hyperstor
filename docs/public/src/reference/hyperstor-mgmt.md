@@ -173,7 +173,7 @@ never goes in `FILE` itself.
 |---|---|
 | `/` | The dashboard (or `--ui`'s `index.html`) |
 | `GET /auth/methods` | `{"pam": bool, "oidc": bool, "claim_open": bool}`; no login needed |
-| `POST /auth/login` | `{"user", "password", "claim"?}` → `{"user", "roles", "csrf"}` and the session cookie `hs_session` |
+| `POST /auth/login` | `{"user", "password", "claim"?}` → `{"user", "roles", "csrf"}` and the session cookie (`__Host-hs_session` over HTTPS, `hs_session` over HTTP) |
 | `GET /auth/whoami` | `{"user", "roles", "method", "csrf"}` |
 | `POST /auth/oidc/start` | `{"return_to"?, "claim"?, "reauth"?}` → `{"redirect"}`: where to send the browser to log in with the provider (`reauth`: a fresh login, for step-up) |
 | `GET /auth/oidc/callback` | Where the provider sends the browser back; then on to `return_to` with a session |
@@ -200,8 +200,12 @@ from one address in 5 minutes, logins from it get `rate_limited`, with
 
 - It answers only requests whose `Host` is one of its names on its port
   (against DNS rebinding).
-- The session cookie is `HttpOnly; SameSite=Strict` (and `Secure` over
-  HTTPS). A write with the cookie must send its CSRF value in
+- The session cookie is `HttpOnly; SameSite=Strict; Path=/`. Over
+  HTTPS it is named `__Host-hs_session` and is `Secure`, with no
+  `Domain`, so the browser sends it only to this host and no other site
+  can set it; over plain HTTP on loopback it is `hs_session`. A cookie
+  under the other name is ignored: after an upgrade that changes it,
+  people log in once more. A write with the cookie must send its CSRF value in
   `X-Hyperstor-CSRF`, and a write from another site's `Origin` is
   refused.
 - Pages carry a strict Content-Security-Policy and may not be framed.

@@ -638,6 +638,18 @@ status = "done"
 tests = ["vhost::a_detach_leaves_a_connected_disk_alone"]
 
 [[milestone.item]]
+what = "A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused"
+spec = ["11-frontends.md §11.1", "I375"]
+status = "done"
+tests = [
+    "vhost::a_connections_requests_keep_to_its_memory_budget",
+    "hyperstor_vhost::budget::tests::requests_wait_for_room_in_arrival_order",
+    "hyperstor_vhost::budget::tests::a_request_alone_always_runs",
+    "hyperstor_vhost::budget::tests::a_waiter_that_gives_up_leaves_the_line",
+    "hyperstor_vhost::budget::tests::many_requests_keep_to_the_budget",
+]
+
+[[milestone.item]]
 what = "hyperstor-install --vhost / --role vhost: the service and its unit, for the users named"
 spec = ["19-administration.md §23.4", "D142", "D144", "I175"]
 status = "done"
@@ -791,6 +803,7 @@ spec = ["13-protocol.md §13.1", "D279", "I323"]
 status = "done"
 tests = [
     "cluster::operation_list_writes_keep_the_writers_crcs",
+    "cluster::a_snapshots_operation_list_checks_its_writes_crcs",
     "cluster::checksummed_writes_reach_nodes_of_the_protocol_before",
     "hyperstor_daemon::tests::checksummed_writes_are_checked_and_unknown_to_older_nodes",
 ]
@@ -1002,21 +1015,27 @@ tests = ["s3::a_gateway_joins_with_an_s3_token", "hyperstor_install::tests::the_
 
 [[milestone.item]]
 what = "Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4)"
-spec = ["20-tenants.md §24.8", "D248", "D249", "D250", "I288"]
+spec = ["20-tenants.md §24.8", "D248", "D249", "D250", "I288", "I370"]
 status = "done"
 tests = [
     "s3::a_realm_has_its_own_gateway_keys_and_pools",
+    "s3::a_gateway_gets_only_the_keys_of_its_realms",
+    "s3::the_installer_binds_a_members_gateway_to_its_realm",
     "hyperstor_meta::realms::tests::realms_hold_tenants_and_pools",
     "hyperstor_meta::realms::tests::realm_names_are_placement_names_but_default",
 ]
 
 [[milestone.item]]
 what = "Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4)"
-spec = ["14-s3.md §14.2", "D193", "D194", "D196", "I289", "I290", "I291"]
+spec = ["14-s3.md §14.2", "D193", "D194", "D196", "I289", "I290", "I291", "I369"]
 status = "done"
 tests = [
     "hyperstor_s3::gateway::tests::conditions_are_read_as_s3_reads_them",
     "hyperstor_s3::xml::tests::bodies_are_read_as_written",
+    "hyperstor_s3::xml::tests::the_elements_are_counted_and_text_borrowed",
+    "hyperstor_s3::gateway::tests::xml_bounds_admit_s3s_largest_bodies",
+    "xml_memory::reading_a_body_takes_about_its_size",
+    "xml_memory::the_smallest_elements_are_bounded_by_their_count",
     "hyperstor_s3::gateway::tests::copy_sources_name_a_bucket_and_object",
     "hyperstor_s3::tests::parts_combine_into_the_whole_objects_sums",
 ]
@@ -1419,6 +1438,7 @@ tests = [
     "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
     "hyperstor_ctl::tests::tables_list_every_device_and_pool",
     "hyperstor_meta::api::tests::local_callers_allowed",
+    "hyperstor_meta::api::tests::a_local_callers_groups_are_from_the_socket_not_its_pid",
     "manage::io_on_every_pool",
     "manage::out_and_in_settle",
     "manage::a_killed_node_is_reported_and_comes_back",
@@ -1576,8 +1596,11 @@ tests = [
     "hyperstor_mgmt::policy::tests::every_rpc_has_an_action",
     "hyperstor_mgmt::people::tests::sessions_tokens_and_roles",
     "hyperstor_mgmt::people::tests::the_first_claim_makes_a_security_admin_once",
+    "hyperstor_mgmt::people::tests::a_claim_redeemed_twice_at_once_makes_one_admin",
     "hyperstor_mgmt::tests::named_hosts_join_the_allowlist",
     "hyperstor_mgmt::tests::ui_files_stay_in_their_directory",
+    "hyperstor_mgmt::tests::a_users_roles_path_names_one_user",
+    "hyperstor_mgmt::tests::the_session_cookie_is_named_for_the_scheme",
 ]
 
 [[milestone.item]]

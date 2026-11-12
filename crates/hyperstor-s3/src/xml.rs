@@ -4,6 +4,8 @@
 //! text, entities, CDATA, comments and a prolog; attributes are skipped
 //! and namespace prefixes dropped.
 
+use std::borrow::Cow;
+
 pub const NS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
 
 /// A document under construction.
@@ -66,50 +68,137 @@ pub fn escape(out: &mut String, text: &str) {
     }
 }
 
-/// An element as read: its name without a namespace prefix, its text
-/// (entities decoded) and its child elements, in order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Element {
-    pub name: String,
-    pub text: String,
-    pub children: Vec<Element>,
+/// A document as read: its elements in document order, each with its
+/// name without a namespace prefix, its text (entities decoded) and
+/// where its subtree ends. Names and text borrow from the body where
+/// they can, and the elements are one allocation, sized before reading
+/// from the body's start tags: a tree costs 48 bytes an element beside
+/// the body, and text is copied only when it has references or comes in
+/// pieces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Doc<'a> {
+    nodes: Vec<Node<'a>>,
 }
 
-impl Element {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Node<'a> {
+    name: &'a str,
+    text: Cow<'a, str>,
+    /// The index past this element's last descendant.
+    end: u32,
+}
+
+impl<'a> Doc<'a> {
+    /// The root element.
+    pub fn root(&self) -> Element<'_, 'a> {
+        Element {
+            nodes: &self.nodes,
+            i: 0,
+        }
+    }
+}
+
+/// An element of a [`Doc`].
+#[derive(Debug, Clone, Copy)]
+pub struct Element<'d, 'a> {
+    nodes: &'d [Node<'a>],
+    i: usize,
+}
+
+impl<'d, 'a> Element<'d, 'a> {
+    fn node(&self) -> &'d Node<'a> {
+        &self.nodes[self.i]
+    }
+
+    pub fn name(&self) -> &'a str {
+        self.node().name
+    }
+
+    pub fn text(&self) -> &'d str {
+        &self.node().text
+    }
+
+    /// Its child elements, in order.
+    pub fn children(self) -> impl Iterator<Item = Element<'d, 'a>> {
+        let (nodes, end) = (self.nodes, self.node().end as usize);
+        let mut at = self.i + 1;
+        std::iter::from_fn(move || {
+            (at < end).then(|| {
+                let e = Element { nodes, i: at };
+                at = nodes[at].end as usize;
+                e
+            })
+        })
+    }
+
     /// The first child named `name`.
-    pub fn child(&self, name: &str) -> Option<&Element> {
-        self.children.iter().find(|c| c.name == name)
+    pub fn child(&self, name: &str) -> Option<Element<'d, 'a>> {
+        self.children().find(|c| c.name() == name)
     }
 
     /// Every child named `name`.
-    pub fn all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Element> + 'a {
-        self.children.iter().filter(move |c| c.name == name)
+    pub fn all(self, name: &str) -> impl Iterator<Item = Element<'d, 'a>> {
+        self.children().filter(move |c| c.name() == name)
     }
 
     /// The text of the first child named `name`.
-    pub fn text_of(&self, name: &str) -> Option<&str> {
-        self.child(name).map(|c| c.text.as_str())
+    pub fn text_of(&self, name: &str) -> Option<&'d str> {
+        self.child(name).map(|c| c.text())
     }
+}
+
+/// Adds a piece of text to `t`. Once an element has children, the
+/// whitespace between them is layout and dropped: S3's bodies don't mix
+/// text and elements.
+fn push_text<'a>(t: &mut Cow<'a, str>, piece: Cow<'a, str>, has_children: bool) {
+    if piece.is_empty() || (has_children && blank(&piece)) {
+        return;
+    }
+    if t.is_empty() {
+        *t = piece;
+    } else {
+        t.to_mut().push_str(&piece);
+    }
+}
+
+fn blank(s: &str) -> bool {
+    s.bytes().all(|b| b.is_ascii_whitespace())
 }
 
 /// Elements nested deeper than this are refused.
 const MAX_DEPTH: usize = 16;
 
-/// Reads `text`, a document of one root element.
-pub fn parse(text: &str) -> Result<Element, &'static str> {
-    let mut r = Reader { s: text, at: 0 };
+/// Reads `text`, a document of one root element and at most `max`
+/// elements in all: the caller's bound on the tree.
+pub fn parse(text: &str, max: usize) -> Result<Doc<'_>, &'static str> {
+    // Start tags (a '<' before a name) bound the elements from above;
+    // reserving for them once keeps the vector from growing by doubling.
+    let tags = text
+        .as_bytes()
+        .windows(2)
+        .filter(|w| w[0] == b'<' && !matches!(w[1], b'/' | b'!' | b'?'))
+        .count();
+    let mut r = Reader {
+        s: text,
+        at: 0,
+        max,
+        nodes: Vec::with_capacity(tags.min(max)),
+    };
     r.misc()?;
-    let root = r.element(0)?;
+    r.element(0)?;
     r.misc()?;
     if r.at != r.s.len() {
         return Err("text after the root element");
     }
-    Ok(root)
+    Ok(Doc { nodes: r.nodes })
 }
 
 struct Reader<'a> {
     s: &'a str,
     at: usize,
+    /// The most elements allowed.
+    max: usize,
+    nodes: Vec<Node<'a>>,
 }
 
 impl<'a> Reader<'a> {
@@ -142,9 +231,13 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn element(&mut self, depth: usize) -> Result<Element, &'static str> {
+    /// An element and its descendants, onto `nodes`.
+    fn element(&mut self, depth: usize) -> Result<(), &'static str> {
         if depth > MAX_DEPTH {
             return Err("elements nested too deep");
+        }
+        if self.nodes.len() >= self.max {
+            return Err("too many elements");
         }
         if !self.rest().starts_with('<') {
             return Err("not an element");
@@ -158,7 +251,6 @@ impl<'a> Reader<'a> {
         if qname.is_empty() {
             return Err("a tag without a name");
         }
-        let qname = qname.to_string();
         self.at += end;
         // Attributes, skipped; a quoted value may hold '>'.
         let mut empty = false;
@@ -181,50 +273,66 @@ impl<'a> Reader<'a> {
                 c => self.at += c.len_utf8(),
             }
         }
-        let name = match qname.split_once(':') {
-            Some((_, n)) => n.to_string(),
-            None => qname.clone(),
-        };
-        let mut e = Element {
-            name,
-            ..Default::default()
+        let me = self.nodes.len();
+        self.nodes.push(Node {
+            name: qname.split_once(':').map_or(qname, |(_, n)| n),
+            text: Cow::Borrowed(""),
+            end: 0,
+        });
+        let close = |nodes: &mut Vec<Node<'a>>| {
+            // Within u32: the caller's `max` is far below it.
+            nodes[me].end = u32::try_from(nodes.len()).unwrap_or(u32::MAX);
         };
         if empty {
-            return Ok(e);
+            close(&mut self.nodes);
+            return Ok(());
         }
+        let mut text = Cow::Borrowed("");
+        let mut has_children = false;
         loop {
             let r = self.rest();
             if r.is_empty() {
                 return Err("an element isn't closed");
             }
             if let Some(t) = r.strip_prefix("</") {
-                let close = t.find('>').ok_or("unterminated tag")?;
-                if t[..close].trim_end() != qname {
+                let i = t.find('>').ok_or("unterminated tag")?;
+                if t[..i].trim_end() != qname {
                     return Err("an element closed by another's tag");
                 }
-                self.at += 2 + close + 1;
-                return Ok(e);
+                self.at += 2 + i + 1;
+                self.nodes[me].text = text;
+                close(&mut self.nodes);
+                return Ok(());
             } else if r.starts_with("<!--") {
                 self.past("-->")?;
             } else if let Some(t) = r.strip_prefix("<![CDATA[") {
                 let i = t.find("]]>").ok_or("unterminated CDATA")?;
-                e.text.push_str(&t[..i]);
+                push_text(&mut text, Cow::Borrowed(&t[..i]), has_children);
                 self.at += "<![CDATA[".len() + i + 3;
             } else if r.starts_with("<?") {
                 self.past("?>")?;
             } else if r.starts_with('<') {
-                e.children.push(self.element(depth + 1)?);
+                if !has_children && blank(&text) {
+                    text = Cow::Borrowed("");
+                }
+                has_children = true;
+                self.element(depth + 1)?;
             } else {
                 let i = r.find('<').unwrap_or(r.len());
-                unescape(&mut e.text, &r[..i])?;
+                push_text(&mut text, unescape(&r[..i])?, has_children);
                 self.at += i;
             }
         }
     }
 }
 
-/// `text` with its entity and character references decoded, onto `out`.
-fn unescape(out: &mut String, text: &str) -> Result<(), &'static str> {
+/// `text` with its entity and character references decoded; borrowed
+/// when it has none.
+fn unescape(text: &str) -> Result<Cow<'_, str>, &'static str> {
+    if !text.contains('&') {
+        return Ok(Cow::Borrowed(text));
+    }
+    let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
@@ -253,7 +361,7 @@ fn unescape(out: &mut String, text: &str) -> Result<(), &'static str> {
         rest = &t[end + 1..];
     }
     out.push_str(rest);
-    Ok(())
+    Ok(Cow::Owned(out))
 }
 
 #[cfg(test)]
@@ -263,8 +371,9 @@ mod tests {
     #[test]
     fn bodies_are_read_as_written() {
         let doc = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- c -->\n<Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Quiet>true</Quiet>\n  <Object><Key>a&lt;b&amp;&#x1;&#65;</Key></Object><Object><Key><![CDATA[<x>]]></Key><VersionId/></Object><s3:Object a='>'><Key>k</Key></s3:Object></Delete>";
-        let d = parse(doc).unwrap();
-        assert_eq!(d.name, "Delete");
+        let d = parse(doc, 100).unwrap();
+        let d = d.root();
+        assert_eq!(d.name(), "Delete");
         assert_eq!(d.text_of("Quiet"), Some("true"));
         let keys: Vec<_> = d.all("Object").map(|o| o.text_of("Key").unwrap()).collect();
         assert_eq!(keys, ["a<b&\u{1}A", "<x>", "k"]);
@@ -276,7 +385,7 @@ mod tests {
         let mut x = Xml::new("R");
         x.elem("K", "a<b>&\"'\u{1}\r");
         assert_eq!(
-            parse(&x.finish("R")).unwrap().text_of("K"),
+            parse(&x.finish("R"), 2).unwrap().root().text_of("K"),
             Some("a<b>&\"'\u{1}\r")
         );
         for bad in [
@@ -289,8 +398,30 @@ mod tests {
             "<!DOCTYPE a [<!ENTITY x \"y\">]><a>&x;</a>",
             &"<a>".repeat(20),
         ] {
-            assert!(parse(bad).is_err(), "{bad}");
+            assert!(parse(bad, 100).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_elements_are_counted_and_text_borrowed() {
+        let doc = "<a>\n  <b>x</b>\n  <b> <!-- c --> </b>\n <c><b/></c></a>";
+        assert_eq!(parse(doc, 4), Err("too many elements"));
+        let d = parse(doc, 5).unwrap();
+        assert_eq!(d.nodes.capacity(), 5);
+        let a = d.root();
+        // Layout between children is dropped; a child's own text isn't.
+        assert_eq!(a.text(), "");
+        let names: Vec<_> = a.children().map(|e| e.name()).collect();
+        assert_eq!(names, ["b", "b", "c"]);
+        let texts: Vec<_> = a.all("b").map(|b| b.text()).collect();
+        assert_eq!(texts, ["x", "  "]);
+        assert_eq!(a.child("c").unwrap().children().count(), 1);
+        assert!(matches!(d.nodes[1].text, Cow::Borrowed(_)));
+        // Copied only when decoded or in pieces.
+        let d = parse("<a>x&amp;y</a>", 1).unwrap();
+        assert!(matches!(d.nodes[0].text, Cow::Owned(_)) && d.root().text() == "x&y");
+        let d = parse("<a>x<![CDATA[<y>]]></a>", 1).unwrap();
+        assert_eq!(d.root().text(), "x<y>");
     }
 
     #[test]

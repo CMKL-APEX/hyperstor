@@ -37,8 +37,9 @@
 //! - `--ui DIR` serves the web UI's files from `DIR` instead of the
 //!   built-in dashboard (D100).
 //! - Browser protections as glidex's UI: a `Host` allowlist against DNS
-//!   rebinding, a strict Content-Security-Policy, no framing; cookies
-//!   `HttpOnly; SameSite=Strict` (and `Secure` over HTTPS); writes with a
+//!   rebinding, a strict Content-Security-Policy, no framing; the session
+//!   cookie `HttpOnly; SameSite=Strict; Path=/`, and over HTTPS `Secure`
+//!   and named `__Host-hs_session` (`hs_session` over loopback HTTP); writes with a
 //!   cookie carry its CSRF value (`X-Hyperstor-CSRF`), and a cross-site
 //!   `Origin` is refused.
 //!
@@ -74,8 +75,20 @@ mod web;
 const PAGE: &str = include_str!("dashboard.html");
 const SCRIPT: &str = include_str!("dashboard.js");
 
-/// The session cookie and the header its CSRF value comes back in.
-const COOKIE: &str = "hs_session";
+/// The session cookie's name: over HTTPS with the `__Host-` prefix, so
+/// a browser takes it only with `Secure`, `Path=/` and no `Domain`, as
+/// set by this origin and no sibling (RFC 6265bis draft 20, "The
+/// __Host- Prefix"); over plain HTTP (loopback) without it, as browsers
+/// refuse the prefix without `Secure`. A cookie of the other name is
+/// ignored (I372).
+fn session_cookie(https: bool) -> &'static str {
+    if https {
+        "__Host-hs_session"
+    } else {
+        "hs_session"
+    }
+}
+/// The header a session's CSRF value comes back in.
 const CSRF_HEADER: &str = "x-hyperstor-csrf";
 /// The PAM service people's passwords are checked with (D99).
 const PAM_SERVICE: &str = "hyperstor";
@@ -434,7 +447,7 @@ async fn serve_conn(
             let svc = hyper::service::service_fn(move |req| {
                 let busy = w.busy();
                 async move {
-                    let r = match whole(None, req).await {
+                    let r = match whole(None, false, req).await {
                         Ok(req) => web::to_https(&req),
                         Err(r) => r,
                     };
@@ -628,17 +641,15 @@ pub fn host_allowed(host: &str, port: u16, extra: &[String]) -> bool {
         && port_ok
 }
 
-fn cookie_of(headers: &http::HeaderMap) -> Option<String> {
+/// The session cookie's value in `headers` ([`session_cookie`]).
+fn cookie_of(headers: &http::HeaderMap, https: bool) -> Option<String> {
+    let name = format!("{}=", session_cookie(https));
     headers
         .get_all(http::header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .find_map(|c| {
-            c.trim()
-                .strip_prefix(&format!("{COOKIE}="))
-                .map(String::from)
-        })
+        .find_map(|c| c.trim().strip_prefix(&name).map(String::from))
 }
 
 fn bearer_of(headers: &http::HeaderMap) -> Option<String> {
@@ -665,6 +676,7 @@ fn bearer_of(headers: &http::HeaderMap) -> Option<String> {
 /// `Connection: close`, as the connection is then dropped.
 async fn whole(
     login: Option<&Login>,
+    https: bool,
     req: http::Request<hyper::body::Incoming>,
 ) -> Result<Req, Resp> {
     let (parts, mut body) = req.into_parts();
@@ -709,7 +721,7 @@ async fn whole(
     }
     if !done {
         // More than anyone may send: only for a person logged in.
-        if !credentialed(login, &parts.headers).await {
+        if !credentialed(login, https, &parts.headers).await {
             return Err(unchecked_too_large());
         }
         match tokio::time::timeout(BODY_TIME_REST, read_up_to(&mut body, &mut buf, MAX_BODY)).await
@@ -745,9 +757,9 @@ async fn read_up_to(
 }
 
 /// Whether `headers` carry a valid API token or session.
-async fn credentialed(login: Option<&Login>, headers: &http::HeaderMap) -> bool {
+async fn credentialed(login: Option<&Login>, https: bool, headers: &http::HeaderMap) -> bool {
     let Some(l) = login else { return false };
-    match (bearer_of(headers), cookie_of(headers)) {
+    match (bearer_of(headers), cookie_of(headers, https)) {
         (Some(t), _) => l.people.token(&t).await.is_ok(),
         (None, Some(c)) => l.people.session(&c).await.is_ok(),
         (None, None) => false,
@@ -755,7 +767,12 @@ async fn credentialed(login: Option<&Login>, headers: &http::HeaderMap) -> bool 
 }
 
 fn set_cookie(s: &State, value: &str, max_age: Option<u64>) -> String {
-    let mut c = format!("{COOKIE}={value}; HttpOnly; SameSite=Strict; Path=/");
+    // No `Domain`: `__Host-` forbids it, and without it the cookie goes
+    // back only to this host.
+    let mut c = format!(
+        "{}={value}; HttpOnly; SameSite=Strict; Path=/",
+        session_cookie(s.https)
+    );
     if s.https {
         c.push_str("; Secure");
     }
@@ -772,7 +789,7 @@ async fn serve_one(
     peer: SocketAddr,
     via: bool,
 ) -> Resp {
-    let req = match whole(state.login.as_ref(), req).await {
+    let req = match whole(state.login.as_ref(), state.https, req).await {
         Ok(r) => r,
         Err(r) => return r,
     };
@@ -1321,14 +1338,15 @@ fn percent_decode(v: &str) -> String {
     while i < b.len() {
         match b[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < b.len() => {
-                match u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or(""), 16) {
-                    Ok(x) => {
-                        out.push(x);
-                        i += 2;
-                    }
-                    Err(_) => out.push(b'%'),
-                }
+            // Two hex digits, and nothing else (`from_str_radix` would
+            // take a sign: `%+1`).
+            b'%' if i + 2 < b.len()
+                && b[i + 1].is_ascii_hexdigit()
+                && b[i + 2].is_ascii_hexdigit() =>
+            {
+                let hex = |c: u8| (c as char).to_digit(16).unwrap_or(0) as u8;
+                out.push(hex(b[i + 1]) << 4 | hex(b[i + 2]));
+                i += 2;
             }
             c => out.push(c),
         }
@@ -1346,7 +1364,7 @@ async fn with_login(
     peer: SocketAddr,
 ) -> Resp {
     let method = req.method().clone();
-    let cookie = cookie_of(req.headers());
+    let cookie = cookie_of(req.headers(), state.https);
     let bearer = bearer_of(req.headers());
     let csrf = req
         .headers()
@@ -1543,7 +1561,10 @@ async fn with_login(
             }
         }
         (&http::Method::PUT, p2) if p2.starts_with("/auth/users/") && p2.ends_with("/roles") => {
-            let name = p2["/auth/users/".len()..p2.len() - "/roles".len()].to_string();
+            let Some(name) = user_of_roles(p2) else {
+                return error(404, "not_found", "no such path");
+            };
+            let name = name.to_string();
             let target = format!("user {name}");
             let reach = match authorize_in(l, &p, "People.SetRoles", &target, only) {
                 Ok(r) => r,
@@ -1670,6 +1691,14 @@ async fn with_login(
         }
         _ => respond(405, "text/plain", "method not allowed\n"),
     }
+}
+
+/// The user named in `/auth/users/{name}/roles`, or `None` when `path`
+/// has no name there (`/auth/users/roles`, `/auth/users//roles`) or one
+/// with a `/`.
+fn user_of_roles(path: &str) -> Option<&str> {
+    let name = path.strip_prefix("/auth/users/")?.strip_suffix("/roles")?;
+    (!name.is_empty() && !name.contains('/')).then_some(name)
 }
 
 /// The cluster API's path for a call under `/api/`.
@@ -1838,6 +1867,57 @@ mod tests {
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("%zz"), "%zz");
         assert_eq!(percent_decode("%41"), "A");
+        // Odd input is kept as it came, never a panic.
+        for (odd, want) in [
+            ("%", "%"),
+            ("%4", "%4"),
+            ("%+1", "% 1"),
+            ("%-1", "%-1"),
+            ("%\u{e9}1", "%\u{e9}1"),
+            ("\u{e9}%", "\u{e9}%"),
+            ("%%41", "%A"),
+            ("%ff", "\u{fffd}"),
+        ] {
+            assert_eq!(percent_decode(odd), want, "{odd:?}");
+        }
+    }
+
+    /// Over HTTPS the session cookie is `__Host-hs_session`, over HTTP
+    /// `hs_session`; the other name is not read.
+    #[test]
+    fn the_session_cookie_is_named_for_the_scheme() {
+        let mut h = http::HeaderMap::new();
+        h.insert(
+            http::header::COOKIE,
+            "x=1; hs_session=plain".parse().unwrap(),
+        );
+        assert_eq!(cookie_of(&h, false).as_deref(), Some("plain"));
+        assert_eq!(cookie_of(&h, true), None, "the old name over HTTPS");
+        h.append(
+            http::header::COOKIE,
+            "__Host-hs_session=host".parse().unwrap(),
+        );
+        assert_eq!(cookie_of(&h, true).as_deref(), Some("host"));
+        assert_eq!(cookie_of(&h, false).as_deref(), Some("plain"));
+        assert_eq!(session_cookie(true), "__Host-hs_session");
+        assert_eq!(session_cookie(false), "hs_session");
+    }
+
+    #[test]
+    fn a_users_roles_path_names_one_user() {
+        assert_eq!(user_of_roles("/auth/users/ann/roles"), Some("ann"));
+        assert_eq!(
+            user_of_roles("/auth/users/ann@example.com/roles"),
+            Some("ann@example.com")
+        );
+        for odd in [
+            "/auth/users/roles",
+            "/auth/users//roles",
+            "/auth/users/a/b/roles",
+            "/auth/users/ann",
+        ] {
+            assert_eq!(user_of_roles(odd), None, "{odd}");
+        }
     }
 
     #[test]

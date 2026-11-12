@@ -5,14 +5,16 @@
 //!   the reply carries it once, and the store keeps it sealed with the
 //!   cluster key (D162). A member without the cluster key can neither make
 //!   keys nor answer gateways.
-//! - **Gateways** (`s3` certificates, D233) fetch every key with its
-//!   secret, and the placements, from any member's applied copy.
+//! - **Gateways** (`s3` certificates, D233) fetch their realm's keys
+//!   with their secrets, and its placements, from any member's applied
+//!   copy.
 //! - **Placements** name pools of the map, kept by id so a renamed pool
 //!   keeps its placements; setting one checks they exist, that neither
 //!   is a cache pool (S3's data must not be evicted) or `.meta`, and that
 //!   the placement's realm may use them (D249).
 //! - **Realms** (D248, D250): a gateway serves one, and is answered only
-//!   its tenants' keys and its placements.
+//!   its tenants' keys and its placements; and only one it is bound to by
+//!   its certificate's name, or `default` while unbound (I370).
 
 use super::admin::random_bytes;
 use super::{Api, Need, audit, volume_result, with_reason};
@@ -470,7 +472,7 @@ impl S3Service for Api {
     ) -> ServiceResult<pb::GetS3GatewayResponse> {
         // Every few seconds from every gateway: refusals are audited,
         // answers aren't.
-        self.authorize_as(&ctx, "GetS3Gateway", "s3 keys", Need::S3)?;
+        let who = self.authorize_as(&ctx, "GetS3Gateway", "s3 keys", Need::S3)?;
         let key = self.cluster_key()?;
         let (keys, placements, realms) = self
             .s3_rows("key", |db| {
@@ -489,6 +491,27 @@ impl S3Service for Api {
                 "not_found",
             )
         })?;
+        // And only a realm the gateway is bound to, by its certificate's
+        // name, or `default` while it is bound to none (I370): a gateway's
+        // certificate reaches no more keys than its realms'. A caller
+        // without an s3 certificate (a local administrator, or a cluster
+        // without TLS) reaches any realm, as for every other call.
+        if let Some(id) = hyperstor_pki::Identity::parse(&who)
+            .filter(|i| i.role == hyperstor_pki::Role::S3)
+            .map(|i| i.id)
+            && !realms.gateway_realms(&id).contains(&realm)
+        {
+            let e = with_reason(
+                ConnectError::permission_denied(format!(
+                    "gateway {id} isn't bound to realm {:?}: bind it with `hyperstorctl realm host --host {id} --realm {}`",
+                    realms.name(realm),
+                    realms.name(realm)
+                )),
+                "outside_realm",
+            );
+            super::refused(&who, "GetS3Gateway", "s3 keys", &e);
+            return Err(e);
+        }
         let (map, ..) = self.published().await?;
         let mut out = Vec::with_capacity(keys.len());
         for k in keys

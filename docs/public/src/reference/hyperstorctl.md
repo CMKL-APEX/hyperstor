@@ -95,7 +95,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `realm delete` | Deletes realm `--name N`. Refused (exit 1) while a tenant is in it, a pool's list names it or it has an S3 placement |
 | `realm tenant` | Puts tenant `--tenant N` in realm `--realm R` (`default` takes it back): its keys then work only at that realm's gateways. Refused while any of its buckets or volumes is in a pool the realm may not use |
 | `realm pool` | Sets the realms that may use pool `--pool P`: `--realm R[,R...]`, or `any` for every realm (the default). Refused while a placement of a realm it leaves names the pool |
-| `realm host` | Binds host `--host H` to realms `--realm R[,R...]` (add `default` for volumes with no tenant or in `default`), or `any` to unbind it: a bound host then attaches only volumes of those realms' tenants, checked by the storage node holding each volume's header. Until the data path's mutual TLS, a host could give another name: binding stops mistakes, not a hostile host |
+| `realm host` | Binds host `--host H` to realms `--realm R[,R...]` (add `default` for volumes with no tenant or in `default`), or `any` to unbind it: a bound host then attaches only volumes of those realms' tenants, checked by the storage node holding each volume's header. An S3 gateway is bound the same way, by the name in its certificate: it reads the keys of the realms it is bound to, and `default`'s alone while unbound. Until the data path's mutual TLS, a host could give another name: binding stops mistakes, not a hostile host |
 | `op list` | Running and recent operations (drains, flattens, copies, moves, purges), newest first; finished ones are kept a week |
 | `op get` | Operation `--id` |
 | `op watch` | Prints operation `--id` as it changes, until it finishes (or `--wait` passes); exit status 1 if it failed or was cancelled |
@@ -178,7 +178,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | `--index-pool NAME` | | `s3 placement set`: the pool for new buckets' index; flash, ideally |
 | `--ttl SECS` | 3600 | `token create`: how long the token is valid, at most a week. `claim port`, `claim renew`: how long the claim lives, 10 to 3600 |
 | `--holder H` | | `claim ...`: who holds the claim, as the orchestrator names it |
-| `--host H` | | `realm host`: the host, by the name it gives (`hyperstor-vhost` and `hyperstor-ublk` `--host`, default its hostname) |
+| `--host H` | | `realm host`: the host, by the name it gives (`hyperstor-vhost` and `hyperstor-ublk` `--host`, default its hostname), or an S3 gateway by its certificate's name |
 | `--all` | off | `device upgrade`: every device |
 | `--exclusive` | off | `claim port`: storage leaves the port; else it may stay, in its traffic class |
 | `--lending L` | | `port lending`: `off`, `idle`, `always` or `default` |
