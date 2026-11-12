@@ -638,6 +638,18 @@ status = "done"
 tests = ["vhost::a_detach_leaves_a_connected_disk_alone"]
 
 [[milestone.item]]
+what = "A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused"
+spec = ["11-frontends.md §11.1", "I375"]
+status = "done"
+tests = [
+    "vhost::a_connections_requests_keep_to_its_memory_budget",
+    "hyperstor_vhost::budget::tests::requests_wait_for_room_in_arrival_order",
+    "hyperstor_vhost::budget::tests::a_request_alone_always_runs",
+    "hyperstor_vhost::budget::tests::a_waiter_that_gives_up_leaves_the_line",
+    "hyperstor_vhost::budget::tests::many_requests_keep_to_the_budget",
+]
+
+[[milestone.item]]
 what = "hyperstor-install --vhost / --role vhost: the service and its unit, for the users named"
 spec = ["19-administration.md §23.4", "D142", "D144", "I175"]
 status = "done"
@@ -791,6 +803,7 @@ spec = ["13-protocol.md §13.1", "D279", "I323"]
 status = "done"
 tests = [
     "cluster::operation_list_writes_keep_the_writers_crcs",
+    "cluster::a_snapshots_operation_list_checks_its_writes_crcs",
     "cluster::checksummed_writes_reach_nodes_of_the_protocol_before",
     "hyperstor_daemon::tests::checksummed_writes_are_checked_and_unknown_to_older_nodes",
 ]
@@ -1419,6 +1432,7 @@ tests = [
     "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
     "hyperstor_ctl::tests::tables_list_every_device_and_pool",
     "hyperstor_meta::api::tests::local_callers_allowed",
+    "hyperstor_meta::api::tests::a_local_callers_groups_are_from_the_socket_not_its_pid",
     "manage::io_on_every_pool",
     "manage::out_and_in_settle",
     "manage::a_killed_node_is_reported_and_comes_back",

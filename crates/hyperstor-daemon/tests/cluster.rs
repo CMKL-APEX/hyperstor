@@ -8741,6 +8741,86 @@ fn operation_list_writes_keep_the_writers_crcs() {
     c.stop();
 }
 
+/// I374: a snapshot's operation list is checked as any other: a
+/// checksummed write whose CRCs are another payload's is refused by the
+/// primary, and the object is left as it was.
+#[test]
+fn a_snapshots_operation_list_checks_its_writes_crcs() {
+    use hyperstor_client::{NS_META, object_pg};
+    use hyperstor_proto::{Code, Msg, Target, WireKey, WireOp, block_crcs, encode_ops};
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let name = b"snap-crcs".to_vec();
+            let data = pattern(91, 8 * 4096);
+            cl.exec(POOL, NS_META, &name, &[Client::write_op(0, data.clone())])
+                .await
+                .unwrap();
+            let m = cl.map();
+            let pg = object_pg(&name, m.pools[&POOL].pg_count);
+            let info = m.pg(POOL, pg).unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: m.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let key = WireKey {
+                ns: NS_META,
+                name: name.clone(),
+                version: 0,
+            };
+            let primary = hyperstor_rpc::Conn::connect(m.device_addr(info.acting[0]).unwrap())
+                .await
+                .unwrap();
+            let snapshot = |ops: &[WireOp]| {
+                let msg = Msg::Snapshot {
+                    to,
+                    key: key.clone(),
+                    token: 0,
+                };
+                (msg, encode_ops(ops))
+            };
+            // The CRCs of other data, as damage after they were taken.
+            let (msg, payload) = snapshot(&[WireOp::WriteCrcs {
+                off: 0,
+                data: pattern(92, 8 * 4096),
+                crcs: block_crcs(&pattern(93, 8 * 4096)),
+            }]);
+            let (reply, _) = primary.call(&msg, &payload).await.unwrap();
+            assert!(
+                matches!(
+                    reply,
+                    Msg::Error {
+                        code: Code::Checksum,
+                        ..
+                    }
+                ),
+                "CRCs of other data in a snapshot's list: {reply:?}"
+            );
+            let read = cl.read_object(POOL, NS_META, &name, 0, 8 * 4096);
+            assert_eq!(read.await.unwrap(), data, "left as it was");
+            // A list whose CRCs match goes through.
+            let good = pattern(94, 8 * 4096);
+            let (msg, payload) = snapshot(&[WireOp::WriteCrcs {
+                off: 0,
+                data: good.clone(),
+                crcs: block_crcs(&good),
+            }]);
+            let (reply, _) = primary.call(&msg, &payload).await.unwrap();
+            assert!(matches!(reply, Msg::ExecOk), "{reply:?}");
+            let read = cl.read_object(POOL, NS_META, &name, 0, 8 * 4096);
+            assert_eq!(read.await.unwrap(), good);
+        })
+    })
+    .join()
+    .unwrap();
+    c.stop();
+}
+
 /// D279 across a rolling install: nodes of protocol 3 can't read
 /// checksummed writes, so a primary of 3 gets plain writes from the
 /// client (it refuses the list, and the client sends it again plain), and

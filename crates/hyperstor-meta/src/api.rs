@@ -14,8 +14,8 @@
 //! Without TLS, every request is allowed: for loopback and tests only.
 //!
 //! A local Unix socket (`--api-socket PATH`) serves the same API for
-//! break-glass use (§23.6, D55): the kernel names the caller
-//! (`SO_PEERCRED`), and root, the service's own user and members of the
+//! break-glass use (§23.6, D55): the kernel names the caller as it
+//! connected (`SO_PEERCRED`, `SO_PEERGROUPS`; I373), and root, the service's own user and members of the
 //! `hyperstor-admin` group may do everything, with no certificate.
 //!
 //! Every change and every refused request is audited (§23.9.4): one JSON
@@ -113,31 +113,95 @@ pub fn audit_line(principal: &str, op: &str, target: &str, result: &str) -> Stri
     crate::audit_log::line_at(t, principal, op, target, result)
 }
 
-/// The caller on the local socket, from the kernel.
-#[derive(Clone, Copy, Debug)]
+/// The caller on the local socket, from the kernel: the credentials the
+/// connecting process had when it connected (`SO_PEERCRED`,
+/// `SO_PEERGROUPS`), kept by the socket. Nothing is looked up by process
+/// id, which another process may have by the time it is read (I373).
+#[derive(Clone, Debug)]
 pub struct LocalPeer {
     pub uid: u32,
-    pub pid: Option<i32>,
+    pub gid: u32,
+    /// Supplementary groups; empty when the kernel can't say, so only
+    /// root and the service's user are let in then.
+    pub groups: Arc<[u32]>,
+}
+
+impl LocalPeer {
+    /// The peer of a connected Unix socket; none if the kernel won't say
+    /// who it is.
+    pub fn of(stream: &tokio::net::UnixStream) -> Option<LocalPeer> {
+        use std::os::fd::AsRawFd;
+        let cred = stream.peer_cred().ok()?;
+        Some(LocalPeer {
+            uid: cred.uid(),
+            gid: cred.gid(),
+            groups: peer_groups(stream.as_raw_fd()).unwrap_or_default().into(),
+        })
+    }
 }
 
 /// Whether a local caller may administer: root, this service's own user,
-/// or a member of `admin_gid` (its supplementary groups, from `/proc`).
-pub fn local_allowed(uid: u32, own_uid: u32, groups: &[u32], admin_gid: Option<u32>) -> bool {
-    uid == 0 || uid == own_uid || admin_gid.is_some_and(|g| groups.contains(&g))
+/// or a member of `admin_gid` (its primary or a supplementary group, as
+/// it connected).
+pub fn local_allowed(peer: &LocalPeer, own_uid: u32, admin_gid: Option<u32>) -> bool {
+    peer.uid == 0
+        || peer.uid == own_uid
+        || admin_gid.is_some_and(|g| peer.gid == g || peer.groups.contains(&g))
 }
 
-fn groups_of(pid: Option<i32>) -> Vec<u32> {
-    let Some(pid) = pid else { return Vec::new() };
-    std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .ok()
-        .and_then(|s| {
-            s.lines().find_map(|l| l.strip_prefix("Groups:")).map(|g| {
-                g.split_whitespace()
-                    .filter_map(|x| x.parse().ok())
-                    .collect()
-            })
-        })
-        .unwrap_or_default()
+/// `SO_PEERGROUPS` (Linux 4.13): 59 where `asm-generic/socket.h` is used.
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "x86",
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+))]
+const SO_PEERGROUPS: Option<libc::c_int> = Some(59);
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "x86",
+    target_arch = "aarch64",
+    target_arch = "arm",
+    target_arch = "riscv64",
+    target_arch = "loongarch64"
+)))]
+const SO_PEERGROUPS: Option<libc::c_int> = None;
+
+/// The supplementary groups the peer of Unix socket `fd` had when it
+/// connected (`SO_PEERGROUPS`): taken from the socket, not the process.
+fn peer_groups(fd: std::os::fd::RawFd) -> std::io::Result<Vec<u32>> {
+    let Some(opt) = SO_PEERGROUPS else {
+        return Err(std::io::ErrorKind::Unsupported.into());
+    };
+    // NGROUPS_MAX is 65536; start small and grow to what the kernel says.
+    let mut groups: Vec<libc::gid_t> = vec![0; 64];
+    loop {
+        let mut len = (groups.len() * std::mem::size_of::<libc::gid_t>()) as libc::socklen_t;
+        // SAFETY: getsockopt writes at most `len` bytes into `groups`,
+        // which has that many, and sets `len` to what it wrote or needs.
+        let r = unsafe {
+            libc::getsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                opt,
+                groups.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        let n = len as usize / std::mem::size_of::<libc::gid_t>();
+        if r == 0 {
+            groups.truncate(n);
+            return Ok(groups);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ERANGE) && n > groups.len() && n <= 65536 {
+            groups.resize(n, 0);
+            continue;
+        }
+        return Err(e);
+    }
 }
 
 fn admin_gid() -> Option<u32> {
@@ -396,14 +460,14 @@ impl Api {
             refused(who, op, target, &e);
             e
         };
-        let local = ctx.extensions().get::<LocalPeer>().copied();
+        let local = ctx.extensions().get::<LocalPeer>().cloned();
         let mut reach = None;
         let principal = match (&self.cluster, local) {
             (_, Some(p)) => {
                 let who = format!("local:uid={}", p.uid);
                 // SAFETY: getuid has no preconditions.
                 let own = unsafe { libc::getuid() };
-                if !local_allowed(p.uid, own, &groups_of(p.pid), admin_gid()) {
+                if !local_allowed(&p, own, admin_gid()) {
                     return Err(refuse(
                         &who,
                         with_reason(
@@ -4034,18 +4098,14 @@ async fn serve_local(listener: tokio::net::UnixListener, service: connectrpc::Co
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
-        let Ok(cred) = stream.peer_cred() else {
+        let Some(peer) = LocalPeer::of(&stream) else {
             continue;
-        };
-        let peer = LocalPeer {
-            uid: cred.uid(),
-            pid: cred.pid(),
         };
         let service = service.clone();
         tokio::spawn(async move {
             let svc =
                 hyper::service::service_fn(move |mut req: http::Request<hyper::body::Incoming>| {
-                    req.extensions_mut().insert(peer);
+                    req.extensions_mut().insert(peer.clone());
                     let mut s = service.clone();
                     async move { s.call(req).await }
                 });
@@ -4593,15 +4653,96 @@ mod tests {
 
     #[test]
     fn local_callers_allowed() {
-        use super::local_allowed;
-        assert!(local_allowed(0, 999, &[], None), "root");
-        assert!(local_allowed(999, 999, &[], None), "the service's user");
+        use super::{LocalPeer, local_allowed};
+        let p = |uid, gid, groups: &[u32]| LocalPeer {
+            uid,
+            gid,
+            groups: groups.into(),
+        };
+        assert!(local_allowed(&p(0, 0, &[]), 999, None), "root");
         assert!(
-            local_allowed(1000, 999, &[27, 1001], Some(1001)),
+            local_allowed(&p(999, 999, &[]), 999, None),
+            "the service's user"
+        );
+        assert!(
+            local_allowed(&p(1000, 1000, &[27, 1001]), 999, Some(1001)),
             "hyperstor-admin"
         );
-        assert!(!local_allowed(1000, 999, &[27], Some(1001)));
-        assert!(!local_allowed(1000, 999, &[27], None));
+        assert!(
+            local_allowed(&p(1000, 1001, &[]), 999, Some(1001)),
+            "hyperstor-admin as the primary group"
+        );
+        assert!(!local_allowed(&p(1000, 1000, &[27]), 999, Some(1001)));
+        assert!(!local_allowed(&p(1000, 1000, &[27]), 999, None));
+        // Groups the kernel couldn't give: only root and the service.
+        assert!(!local_allowed(&p(1000, 1000, &[]), 999, Some(1001)));
+    }
+
+    /// I373: a local caller's groups are those it connected with, kept
+    /// by the socket, and don't depend on its process id: here the
+    /// caller has exited and been reaped (its id free for another
+    /// process) before it is looked at, and its groups are still known.
+    #[test]
+    fn a_local_callers_groups_are_from_the_socket_not_its_pid() {
+        let dir = std::env::temp_dir().join(format!("hs-peer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("api.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        // The address, made before fork: the child only calls the kernel.
+        // SAFETY: sockaddr_un is plain data; all zeros is valid.
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        let bytes = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
+        assert!(bytes.len() < addr.sun_path.len());
+        for (d, s) in addr.sun_path.iter_mut().zip(bytes) {
+            *d = *s as libc::c_char;
+        }
+        // SAFETY: the child only calls async-signal-safe functions
+        // (socket, connect, _exit) on data made before the fork.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // SAFETY: as above; the child exits without unwinding.
+            unsafe {
+                let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+                let r = libc::connect(
+                    fd,
+                    (&addr as *const libc::sockaddr_un).cast(),
+                    std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+                );
+                libc::_exit(if r == 0 { 0 } else { 1 });
+            }
+        }
+        let (stream, _) = listener.accept().unwrap();
+        let mut status = 0;
+        // SAFETY: waits for our own child, into a local.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0);
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        let peer = rt.block_on(async {
+            stream.set_nonblocking(true).unwrap();
+            let s = tokio::net::UnixStream::from_std(stream).unwrap();
+            super::LocalPeer::of(&s).unwrap()
+        });
+        // SAFETY: getuid, getgid and getgroups (into a buffer of the size
+        // given) have no other preconditions.
+        let (uid, gid, mut mine) = unsafe {
+            let mut g = vec![0 as libc::gid_t; 65536];
+            let n = libc::getgroups(g.len() as libc::c_int, g.as_mut_ptr());
+            assert!(n >= 0);
+            g.truncate(n as usize);
+            (libc::getuid(), libc::getgid(), g)
+        };
+        let mut got = peer.groups.to_vec();
+        mine.sort_unstable();
+        got.sort_unstable();
+        assert_eq!((peer.uid, peer.gid, got), (uid, gid, mine));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

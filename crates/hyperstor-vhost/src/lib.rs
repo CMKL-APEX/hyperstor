@@ -17,6 +17,7 @@
 //! then reconnect to. A volume another client took meanwhile is dropped.
 
 pub mod blk;
+pub mod budget;
 pub mod control;
 pub mod device;
 pub mod inflight;
