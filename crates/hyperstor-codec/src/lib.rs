@@ -282,7 +282,7 @@ pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
     crc32c_append_with(Crc32cImpl::chosen(), crc, data)
 }
 
-/// [`crc32c`] by a given library: for benchmarks and tests.
+/// [`crc32c()`] by a given library: for benchmarks and tests.
 #[inline]
 pub fn crc32c_with(lib: Crc32cImpl, data: &[u8]) -> u32 {
     match lib {
