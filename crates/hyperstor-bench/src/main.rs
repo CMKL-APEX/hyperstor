@@ -2327,6 +2327,31 @@ fn main() {
                 "CRC32C: {:.2} GB/s",
                 (n << 20) as f64 / t.elapsed().as_secs_f64() / 1e9
             );
+            // The unit the engine and the protocol use: one CRC for each
+            // 4 KiB block, of a buffer that stays in cache and of one that
+            // doesn't.
+            let mut rng = SmallRng::seed_from_u64(1);
+            let big: Vec<u8> = (0..(64usize << 20))
+                .map(|_| rng.random_range(0..256u32) as u8)
+                .collect();
+            for (what, region) in [("64 KiB", 64usize << 10), ("64 MiB", 64 << 20)] {
+                let t = Instant::now();
+                let (mut n, mut at, mut acc) = (0u64, 0usize, 0u32);
+                while t.elapsed() < Duration::from_secs_f64(secs) {
+                    for _ in 0..64 {
+                        acc ^= hyperstor_codec::crc32c(std::hint::black_box(&big[at..at + 4096]));
+                        at = (at + 4096) % region;
+                        n += 1;
+                    }
+                }
+                std::hint::black_box(acc);
+                let e = t.elapsed().as_secs_f64();
+                println!(
+                    "CRC32C, 4 KiB blocks of {what}: {:.2} GB/s, {:.0} ns a block",
+                    (n * 4096) as f64 / e / 1e9,
+                    e * 1e9 / n as f64
+                );
+            }
         }
         _ => {
             eprintln!("usage: hyperstor-bench engine|raw <file> [size_gib] | mem | crc");
