@@ -1555,3 +1555,16 @@ affected.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 259 | How `hyperstor-vhost` answers a request over 8 MiB: serve it in pieces of at most 8 MiB, up to 1 GiB a request (recommended); raise the cap and allocate whole; or keep 8 MiB and document it | Pieces | D297 |
+
+## CRC32C by CPU (2026-11-12)
+
+A proposed 4 KiB CRC32C path (PR #356) and `crc-fast` were measured
+against `crc32c` 0.6.9 on Zen 2, Zen 4 and Arm (02-benchmarks.md
+2026-11-12). `crc-fast` is about twice as fast on Zen 4 (AVX-512
+VPCLMULQDQ) and on Arm, and slower on Zen 2; #356 is slower on blocks
+out of cache on every CPU.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 260 | Which library computes CRC32C: `crc-fast` where the CPU has AVX-512 VPCLMULQDQ or Arm's PMULL, `crc32c` elsewhere (recommended); `crc32c` only; or `crc-fast` everywhere | By CPU, in v0.0.8 | D298 |
+

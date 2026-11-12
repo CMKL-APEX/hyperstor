@@ -14,7 +14,7 @@ The usage line lists the most common modes; all of them:
 | `engine FILE [SIZE_GIB]` | The storage engine on the same file |
 | `commit FILE [SIZE_GIB]` | Commit rounds of 1, 8 and 32 blocks made durable by `fdatasync` and by `RWF_DSYNC` (FUA), with the disk's flushes per round |
 | `mem` | The engine on memory: its CPU cost only |
-| `crc` | CRC32C checksum throughput |
+| `crc` | CRC32C checksum throughput, and both libraries (`crc32c` and `crc-fast`) on 4 KiB blocks in and out of cache and on 1 MiB calls, with the one chosen for this CPU |
 | `placement` | How fast data placement is computed, for a cluster of 1,024 devices |
 | `cluster mem\|DIR [REACTORS]` | A whole cluster in one process, on memory or on files in `DIR`, with `REACTORS` devices per node (default 1) |
 | `remote ADDR` | A running cluster, as a client of the map service at `ADDR`; writes test data to pool 1 |

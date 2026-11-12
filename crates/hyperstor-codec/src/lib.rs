@@ -217,16 +217,95 @@ impl<'a> Dec<'a> {
     }
 }
 
-/// CRC32C (Castagnoli), hardware-accelerated where the CPU has it.
+/// Which library computes CRC32C in this process (D298, I377).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Crc32cImpl {
+    /// The `crc32c` crate: three streams of the `crc32` instruction. The
+    /// fastest on x86-64 without AVX-512 (Zen 2 and older).
+    Crate,
+    /// `crc-fast`: the `crc32` instruction fused with carry-less multiplies
+    /// over wide registers. About twice as fast where the CPU has AVX-512
+    /// with VPCLMULQDQ, or is aarch64 with CRC, AES and PMULL.
+    Fast,
+}
+
+impl Crc32cImpl {
+    pub fn name(self) -> &'static str {
+        match self {
+            Crc32cImpl::Crate => "crc32c",
+            Crc32cImpl::Fast => "crc-fast",
+        }
+    }
+
+    /// The choice for this CPU, made once per process.
+    pub fn chosen() -> Crc32cImpl {
+        static CHOICE: std::sync::OnceLock<Crc32cImpl> = std::sync::OnceLock::new();
+        *CHOICE.get_or_init(Crc32cImpl::for_this_cpu)
+    }
+
+    fn for_this_cpu() -> Crc32cImpl {
+        // `crc-fast` picks its own kernels and is correct on any CPU; this
+        // only decides where it is the faster of the two. Its AVX-512
+        // kernels check `avx512vl` and `vpclmulqdq`; `avx512f` is checked
+        // too, which a hypervisor could hide. Its aarch64 kernels use the
+        // `crc32` instructions without checking for them (I377), so CRC is
+        // checked here.
+        #[cfg(target_arch = "x86_64")]
+        if std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512vl")
+            && std::arch::is_x86_feature_detected!("vpclmulqdq")
+            && std::arch::is_x86_feature_detected!("pclmulqdq")
+            && std::arch::is_x86_feature_detected!("sse4.2")
+        {
+            return Crc32cImpl::Fast;
+        }
+        #[cfg(target_arch = "aarch64")]
+        if std::arch::is_aarch64_feature_detected!("crc")
+            && std::arch::is_aarch64_feature_detected!("aes")
+            && std::arch::is_aarch64_feature_detected!("pmull")
+        {
+            return Crc32cImpl::Fast;
+        }
+        Crc32cImpl::Crate
+    }
+}
+
+/// CRC32C (Castagnoli), by the faster library for this CPU (D298).
 #[inline]
 pub fn crc32c(data: &[u8]) -> u32 {
-    crc32c::crc32c(data)
+    crc32c_with(Crc32cImpl::chosen(), data)
 }
 
 /// Continues a CRC32C over more data.
 #[inline]
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
-    crc32c::crc32c_append(crc, data)
+    crc32c_append_with(Crc32cImpl::chosen(), crc, data)
+}
+
+/// [`crc32c`] by a given library: for benchmarks and tests.
+#[inline]
+pub fn crc32c_with(lib: Crc32cImpl, data: &[u8]) -> u32 {
+    match lib {
+        Crc32cImpl::Crate => crc32c::crc32c(data),
+        Crc32cImpl::Fast => crc_fast::checksum(crc_fast::CrcAlgorithm::Crc32Iscsi, data) as u32,
+    }
+}
+
+/// [`crc32c_append`] by a given library: for benchmarks and tests.
+#[inline]
+pub fn crc32c_append_with(lib: Crc32cImpl, crc: u32, data: &[u8]) -> u32 {
+    match lib {
+        Crc32cImpl::Crate => crc32c::crc32c_append(crc, data),
+        Crc32cImpl::Fast => {
+            // The digest holds the register before the final inversion.
+            let mut d = crc_fast::Digest::new_with_init_state(
+                crc_fast::CrcAlgorithm::Crc32Iscsi,
+                u64::from(!crc),
+            );
+            d.update(data);
+            d.finalize() as u32
+        }
+    }
 }
 
 #[cfg(test)]
@@ -303,9 +382,10 @@ mod tests {
         assert_eq!(crc32c_append(a, b"world"), crc32c(b"hello world"));
     }
 
-    /// The hardware path (crc32c 0.6.9, I304) agrees with a bitwise CRC at
-    /// lengths that reach each of its parts: unaligned heads and tails,
-    /// 8-byte words, and the short and long three-way loops.
+    /// Both libraries (crc32c 0.6.9, I304; crc-fast, I377) agree with a
+    /// bitwise CRC at lengths that reach each of their parts: unaligned
+    /// heads and tails, 8-byte words, the short and long three-way loops,
+    /// and the wide-register kernels.
     #[test]
     fn crc32c_agrees_with_a_bitwise_crc_at_every_length() {
         fn bitwise(data: &[u8]) -> u32 {
@@ -326,8 +406,63 @@ mod tests {
         ] {
             for start in [0, 1, 3] {
                 let d = &data[start..(start + len).min(data.len())];
-                assert_eq!(crc32c(d), bitwise(d), "length {len} from {start}");
+                let want = bitwise(d);
+                assert_eq!(crc32c(d), want, "length {len} from {start}");
+                for lib in [Crc32cImpl::Crate, Crc32cImpl::Fast] {
+                    assert_eq!(
+                        crc32c_with(lib, d),
+                        want,
+                        "{lib:?} length {len} from {start}"
+                    );
+                }
             }
         }
+    }
+
+    /// The two libraries agree on every length up to two blocks and a bit,
+    /// from every offset in a cache line, and when one call continues
+    /// another at every split of a block and a bit (D298).
+    #[test]
+    fn the_two_libraries_agree_everywhere() {
+        let data: Vec<u8> = (0..(8192 + 64 + 1000) as u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
+            .collect();
+        for start in 0..64 {
+            for len in 0..=8192 + 1 {
+                let d = &data[start..start + len];
+                let seed = (len as u32).wrapping_mul(0x9e37_79b9) ^ start as u32;
+                assert_eq!(
+                    crc32c_append_with(Crc32cImpl::Fast, seed, d),
+                    crc32c_append_with(Crc32cImpl::Crate, seed, d),
+                    "length {len} from {start}"
+                );
+                if len % 61 == 0 {
+                    assert_eq!(
+                        crc32c_with(Crc32cImpl::Fast, d),
+                        crc32c_with(Crc32cImpl::Crate, d),
+                        "length {len} from {start}"
+                    );
+                }
+            }
+        }
+        let whole = &data[3..3 + 4097];
+        let want = crc32c_with(Crc32cImpl::Crate, whole);
+        for at in 0..=whole.len() {
+            let (a, b) = whole.split_at(at);
+            for lib in [Crc32cImpl::Crate, Crc32cImpl::Fast] {
+                assert_eq!(
+                    crc32c_append_with(lib, crc32c_with(lib, a), b),
+                    want,
+                    "{lib:?} split at {at}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_choice_is_made_once_and_named() {
+        let c = Crc32cImpl::chosen();
+        assert_eq!(Crc32cImpl::chosen(), c);
+        assert!(["crc32c", "crc-fast"].contains(&c.name()));
     }
 }

@@ -10,6 +10,8 @@ given; the tool is `crates/hyperstor-bench`.
 |---|---|---|---|
 | dev-1 | AMD EPYC 9124 (16 cores, 32 threads, one socket) | one consumer NVMe SSD (WD SN770 1 TB, DRAM-less, volatile write cache, FUA supported, **no power-loss protection**), ext4 on LVM, holding the root filesystem | Linux 7.0 |
 | dev-2 | 2 × AMD EPYC 7742 (128 cores, 256 threads), 1 TiB of memory | Samsung PM983 and PM1733 data-center NVMe drives (write-through cache), ext4 on md RAID; shared with other sessions | Linux 6.8 |
+| dev-3 | AMD EPYC 7282 (16 cores, 32 threads, one socket; Zen 2) | Intel P4510 data-center NVMe | Linux 6.8 |
+| arm-1 | Arm, 10 Cortex-X925 and 10 Cortex-A725 cores (CRC, AES, PMULL, SHA3, SVE2) | not used | Linux 6.x |
 
 On dev-1, the engine runs on a 2 GiB file on the root filesystem, opened
 `O_DIRECT` and driven through io_uring (the block back end of D29). The
@@ -2518,3 +2520,67 @@ HS_VMB=1 HS_VMB_RT=10 HS_VMB_VMS=1 HS_VMB_CPUS=48 HS_VMB_NODES=3 \
   test checks under a quarter of a core over 2 s).
 - This is a larger gain at QD1 than the reactor's completion spin alone
   gave (+11%, I350): the guest no longer exits to notify.
+
+## 2026-11-12: CRC32C by CPU: `crc32c` against `crc-fast` (D298, I377)
+
+Question: is there a faster CRC32C than `crc32c` 0.6.9 (I304) for the
+engine's and the protocol's unit, one CRC a 4 KiB block? Tried: `crc4k`
+(PR #356: three `crc32` streams over a 4 KiB block joined by
+PCLMULQDQ), the same with software prefetch, and `crc-fast` (1.6.0, then
+1.10.0 with `default-features = false, features = ["std"]`), on four
+CPUs. A standalone harness first checks that every library gives the
+same CRC, then times 4 KiB blocks of a 64 KiB buffer (in cache), 4 KiB
+blocks of a 64 MiB buffer (not in cache: what a block just read from a
+device is, since AMD CPUs don't place DMA writes in the cache) and 1 MiB
+calls over the 64 MiB buffer; one core (`taskset -c 8`; on arm-1 also a
+Cortex-A725 core), 2 s per case, three rounds, which agreed within 3%.
+`hyperstor-bench crc` now times both libraries the same way:
+
+```sh
+HS_BENCH_SECS=2 taskset -c 8 hyperstor-bench crc
+```
+
+ns per call, `crc-fast` 1.10.0 (1.6.0 within 3% of it everywhere):
+
+| CPU | library | 4 KiB in cache | 4 KiB not in cache | 1 MiB not in cache |
+|---|---|---|---|---|
+| EPYC 7742, Zen 2 (dev-2) | `crc32c` | 217 | **330** | 15.3 GB/s |
+| | `crc-fast` | 275 | 565 | **17.4 GB/s** |
+| | `crc4k` (#356) | **159** | 498 | 15.6 GB/s |
+| EPYC 7282, Zen 2 (dev-3) | `crc32c` | 226 | **356** | 14.4 GB/s |
+| | `crc-fast` | 288 | 640 | **16.4 GB/s** |
+| | `crc4k` (#356) | **170** | 567 | 14.5 GB/s |
+| EPYC 9124, Zen 4, AVX-512 VPCLMULQDQ (dev-1) | `crc32c` | 192 | 197 | 19.6 GB/s |
+| | `crc-fast` | **90** | **105** | **45.3 GB/s** |
+| | `crc4k` (#356) | 144 | 390 | 19.3 GB/s |
+| Cortex-X925 (arm-1) | `crc32c` | 221 | 264 | 18.5 GB/s |
+| | `crc-fast` | **84** | **157** | **36.1 GB/s** |
+| Cortex-A725 (arm-1) | `crc32c` | 438 | 436 | 10.8 GB/s |
+| | `crc-fast` (1.6.0) | **207** | **211** | **28.4 GB/s** |
+
+Findings:
+
+1. **`crc-fast` is about twice as fast where the CPU has wide carry-less
+   multiplies**: 2.1× on 4 KiB in cache and 1.9× out of it on Zen 4 with
+   AVX-512 VPCLMULQDQ, 1.7–2.6× on both Arm cores. Its run-time
+   detection picked `x86_64-avx512-vpclmulqdq` and
+   `aarch64-neon-pmull-sha3` there.
+2. **Without AVX-512 it is slower on blocks**: 0.79× in cache and
+   0.57× out of it on both Zen 2 CPUs; only 1 MiB calls gain (1.13×).
+   So the choice is by CPU (D298): `crc-fast` on x86-64 with AVX-512F,
+   VL and VPCLMULQDQ and on aarch64 with CRC, AES and PMULL, `crc32c`
+   elsewhere. `hyperstor-bench crc` names the choice.
+3. **`crc4k` is the fastest in cache on x86 (1.3×) and the slowest out
+   of it** (0.52–0.65×), on every CPU; software prefetch takes it from
+   498 to 480 ns on dev-2, not enough. Blocks read from a device are out
+   of cache, so #356 is not taken.
+4. **The checksum is a small share of an operation**: about 0.1% of a
+   replicated 4 KiB write's CPU and 1.4% of a 1 MiB write's (#356's
+   arithmetic, I346's method); the gain shows where the CPU is the limit.
+5. Correctness on each kernel family: every length 0 to 8,192 bytes from
+   every offset in a cache line against `crc32c` (1,573,056 cases per
+   CPU), continuations from non-trivial seeds, and buffers flush against
+   guard pages, passed on Zen 2, Zen 4 and arm-1 (`crc-fast` 1.10.0).
+   `hyperstor_codec::tests::the_two_libraries_agree_everywhere` keeps
+   the first two.
+

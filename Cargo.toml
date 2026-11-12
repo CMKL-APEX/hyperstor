@@ -35,6 +35,8 @@ repository = "https://github.com/CMKL-APEX/hyperstor"
 
 [workspace.dependencies]
 crc32c = "0.6.9"
+# Exact: its SIMD kernels were audited at this version (I377).
+crc-fast = { version = "=1.10.0", default-features = false, features = ["std"] }
 io-uring = "0.7"
 libc = "0.2"
 thiserror = "2"

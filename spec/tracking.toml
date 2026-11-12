@@ -788,6 +788,15 @@ status = "done"
 tests = ["hyperstor_codec::tests::crc32c_agrees_with_a_bitwise_crc_at_every_length"]
 
 [[milestone.item]]
+what = "CRC32C by the faster library for the CPU: `crc-fast` with AVX-512 VPCLMULQDQ or on Arm (about 2× on a 4 KiB block), `crc32c` elsewhere"
+spec = ["D298", "I377"]
+status = "done"
+tests = [
+    "hyperstor_codec::tests::the_two_libraries_agree_everywhere",
+    "hyperstor_codec::tests::the_choice_is_made_once_and_named",
+]
+
+[[milestone.item]]
 what = "The engine takes the CRCs that came with write data, checked on arrival, instead of computing them again"
 spec = ["D41", "I306"]
 status = "done"
