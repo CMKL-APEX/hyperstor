@@ -3,6 +3,13 @@
 Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
+`hyperstorctl --help` lists the commands, one line each, and the options
+every command takes. `hyperstorctl help COMMAND` (or `COMMAND --help`)
+describes one command with the options that go with it, and `help GROUP`
+(`help snapshot`) lists a group's commands. All of it is read from the two
+tables below, so what they say is what `--help` says. Run with no command,
+it prints the usage line, on standard error, with status 2.
+
 ```text
 usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]
 ```
@@ -228,8 +235,8 @@ word for scripts such as `(not_found)`, `(token_used)` or
 
 | Exit status | Meaning |
 |---|---|
-| 0 | Done; for `status`, health is `ok` |
+| 0 | Done; for `status`, health is `ok`. Also `--help` and `help` |
 | 1 | `status`: health is `warn` or `error`. Otherwise a failed request (no such device, pool or operation), a failed or cancelled operation, or a failed `io-test` |
-| 2 | A missing or malformed option, or certificates that can't be read |
+| 2 | A missing or malformed option, or certificates that can't be read. The message names the argument or command, then comes the usage line |
 | 3 | The cluster API (or, for `io-test`, the map service) can't be reached, or the map service member asked isn't the leader |
 | 4 | Not allowed: no certificate, or one whose role may not do this |

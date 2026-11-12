@@ -2,6 +2,8 @@
 //! people, made from the cluster API's answers. `--json` prints the
 //! answers themselves, in the proto JSON form `curl` also gets.
 
+pub mod help;
+
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use std::fmt::Write;
 
