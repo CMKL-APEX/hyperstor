@@ -1416,6 +1416,7 @@ tests = [
     "hyperstor_ctl::tests::status_text_shows_health_reasons_and_pools",
     "hyperstor_ctl::tests::tables_list_every_device_and_pool",
     "hyperstor_meta::api::tests::local_callers_allowed",
+    "hyperstor_meta::api::tests::a_local_callers_groups_are_from_the_socket_not_its_pid",
     "manage::io_on_every_pool",
     "manage::out_and_in_settle",
     "manage::a_killed_node_is_reported_and_comes_back",

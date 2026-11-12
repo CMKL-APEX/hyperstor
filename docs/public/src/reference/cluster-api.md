@@ -47,7 +47,8 @@ and only `meta` ones, for the other members to join.
 
 **Local socket.** With `--api-socket`, the API is also served on a Unix
 socket (`/run/hyperstor-meta/api.sock` when installed). There the
-kernel names the caller: root, the service's user and members of
+kernel names the caller, by the user and groups it connected with:
+root, the service's user and members of
 `hyperstor-admin` may do everything, others nothing. It is the way in
 when certificates are broken; its use is audited like any other.
 
