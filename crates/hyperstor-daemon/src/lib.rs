@@ -3096,6 +3096,9 @@ impl ShardState {
         data: bool,
         primary: bool,
     ) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.read_len(len) {
+            return (m, Vec::new());
+        }
         let pg = match self.read_check(&to, primary).await {
             Ok(p) => p,
             Err(m) => return (m, Vec::new()),
@@ -6410,6 +6413,9 @@ impl ShardState {
         len: u64,
         primary: bool,
     ) -> (Msg, Vec<u8>) {
+        if let Err(m) = self.read_len(len) {
+            return (m, Vec::new());
+        }
         let pg = match self.read_check(&to, primary).await {
             Ok(p) => p,
             Err(m) => return (m, Vec::new()),
@@ -6482,6 +6488,22 @@ impl ShardState {
             },
             data,
         )
+    }
+
+    /// A read's answer carries its data in one frame, so a read is at
+    /// most a frame's payload; checked before any buffer is allocated.
+    fn read_len(&self, len: u64) -> Result<(), Msg> {
+        if len > hyperstor_proto::MAX_PAYLOAD as u64 {
+            return Err(err(
+                Code::Invalid,
+                &self.map(),
+                format!(
+                    "a read of {len} bytes is longer than one answer holds ({} bytes)",
+                    hyperstor_proto::MAX_PAYLOAD
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// The PG check of a read: the primary's own, or, for a member asked by

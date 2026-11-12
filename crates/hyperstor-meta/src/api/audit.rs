@@ -83,6 +83,16 @@ impl AuditService for Api {
                 "invalid_argument",
             ));
         }
+        // All or none: every line checked before any is kept, so the
+        // sender may send again without doubling the ones before.
+        for (i, l) in req.lines.iter().enumerate() {
+            crate::audit_log::check(l).map_err(|e| {
+                invalid(
+                    format!("line {i}: not an audit record: {e}"),
+                    "invalid_argument",
+                )
+            })?;
+        }
         for l in req.lines.iter() {
             crate::audit_log::append(l)
                 .map_err(|e| invalid(format!("not an audit record: {e}"), "invalid_argument"))?;

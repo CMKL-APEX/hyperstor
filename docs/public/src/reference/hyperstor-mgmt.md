@@ -192,7 +192,9 @@ are Connect errors, as the cluster API's: `{"code", "message",
 "details"}` with the reason as an `ErrorInfo` detail, and also as
 `"reason"`: `unauthenticated` (401), `reauth_required` (401: log in
 again), `permission_denied` (403), `csrf` (403), `bad_origin` (403),
-`login_failed` (401), `rate_limited` (429).
+`login_failed` (401), `rate_limited` (429). After 10 failed logins
+from one address in 5 minutes, logins from it get `rate_limited`, with
+`Retry-After`, until the window passes; other addresses aren't affected.
 
 ## Protections
 

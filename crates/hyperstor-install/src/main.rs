@@ -709,6 +709,13 @@ fn main() {
     {
         usage();
     }
+    // An existing pki directory loses the bits it shouldn't have, before
+    // any command writes keys there.
+    // SAFETY: geteuid has no preconditions.
+    if !matches!(cmd.as_str(), "check" | "uninstall") && (!real || unsafe { libc::geteuid() } == 0)
+    {
+        pki_dir(&root);
+    }
     match cmd.as_str() {
         "check" => std::process::exit(i32::from(check(&root, &s))),
         "root-backup" => root_backup(
@@ -1295,6 +1302,7 @@ Documentation=https://github.com/CMKL-APEX/hyperstor
 
 [Service]
 Type=oneshot
+UMask=0077
 ExecStart=/usr/local/bin/hyperstor-install install
 ";
 
@@ -2401,27 +2409,41 @@ fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool, given_joi
         .ok()
         .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
         .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
+    // The backups' directory belongs to the services' user: hyperstorctl
+    // writes in a directory of root's own, and the file is then placed in
+    // that one through a handle on it, never through a link.
     let backups = under(root, &format!("{}/meta-backups", s.data_dir));
-    let _ = fs::create_dir_all(&backups);
-    let backup = backups.join(format!(
+    let _ = make_dirs(&backups);
+    let name = format!(
         "demoted-member-{id}-{}.store",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs())
-    ));
+    );
+    let private =
+        private_dir().unwrap_or_else(|e| fail(&format!("a directory for the backup: {e}")));
+    let staged = private.join(&name);
     let out = Command::new(&ctl)
         .args(["--api", &api, "--tls"])
         .arg(&pki)
         .args(["map", "backup", "--out"])
-        .arg(&backup)
+        .arg(&staged)
         .output()
         .unwrap_or_else(|e| fail(&format!("{}: {e}", ctl.display())));
+    let placed = if out.status.success() {
+        fs::read(&staged).and_then(|b| write_in_dir(&backups, &name, &b, 0o600))
+    } else {
+        Ok(())
+    };
+    let _ = fs::remove_dir_all(&private);
     if !out.status.success() {
         fail(&format!(
             "map backup: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
+    let backup = backups.join(&name);
+    placed.unwrap_or_else(|e| fail(&format!("{}: {e}", backup.display())));
     println!("Backed up the map service's store to {}.", backup.display());
     // 2. Its node's own certificate: a node token, and a join with the
     // node's addresses, which gives that node back.
@@ -3350,24 +3372,165 @@ fn cluster_id(root: &Path) -> u64 {
 }
 
 /// Writes `content` to `path` if it differs; returns whether it changed.
+/// The file has `mode` from the moment it exists, whatever the umask:
+/// a key is never readable by more than its final mode allows, not even
+/// briefly. Same content with another mode only has its mode set.
 fn converge(path: &Path, content: &[u8], mode: u32) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    if fs::read(path).is_ok_and(|c| c == content) {
+    if let Ok(c) = fs::read(path)
+        && c == content
+    {
+        if let Ok(m) = fs::symlink_metadata(path)
+            && m.is_file()
+            && m.permissions().mode() & 0o7777 != mode
+        {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .unwrap_or_else(|e| fail(&format!("chmod {}: {e}", path.display())));
+        }
         return false;
     }
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("create {}: {e}", dir.display())));
+        make_dirs(dir).unwrap_or_else(|e| fail(&format!("create {}: {e}", dir.display())));
     }
     // Write beside and rename, so a crash never leaves half a file and a
     // running binary is replaced, not overwritten.
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".hs-new");
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, content).unwrap_or_else(|e| fail(&format!("write {}: {e}", tmp.display())));
-    fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))
-        .unwrap_or_else(|e| fail(&format!("chmod {}: {e}", tmp.display())));
+    write_new(&tmp, content, mode)
+        .unwrap_or_else(|e| fail(&format!("write {}: {e}", tmp.display())));
     fs::rename(&tmp, path).unwrap_or_else(|e| fail(&format!("rename {}: {e}", path.display())));
     true
+}
+
+/// Writes `content` to a new file at `path` with exactly `mode`, synced:
+/// a leftover file there (say, from a crash) is removed first, itself and
+/// not what it may link to, and the new file is made with `O_EXCL` and
+/// `O_NOFOLLOW`, so it is always a fresh file of this process's.
+fn write_new(path: &Path, content: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        // The umask only narrows: made no wider than `mode`, then set to
+        // exactly `mode` through the open file.
+        .mode(mode)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    f.set_permissions(fs::Permissions::from_mode(mode))?;
+    f.write_all(content)?;
+    f.sync_all()
+}
+
+/// The directory of the cluster's keys and certificates: no listing for
+/// others (0751). Each file's own mode says who reads it; the services'
+/// user and `hyperstor-admin` reach theirs by name.
+const PKI_DIR_MODE: u32 = 0o751;
+
+/// Makes `dir` and its missing parents, 0755 each (the pki directory
+/// [`PKI_DIR_MODE`]) whatever the umask.
+fn make_dirs(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = dir.parent() {
+        make_dirs(parent)?;
+    }
+    let mode = if dir.ends_with("etc/hyperstor/pki") {
+        PKI_DIR_MODE
+    } else {
+        0o755
+    };
+    match fs::DirBuilder::new().mode(mode).create(dir) {
+        Ok(()) => fs::set_permissions(dir, fs::Permissions::from_mode(mode)),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Takes the bits [`PKI_DIR_MODE`] doesn't have from the pki directory
+/// (one made 0755 by an earlier installer); [`make_dirs`] makes a new one
+/// so. Quiet when it can't: the step that writes there says why.
+fn pki_dir(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = under(root, "/etc/hyperstor/pki");
+    if let Ok(m) = fs::symlink_metadata(&dir) {
+        let have = m.permissions().mode() & 0o7777;
+        if m.is_dir() && have & !PKI_DIR_MODE != 0 {
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(have & PKI_DIR_MODE));
+        }
+    }
+}
+
+/// A new directory of this process's own (0700), under the temporary
+/// directory.
+fn private_dir() -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut t = std::env::temp_dir()
+        .join("hyperstor-install.XXXXXX")
+        .into_os_string()
+        .into_vec();
+    t.push(0);
+    // SAFETY: `t` is a writable, NUL-terminated template ending in
+    // XXXXXX, which mkdtemp replaces in place.
+    if unsafe { libc::mkdtemp(t.as_mut_ptr().cast()) }.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    t.pop();
+    Ok(PathBuf::from(std::ffi::OsString::from_vec(t)))
+}
+
+/// Writes a new file `name` in `dir`, synced, with `mode`: `dir` is
+/// opened without following a link, and the file made in it with
+/// `O_EXCL` and `O_NOFOLLOW`, so the file lands in that directory only.
+fn write_in_dir(dir: &Path, name: &str, content: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    let cstr = |b: &[u8]| {
+        std::ffi::CString::new(b)
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    if name.contains('/') {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    let d = cstr(dir.as_os_str().as_bytes())?;
+    // SAFETY: `d` is NUL-terminated; the result is checked.
+    let dfd = unsafe {
+        libc::open(
+            d.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if dfd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `dfd` is a descriptor just opened and owned here only.
+    let dfd = unsafe { OwnedFd::from_raw_fd(dfd) };
+    let n = cstr(name.as_bytes())?;
+    // SAFETY: `n` is NUL-terminated and `dfd` open; the result is checked.
+    let fd = unsafe {
+        libc::openat(
+            std::os::fd::AsRawFd::as_raw_fd(&dfd),
+            n.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            mode as libc::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `fd` is a descriptor just opened and owned here only.
+    let mut f = unsafe { fs::File::from_raw_fd(fd) };
+    f.write_all(content)?;
+    f.sync_all()
 }
 
 fn under(root: &Path, p: &str) -> PathBuf {
@@ -4949,6 +5112,76 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_files_are_written_with_their_final_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let key = under(root.path(), "/etc/hyperstor/pki/api.key");
+        assert!(converge(&key, b"one", 0o640));
+        let mode = |p: &Path| fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(&key), 0o640);
+        // The pki directory made for it lists nothing to others.
+        assert_eq!(mode(key.parent().unwrap()), PKI_DIR_MODE);
+        assert_eq!(mode(&under(root.path(), "/etc/hyperstor")), 0o755);
+        // A leftover temporary file that is a link: replaced, and what it
+        // names is left as it was.
+        let other = root.path().join("other");
+        fs::write(&other, b"other").unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o644)).unwrap();
+        let mut tmp = key.clone().into_os_string();
+        tmp.push(".hs-new");
+        std::os::unix::fs::symlink(&other, &tmp).unwrap();
+        assert!(converge(&key, b"two", 0o600));
+        assert_eq!(fs::read(&other).unwrap(), b"other");
+        assert_eq!(mode(&other), 0o644);
+        assert_eq!(fs::read(&key).unwrap(), b"two");
+        assert_eq!(mode(&key), 0o600);
+        assert!(!Path::new(&tmp).exists());
+        // Same content with a wider mode: only the mode changes.
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!converge(&key, b"two", 0o600));
+        assert_eq!(mode(&key), 0o600);
+        // An existing pki directory made 0755 loses others' listing.
+        fs::set_permissions(key.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
+        pki_dir(root.path());
+        assert_eq!(mode(key.parent().unwrap()), 0o751);
+    }
+
+    #[test]
+    fn a_file_placed_in_a_directory_does_not_follow_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let elsewhere = root.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        write_in_dir(&real, "a.store", b"rows", 0o600).unwrap();
+        let a = real.join("a.store");
+        assert_eq!(fs::read(&a).unwrap(), b"rows");
+        assert_eq!(
+            fs::metadata(&a).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Not over an existing name, nor through a link to a directory or
+        // as a link to a file.
+        assert!(write_in_dir(&real, "a.store", b"again", 0o600).is_err());
+        let linked = root.path().join("linked");
+        std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+        assert!(write_in_dir(&linked, "b.store", b"rows", 0o600).is_err());
+        assert!(!elsewhere.join("b.store").exists());
+        std::os::unix::fs::symlink(elsewhere.join("c"), real.join("c.store")).unwrap();
+        assert!(write_in_dir(&real, "c.store", b"rows", 0o600).is_err());
+        assert!(!elsewhere.join("c").exists());
+        assert!(write_in_dir(&real, "../d", b"rows", 0o600).is_err());
+        // The staging directory is root's own.
+        let p = private_dir().unwrap();
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        fs::remove_dir(&p).unwrap();
+    }
 
     #[test]
     fn services_on_replaced_binaries_are_stale() {

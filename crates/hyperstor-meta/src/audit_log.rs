@@ -251,6 +251,14 @@ impl Window {
 /// A record from hyperstor-mgmt: refused unless it is one (a JSON object
 /// with `audit`, `time`, `principal`, `op`, `target` and `result`).
 pub fn append(line: &str) -> Result<(), String> {
+    let time = check(line)?;
+    eprintln!("{line}");
+    enqueue((time * 1e6) as u64, line.to_string());
+    Ok(())
+}
+
+/// Whether `line` is a record [`append`] takes: its time if so.
+pub fn check(line: &str) -> Result<f64, String> {
     let v: serde_json::Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
     let time = time_of(&v).ok_or("no time")?;
     for k in ["principal", "op", "target", "result"] {
@@ -261,9 +269,7 @@ pub fn append(line: &str) -> Result<(), String> {
     if v["audit"] != 1 || line.len() > 4096 {
         return Err("not an audit record".into());
     }
-    eprintln!("{line}");
-    enqueue((time * 1e6) as u64, line.to_string());
-    Ok(())
+    Ok(time)
 }
 
 /// A record's time in Unix seconds: a number, or a string holding one,

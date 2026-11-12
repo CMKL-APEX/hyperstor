@@ -10,9 +10,14 @@ environment, never the command line. Steps:
   LocationConstraint if given; prints "created" or the error code.
 - roundtrip BUCKET: puts an object, reads it back and lists it.
 - denied: ListBuckets; prints the error code it gets, or "allowed".
+- presigned BUCKET: a presigned PUT works, and is refused with an
+  x-amz-* header it doesn't sign, as S3 refuses it.
 """
 
+import ssl
 import sys
+import urllib.error
+import urllib.request
 
 import boto3
 import botocore.config
@@ -63,6 +68,34 @@ def main():
             print("allowed")
         except botocore.exceptions.ClientError as e:
             print(code(e))
+    elif step == "presigned":
+        bucket = args[0]
+        ctx = ssl.create_default_context(cafile=ca)
+        s3.put_object(Bucket=bucket, Key="source", Body=b"the source")
+        url = s3.generate_presigned_url(
+            "put_object", Params={"Bucket": bucket, "Key": "p"}, ExpiresIn=60
+        )
+
+        def put(headers):
+            r = urllib.request.Request(url, data=b"pp", method="PUT", headers=headers)
+            try:
+                urllib.request.urlopen(r, context=ctx).read()
+                return "ok"
+            except urllib.error.HTTPError as e:
+                body = e.read().decode()
+                assert "were not signed" in body, body
+                return str(e.code)
+
+        assert put({}) == "ok"
+        for h in [
+            {"x-amz-copy-source": f"/{bucket}/source"},
+            {"x-amz-metadata-directive": "REPLACE", "x-amz-meta-a": "1"},
+            {"x-amz-checksum-crc32": "AAAAAA=="},
+        ]:
+            assert put(h) == "403", h
+        got = s3.get_object(Bucket=bucket, Key="p")
+        assert got["Body"].read() == b"pp" and not got["Metadata"], got
+        print("presigned ok")
     else:
         sys.exit(f"unknown step {step}")
 

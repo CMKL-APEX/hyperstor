@@ -20,7 +20,7 @@ usage: hyperstor-meta --listen ADDR --cluster FILE [--data DIR] [--id N] [--memb
 | `--backup-dir DIR` | off | The leader writes a backup of the store to DIR (`map-<time>-e<epoch>.hsbackup`, mode 0600) when it has changed, at most every `--backup-every` seconds. Needs `--data` |
 | `--backup-every SECS` | 300 | At most one backup per SECS |
 | `--backup-keep N` | 24 | Backups kept; older ones are removed |
-| `--restore FILE` | off | Start from a backup (written by `--backup-dir` or `hyperstorctl map backup`), as a group of one, into an empty `--data` directory. The cluster file must be the same cluster's |
+| `--restore FILE` | off | Start from a backup (written by `--backup-dir` or `hyperstorctl map backup`), as a group of one, into an empty `--data` directory. The cluster file must be the same cluster's. Its cluster API opens once the backup is written into the store |
 | `--force-alone CLUSTER_ID` | off | Recover a map service that lost its majority for good, on one surviving member, stopped first: refused while any other member answers, and unless CLUSTER_ID is this cluster's. It first brings the store up to its Raft log, which a crash may have left ahead of it. The other members' certificates issued until now are revoked, the store is kept aside as `DATA.forced-<time>`, and the member starts from it as a group of one. Lost members join again afresh |
 | `--lease-ms L` | 600 | Length of the map leases granted to storage nodes, in milliseconds |
 | `--down-after-ms N` | 800 | Mark a node down after N ms without a heartbeat; at least 1.25 × `--lease-ms` |

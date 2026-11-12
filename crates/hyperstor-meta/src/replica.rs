@@ -402,6 +402,13 @@ async fn run(
                     if let Some(b) = restoring
                         && !store::has_map(&db)?
                     {
+                        // A slow disk, for tests (#344): HS_RESTORE_DELAY_MS.
+                        if let Some(ms) = std::env::var("HS_RESTORE_DELAY_MS")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(ms));
+                        }
                         b.restore(&db)?;
                         eprintln!(
                             "hyperstor-meta: restored the backup of map epoch {}",

@@ -20,6 +20,7 @@
 //! - Object names and bodies are user data: never logged.
 
 use crate::chunked::{Algorithm, BodyError, Checks, Chunked};
+use crate::conn;
 use crate::keys::Keys;
 use crate::layout::{Multipart, PartRecord};
 use crate::sigv4::{self, AuthError, ChunkSigner, Payload};
@@ -373,6 +374,12 @@ impl From<AuthError> for ApiError {
             ),
             AuthError::Expired => ApiError::new(403, "AccessDenied", "the request has expired"),
             AuthError::Unsupported(w) => ApiError::not_implemented(w),
+            // S3's words, which clients and people search for.
+            AuthError::NotSigned(_) => ApiError::new(
+                403,
+                "AccessDenied",
+                "There were headers present in the request which were not signed",
+            ),
         }
     }
 }
@@ -523,9 +530,23 @@ pub fn serve(
             bound.push(l.local_addr().map_err(|e| e.to_string())?);
             listeners.push(l);
         }
+        let limits = conn::Limits::for_this_process();
+        if limits.max < conn::MAX_CONNECTIONS {
+            eprintln!(
+                "hyperstor-s3: at most {} connections at once (open files are limited)",
+                limits.max
+            );
+        }
+        let gate = Arc::new(tokio::sync::Semaphore::new(limits.max));
         ready(&bound);
         for l in listeners {
-            tokio::spawn(accept(l, state.clone(), acceptor.clone()));
+            tokio::spawn(accept(
+                l,
+                state.clone(),
+                acceptor.clone(),
+                limits,
+                gate.clone(),
+            ));
         }
         tokio::spawn(clean(state.clone(), o.clean_every));
         let _ = tokio::task::spawn_blocking(move || stop.recv()).await;
@@ -533,30 +554,85 @@ pub fn serve(
     })
 }
 
+/// Accepts connections on `l` for good, each under [`conn::Limits`], at
+/// most `limits.max` open at once over every listener (`gate`).
 async fn accept(
     l: tokio::net::TcpListener,
     state: Arc<State>,
     acceptor: tokio_rustls::TlsAcceptor,
+    limits: conn::Limits,
+    gate: Arc<tokio::sync::Semaphore>,
 ) {
+    let mut said = None::<std::time::Instant>;
+    let mut say = |what: &str| {
+        // At most once a minute: a burst would fill the log.
+        if said.is_none_or(|t| t.elapsed() > Duration::from_secs(60)) {
+            eprintln!("hyperstor-s3: {what}");
+            said = Some(std::time::Instant::now());
+        }
+    };
     loop {
-        let Ok((stream, _)) = l.accept().await else {
-            continue;
+        let permit = match gate.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                say(&format!(
+                    "{} connections open, the most it takes; waiting for one to close",
+                    limits.max
+                ));
+                let Ok(p) = gate.clone().acquire_owned().await else {
+                    return;
+                };
+                p
+            }
+        };
+        let stream = match l.accept().await {
+            Ok((s, _)) => s,
+            Err(e) => {
+                // Out of file handles, most often: retrying at once would spin.
+                say(&format!("accepting a connection: {e}"));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
         };
         let _ = stream.set_nodelay(true);
         let (state, acceptor) = (state.clone(), acceptor.clone());
         tokio::spawn(async move {
-            let Ok(tls) = acceptor.accept(stream).await else {
-                return;
-            };
-            let svc = hyper::service::service_fn(move |req| {
-                let state = state.clone();
-                async move { Ok::<_, std::convert::Infallible>(handle(&state, req).await) }
-            });
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(hyper_util::rt::TokioIo::new(tls), svc)
-                .await;
+            let _permit = permit;
+            let watch = conn::Watch::new();
+            tokio::select! {
+                _ = serve_conn(stream, state, acceptor, watch.clone()) => {}
+                _ = watch.expired(&limits) => {}
+            }
         });
     }
+}
+
+/// Serves one connection; `watch` sees its reads and writes, the TLS
+/// handshake's too, and each request in flight.
+async fn serve_conn(
+    stream: tokio::net::TcpStream,
+    state: Arc<State>,
+    acceptor: tokio_rustls::TlsAcceptor,
+    watch: Arc<conn::Watch>,
+) {
+    let Ok(tls) = acceptor
+        .accept(conn::Watched::new(stream, watch.clone()))
+        .await
+    else {
+        return;
+    };
+    let svc = hyper::service::service_fn(move |req| {
+        let state = state.clone();
+        let busy = watch.busy();
+        async move {
+            let r = handle(&state, req).await;
+            drop(busy);
+            Ok::<_, std::convert::Infallible>(r)
+        }
+    });
+    let _ = hyper::server::conn::http1::Builder::new()
+        .serve_connection(hyper_util::rt::TokioIo::new(tls), svc)
+        .await;
 }
 
 /// Gives up expired uploads in every bucket, every `every`, starting at a
@@ -992,6 +1068,31 @@ fn checksum_of(
     Ok(checksum)
 }
 
+/// A body's next frame, or the reason there is none: it ended early, or
+/// nothing arrived for [`conn::BODY_IDLE`] (S3's `RequestTimeout`).
+async fn next_frame(body: &mut Incoming) -> Option<Result<Frame<Bytes>, ApiError>> {
+    next_frame_within(body, conn::BODY_IDLE).await
+}
+
+async fn next_frame_within<B>(
+    body: &mut B,
+    idle: Duration,
+) -> Option<Result<Frame<Bytes>, ApiError>>
+where
+    B: hyper::body::Body<Data = Bytes> + Unpin,
+{
+    match tokio::time::timeout(idle, body.frame()).await {
+        Err(_) => Some(Err(ApiError::new(
+            400,
+            "RequestTimeout",
+            "Your socket connection to the server was not read from or written to within the timeout period.",
+        ))),
+        Ok(f) => {
+            f.map(|f| f.map_err(|_| ApiError::new(400, "IncompleteBody", "the body ended early")))
+        }
+    }
+}
+
 /// A body, whole, of at most `max` bytes, checked as a PUT's is.
 async fn read_body(
     signed: sigv4::Signed,
@@ -1012,8 +1113,8 @@ async fn read_body(
         _ => None,
     };
     let mut out = Vec::new();
-    while let Some(f) = body.frame().await {
-        let f = f.map_err(|_| ApiError::new(400, "IncompleteBody", "the body ended early"))?;
+    while let Some(f) = next_frame(&mut body).await {
+        let f = f?;
         let Ok(data) = f.into_data() else {
             continue;
         };
@@ -2164,8 +2265,8 @@ async fn put_object(
     let pump = async move {
         let mut piece = Vec::with_capacity(PIECE);
         let mut got = 0u64;
-        while let Some(f) = body.frame().await {
-            let f = f.map_err(|_| ApiError::new(400, "IncompleteBody", "the body ended early"))?;
+        while let Some(f) = next_frame(&mut body).await {
+            let f = f?;
             let Ok(data) = f.into_data() else {
                 continue;
             };
@@ -2516,6 +2617,35 @@ async fn write_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_body_that_stops_arriving_is_given_up() {
+        let idle = Duration::from_millis(200);
+        let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(4);
+        let mut body = Streamed(rx);
+        // Pieces apart by less than the limit all arrive…
+        let send = tokio::spawn(async move {
+            for _ in 0..3 {
+                tx.send(Ok(Bytes::from_static(b"x"))).await.unwrap();
+                tokio::time::sleep(idle / 2).await;
+            }
+            tokio::time::sleep(idle * 3).await;
+            drop(tx);
+        });
+        for _ in 0..3 {
+            let f = next_frame_within(&mut body, idle).await.unwrap().unwrap();
+            assert_eq!(f.into_data().unwrap(), "x");
+        }
+        // …then none for longer: S3's RequestTimeout.
+        let t = std::time::Instant::now();
+        let e = next_frame_within(&mut body, idle)
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!((e.status, e.code), (400, "RequestTimeout"));
+        assert!(t.elapsed() >= idle, "{:?}", t.elapsed());
+        send.abort();
+    }
 
     #[test]
     fn location_constraints_choose_a_placement() {

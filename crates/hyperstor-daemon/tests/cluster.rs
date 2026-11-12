@@ -931,6 +931,131 @@ fn writes_reach_every_copy_and_read_back() {
     assert!(checked > 10);
 }
 
+/// A read's answer holds its data in one frame, so a read longer than a
+/// frame's payload is refused as invalid, by every kind of read, before
+/// anything is read; the node serves reads as before afterwards.
+#[test]
+fn reads_longer_than_a_frame_are_refused_and_reads_go_on() {
+    use hyperstor_proto::{Code, MAX_PAYLOAD, Msg, Target, WireKey};
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 99).await.unwrap();
+            let v = 5u128;
+            let data = pattern(5, 8 * 4096);
+            cl.write(POOL, v, 0, data.clone()).await.unwrap();
+            let map = cl.map();
+            let pg = pg_of(v, 0, map.pools[&POOL].pg_count);
+            let info = map.pg(POOL, pg).unwrap();
+            let conn =
+                hyperstor_rpc::Conn::connect(map.device_addr(info.primary().unwrap()).unwrap())
+                    .await
+                    .unwrap();
+            let to = Target {
+                pool: POOL,
+                pg,
+                map_epoch: map.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let key = WireKey {
+                ns: hyperstor_client::NS_VOL,
+                name: chunk_name(v, 0),
+                version: 0,
+            };
+            let layers = vec![(0u32, 0u64, u64::MAX)];
+            let long = [MAX_PAYLOAD as u64 + 4096, 1 << 40, u64::MAX - 4095];
+            for len in long {
+                let asks = [
+                    Msg::Read {
+                        to,
+                        key: key.clone(),
+                        off: 0,
+                        len,
+                    },
+                    Msg::ReadAt {
+                        to,
+                        key: key.clone(),
+                        layers: layers.clone(),
+                        off: 0,
+                        len,
+                    },
+                    Msg::Sources {
+                        to,
+                        key: key.clone(),
+                        layers: layers.clone(),
+                        off: 0,
+                        len,
+                    },
+                    Msg::ReadCopy {
+                        to,
+                        key: key.clone(),
+                        layers: None,
+                        off: 0,
+                        len,
+                    },
+                    Msg::ReadCopy {
+                        to,
+                        key: key.clone(),
+                        layers: Some(layers.clone()),
+                        off: 0,
+                        len,
+                    },
+                ];
+                for ask in asks {
+                    let (reply, payload) = conn.call(&ask, &[]).await.unwrap();
+                    assert!(
+                        matches!(
+                            reply,
+                            Msg::Error {
+                                code: Code::Invalid,
+                                ..
+                            }
+                        ),
+                        "a read of {len} bytes was answered with {reply:?}"
+                    );
+                    assert!(payload.is_empty());
+                }
+            }
+            // The longest read one answer holds is still served.
+            let (reply, payload) = conn
+                .call(
+                    &Msg::Read {
+                        to,
+                        key: key.clone(),
+                        off: 0,
+                        len: MAX_PAYLOAD as u64,
+                    },
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(matches!(reply, Msg::ReadOk { .. }), "{reply:?}");
+            assert_eq!(payload.len(), MAX_PAYLOAD);
+            assert!(payload[..data.len()] == data[..]);
+            // And reads go on, on this connection and through the client.
+            let (reply, payload) = conn
+                .call(
+                    &Msg::Read {
+                        to,
+                        key,
+                        off: 0,
+                        len: data.len() as u64,
+                    },
+                    &[],
+                )
+                .await
+                .unwrap();
+            assert!(matches!(reply, Msg::ReadOk { .. }), "{reply:?}");
+            assert!(payload[..] == data[..]);
+            assert!(cl.read(POOL, v, 0, data.len() as u64).await.unwrap() == data);
+        })
+    })
+    .join()
+    .unwrap();
+}
+
 /// A copy of a stopped node's device, to open its engine again.
 fn copy(d: &Arc<dyn BlockDev>) -> Arc<dyn BlockDev> {
     let mut img = vec![0u8; d.len() as usize];
@@ -6822,6 +6947,72 @@ fn volumes_copy_and_move_between_pools() {
             Err(ClientError::Refused(_))
         ));
         assert!(cl.volume(13).await.unwrap().is_none());
+    });
+    c.stop();
+}
+
+/// A volume made from another keeps its tenant (D258): a copy of its head
+/// or of a snapshot, a clone, and a move. A copy run again doesn't take
+/// over a volume of another tenant.
+#[test]
+fn volumes_made_from_another_keep_its_tenant() {
+    use hyperstor_client::ClientError;
+    use hyperstor_client::copy::Progress;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let size = CHUNK as u64;
+    with_client(meta, 5, move |cl| async move {
+        let tenant = 7;
+        let v = cl
+            .create_volume_for(POOL, size, None, "t", tenant)
+            .await
+            .unwrap();
+        let data = pattern(21, 8192);
+        let va = cl.attach(v.id).await.unwrap();
+        va.write(0, data.clone()).await.unwrap();
+        va.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let p = Progress::default();
+        let tenant_of = |id: u128| {
+            let cl = cl.clone();
+            async move { cl.volume(id).await.unwrap().unwrap().tenant }
+        };
+
+        let c1 = cl
+            .copy_volume(v.id, Some(s.epoch), CACHE_POOL, 21, "c1", &p)
+            .await
+            .unwrap();
+        assert_eq!(c1.tenant, tenant, "a snapshot's copy");
+        assert_eq!(tenant_of(21).await, tenant);
+        let c2 = cl
+            .copy_volume(v.id, None, POOL, 22, "c2", &p)
+            .await
+            .unwrap();
+        assert_eq!(c2.tenant, tenant, "the head's copy");
+        assert_eq!(tenant_of(22).await, tenant);
+        let c2a = cl.attach(22).await.unwrap();
+        assert!(c2a.read(0, data.len() as u64).await.unwrap() == data);
+        c2a.detach().await.unwrap();
+        // Run again, a copy refills its own volume...
+        cl.copy_volume(v.id, None, POOL, 22, "c2", &p)
+            .await
+            .unwrap();
+        assert_eq!(tenant_of(22).await, tenant);
+        // ...but not one of another tenant.
+        cl.create_volume(POOL, size, Some(23), "other")
+            .await
+            .unwrap();
+        assert!(matches!(
+            cl.copy_volume(v.id, None, POOL, 23, "c3", &p).await,
+            Err(ClientError::VolumeExists(23))
+        ));
+        assert_eq!(tenant_of(23).await, 0);
+
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        assert_eq!(k.tenant, tenant, "a clone");
+        let m = cl.move_volume(22, CACHE_POOL, &p).await.unwrap();
+        assert_eq!((m.pool, m.tenant), (CACHE_POOL, tenant), "a move");
+        assert_eq!(tenant_of(22).await, tenant);
     });
     c.stop();
 }

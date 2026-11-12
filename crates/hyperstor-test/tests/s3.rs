@@ -12,8 +12,11 @@
 //! failure without).
 
 use hyperstor_test::*;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// A gateway started by hand, killed when dropped.
 struct Gateway(Child, PathBuf);
@@ -117,6 +120,126 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn holds(path: &Path, needle: &[u8]) -> bool {
     std::fs::read(path).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle))
+}
+
+/// Accepts any server certificate: the connection tests look at when
+/// the gateway closes, not at what it serves.
+#[derive(Debug)]
+struct AnyCert;
+
+impl rustls::client::danger::ServerCertVerifier for AnyCert {
+    fn verify_server_cert(
+        &self,
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &[rustls::pki_types::CertificateDer<'_>],
+        _: &rustls::pki_types::ServerName<'_>,
+        _: &[u8],
+        _: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+    fn verify_tls12_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn verify_tls13_signature(
+        &self,
+        _: &[u8],
+        _: &rustls::pki_types::CertificateDer<'_>,
+        _: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// A TLS connection to the gateway on `port`.
+fn tls(port: u16) -> rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream> {
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .dangerous()
+    .with_custom_certificate_verifier(Arc::new(AnyCert))
+    .with_no_client_auth();
+    let name =
+        rustls::pki_types::ServerName::IpAddress(std::net::IpAddr::from([127, 0, 0, 1]).into());
+    let conn = rustls::ClientConnection::new(Arc::new(config), name).unwrap();
+    let tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    rustls::StreamOwned::new(conn, tcp)
+}
+
+/// The gateway's time limits (the gateway's `conn.rs`): connections
+/// that never finish a request's head are closed after 10 s, one that
+/// sends nothing, one that stops in its TLS handshake, and a kept one
+/// trickling its next request's headers, while requests are answered.
+fn heads_must_come_within_10_s(port: u16) {
+    let t = Instant::now();
+    let silent = std::thread::spawn(move || {
+        let mut tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut b = [0u8; 64];
+        (tcp.read(&mut b).unwrap_or(0), t.elapsed())
+    });
+    let stalled = std::thread::spawn(move || {
+        let mut tcp = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        // A TLS record's first bytes, then nothing.
+        tcp.write_all(&[0x16, 0x03, 0x01]).unwrap();
+        let mut b = [0u8; 64];
+        (tcp.read(&mut b).unwrap_or(0), t.elapsed())
+    });
+    // A request (unsigned, so refused) is answered and the connection
+    // kept…
+    let mut s = tls(port);
+    s.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    let mut got = Vec::new();
+    let mut b = [0u8; 1];
+    while !got.ends_with(b"</Error>") {
+        assert_eq!(
+            s.read(&mut b).unwrap(),
+            1,
+            "{}",
+            String::from_utf8_lossy(&got)
+        );
+        got.push(b[0]);
+    }
+    assert!(
+        got.starts_with(b"HTTP/1.1 403"),
+        "{}",
+        String::from_utf8_lossy(&got)
+    );
+    // …then the next one's head a byte every half second, never ended.
+    let trickled = Instant::now();
+    let mut closed = false;
+    for b in b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Slow: "
+        .iter()
+        .copied()
+        .chain(std::iter::repeat(b'x'))
+    {
+        if s.write_all(&[b]).and_then(|_| s.flush()).is_err() {
+            closed = true;
+            break;
+        }
+        assert!(trickled.elapsed().as_secs() < 30, "still open");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(closed);
+    let took = trickled.elapsed();
+    assert!((9..20).contains(&took.as_secs()), "trickled: {took:?}");
+    for (what, h) in [("silent", silent), ("stalled handshake", stalled)] {
+        let (n, took) = h.join().unwrap();
+        assert_eq!(n, 0, "{what}");
+        assert!((9..20).contains(&took.as_secs()), "{what}: {took:?}");
+    }
 }
 
 fn placement(c: &Cluster, name: &str, data: &str) -> Run {
@@ -254,6 +377,7 @@ fn s3_keys_and_placements_come_from_the_map_service() {
         !log(&gw_log).contains(&secret),
         "the gateway logs no secret"
     );
+    heads_must_come_within_10_s(c.s3_port);
 
     let Some(python) = sdk_python() else { return };
     let ca = c.pki().join("root.crt");
@@ -263,6 +387,9 @@ fn s3_keys_and_placements_come_from_the_map_service() {
     // that isn't there is refused until it is set.
     assert_eq!(step(&["create", "first"]), "created");
     assert_eq!(step(&["roundtrip", "first"]), "roundtrip ok");
+    // A presigned PUT, and one with an x-amz- header it doesn't sign,
+    // refused as S3 refuses it.
+    assert_eq!(step(&["presigned", "first"]), "presigned ok");
     assert_eq!(
         step(&["create", "second", "fast"]),
         "InvalidLocationConstraint"

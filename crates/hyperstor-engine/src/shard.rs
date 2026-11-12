@@ -68,6 +68,12 @@ const MIRRORS: u64 = 2;
 /// Writes smaller than this to blocks the object already holds go through
 /// the log and are applied in place later (spec/04-decisions.md D22).
 pub const DEFER_MAX: usize = 64 * 1024;
+/// The longest read one call plans: above the largest whole object read
+/// at once (a gateway object is at most 5 GiB), so whole-object reads
+/// for scrub and recovery fit; clients' reads are bounded far lower, by
+/// a frame's payload. A read's buffer is allocated up front, so its
+/// length is bounded before it is.
+pub const MAX_READ: u64 = 8 << 30;
 /// Objects with at least this many key–value entries and attributes keep
 /// their digest until they change ([`Shard::digest`]).
 pub const DIGEST_CACHE_MIN: usize = 1024;
@@ -2678,6 +2684,9 @@ impl Shard {
         if !off.is_multiple_of(BLOCK as u64) || !len.is_multiple_of(BLOCK as u64) {
             return Err(EngineError::Unaligned);
         }
+        if len > MAX_READ {
+            return Err(EngineError::TooLong(len));
+        }
         let o = self.index.objects.get(key).ok_or(EngineError::NotFound)?;
         Ok(self.plan_read(off, len, |lb| match o.lookup(lb) {
             Loc::Mapped { pblock, crc } => Some((pblock, crc)),
@@ -3238,6 +3247,9 @@ impl Shard {
         self.check()?;
         if !off.is_multiple_of(BLOCK as u64) || !len.is_multiple_of(BLOCK as u64) {
             return Err(EngineError::Unaligned);
+        }
+        if len > MAX_READ {
+            return Err(EngineError::TooLong(len));
         }
         let objs: Vec<&Object> = layers
             .iter()
