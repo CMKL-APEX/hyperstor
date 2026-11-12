@@ -24,8 +24,9 @@ What v0.0.8 has:
 - **Volumes:** leases, fencing per attached volume, snapshots, clones,
   rollbacks and consistency groups, a host read cache in progress
   (HS4); VM disks
-  through `hyperstor-vhost` over vhost-user-blk, and glidex's driver
-  (HS3); `hyperstor-ublk` for testing.
+  through `hyperstor-vhost` over vhost-user-blk, with a reactor on each
+  NUMA node and polled disks for latency-critical VMs, and glidex's
+  driver (HS3); `hyperstor-ublk` for testing.
 - **Objects:** an S3 gateway, `hyperstor-s3`, with multipart uploads,
   copies, conditional requests, virtual-hosted addressing and buckets
   per tenant (HS12), on key-value ranges (HS11).

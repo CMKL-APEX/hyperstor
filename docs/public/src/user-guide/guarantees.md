@@ -70,11 +70,17 @@ snapshot, and writes to the volume never change its snapshots.
 
 ## Errors
 
-The client already retries what is worth retrying: a map change, a
-primary that moved, a PG with no reachable primary, too few copies
-reachable (`Unavailable`), a dropped connection. It refreshes its map
-between attempts and gives up after 20 attempts, about two seconds. A
-node failure takes a few seconds to detect (see the administrator's
+The client already retries what is worth retrying, refreshing its map
+between attempts:
+
+- A PG that can't serve yet: too few copies reachable (`Unavailable`),
+  a primary that moved, or a map the node has and the client hasn't
+  yet. These happen while a PG splits or a failed node is replaced, and
+  the client keeps trying for 30 s from the first attempt.
+- A PG with no reachable primary, or a dropped connection: the client
+  gives up after 20 attempts, about two seconds.
+
+A node failure takes a few seconds to detect (see the administrator's
 [failures](../admin-guide/failures.md) page), so a program should be
 ready to retry an `Exhausted` error itself.
 

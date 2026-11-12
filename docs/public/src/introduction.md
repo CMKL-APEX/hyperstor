@@ -57,6 +57,9 @@ on its own.
 - **Virtual machine disks.** `hyperstor-vhost` serves volumes to the VMs
   of a host over vhost-user-blk. VMs boot from them under Cloud
   Hypervisor and QEMU, and restarting the service keeps their disks.
+  It runs a reactor on each NUMA node, on the CPUs glidex keeps for the
+  host, and serves each disk from its VM's node; a latency-critical VM's
+  disk can be polled rather than woken.
 - **Block devices for testing.** `hyperstor-ublk` serves a volume as
   `/dev/ublkbN`, for `mkfs`, `mount` and fio.
 - **An S3 gateway.** `hyperstor-s3` serves buckets and objects over S3's

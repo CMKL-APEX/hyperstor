@@ -82,3 +82,18 @@ Anything else is answered `501 NotImplemented`. ETags are MD5s, as S3's.
 ETags of multipart objects are the MD5 of their parts' MD5s, a dash and
 the number of parts, as S3's. Uploads that a gateway didn't finish (it
 stopped, or the client went) are cleaned up a day later.
+
+## Connections
+
+- A new connection has 10 s to finish its TLS handshake and send its
+  first request's headers; a kept connection, as long from the first
+  byte of each next request.
+- A kept connection with no request for 2 minutes is closed, as is one
+  whose answer the client stops reading for as long. SDKs keep idle
+  connections for less, and open a new one when the gateway has closed
+  theirs.
+- A request's body may go 60 s without a byte arriving; past that the
+  request fails.
+- At most 4096 connections are open at once (fewer when the open-file
+  limit is lower: half of it). Past that, new connections wait until
+  one closes.
