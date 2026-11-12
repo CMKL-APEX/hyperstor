@@ -157,6 +157,9 @@ impl Rows {
 
     pub async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, Error> {
         if let Rows::Memory(m) = self {
+            // As a call to the map service would, so that concurrent
+            // callers interleave in tests.
+            tokio::task::yield_now().await;
             return Ok(lock(m).get(key).cloned());
         }
         let key = key.to_string();
@@ -204,6 +207,7 @@ impl Rows {
 
     pub async fn delete(&self, key: &str) -> Result<bool, Error> {
         if let Rows::Memory(m) = self {
+            tokio::task::yield_now().await;
             return Ok(lock(m).remove(key).is_some());
         }
         let key = key.to_string();
@@ -786,7 +790,11 @@ impl People {
         if c.expires <= now() || !constant_eq(&c.hash, &sha256_hex(code.as_bytes())) {
             return Err(Error::Invalid("wrong or expired claim code".into()));
         }
-        self.rows.delete("claim").await?;
+        // Whoever deletes it has it: of two redeeming the code at once,
+        // only one finds the row still there (I371).
+        if !self.rows.delete("claim").await? {
+            return Err(Error::Invalid("no claim is open".into()));
+        }
         self.logged_in_user(user).await?;
         let mut roles = self.user(user).await?.ok_or(Error::NotFound)?.roles;
         roles.push("security-admin".into());
@@ -1030,6 +1038,30 @@ mod tests {
             assert_eq!(u.roles, vec!["security-admin"]);
             assert!(p.claimed().await.unwrap());
             assert!(p.claim(&code, "eve").await.is_err(), "used once");
+        });
+    }
+
+    /// Two people redeeming the code at the same moment: one becomes the
+    /// security administrator, the other is refused.
+    #[test]
+    fn a_claim_redeemed_twice_at_once_makes_one_admin() {
+        rt().block_on(async {
+            let p = People::new(Rows::memory());
+            let code = p.new_claim().await.unwrap();
+            let (a, b) = tokio::join!(p.claim(&code, "bob"), p.claim(&code, "eve"));
+            let ok = [&a, &b].iter().filter(|r| r.is_ok()).count();
+            assert_eq!(ok, 1, "{a:?} {b:?}");
+            let refused = if a.is_ok() { &b } else { &a };
+            assert!(matches!(refused, Err(Error::Invalid(_))), "{refused:?}");
+            let admins: Vec<String> = p
+                .users()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|u| u.roles.iter().any(|r| r == "security-admin"))
+                .map(|u| u.name)
+                .collect();
+            assert_eq!(admins.len(), 1, "{admins:?}");
         });
     }
 }
