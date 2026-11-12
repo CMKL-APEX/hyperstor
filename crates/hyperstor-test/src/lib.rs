@@ -376,7 +376,8 @@ pub enum Via<'a> {
 /// A person logged in to hyperstor-mgmt.
 #[derive(Debug, Clone)]
 pub struct Session {
-    /// `hs_session=…`, for a `Cookie` header.
+    /// `hs_session=…` (`__Host-hs_session=…` over HTTPS), for a `Cookie`
+    /// header.
     pub cookie: String,
     /// The whole `Set-Cookie` value, attributes included.
     pub set_cookie: String,
@@ -981,6 +982,16 @@ impl Cluster {
     pub fn mgmt_url(&self) -> String {
         let scheme = if self.mgmt_https { "https" } else { "http" };
         format!("{scheme}://{}", self.dashboard_host())
+    }
+
+    /// The name of mgmt's session cookie: `__Host-hs_session` over HTTPS,
+    /// `hs_session` over plain HTTP (I372).
+    pub fn session_cookie_name(&self) -> &'static str {
+        if self.mgmt_https {
+            "__Host-hs_session"
+        } else {
+            "hs_session"
+        }
     }
 
     /// The dashboard's `Host` for this cluster.

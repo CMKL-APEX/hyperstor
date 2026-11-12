@@ -4,7 +4,8 @@
 //! Tailscale certificate for its ts.net names with HSTS, and plain HTTP
 //! sent to HTTPS; a request body no one reads leaves the connection
 //! open (#329), a request's head must come within 10 s (I355), and odd
-//! paths are answered (I371).
+//! paths are answered (I371); the session cookie is `__Host-` prefixed
+//! (I372).
 
 use hyperstor_test::*;
 use std::io::{Read, Write};
@@ -215,7 +216,7 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
     assert!(head.contains("connection: close"), "{head}");
     // Over 256 KiB needs a person logged in: without a valid session or
     // token, refused unread, a made-up cookie included (#329's follow-up).
-    for cookie in ["", "Cookie: hs_session=made-up\r\n"] {
+    for cookie in ["", "Cookie: __Host-hs_session=made-up\r\n"] {
         let mut s = connect(lo, port, None);
         let (head, _) = exchange(
             &mut s,
@@ -237,6 +238,38 @@ fn people_reach_mgmt_on_the_hosts_addresses() {
     }
     let (code, _, w) = c.as_session(&ann, "GET", "/auth/whoami", "");
     assert_eq!(code, 200, "{w}");
+
+    // Over HTTPS the session cookie is `__Host-` prefixed: `Secure`,
+    // `Path=/` and no `Domain`, as the prefix needs (I372). The plain
+    // name of before is ignored; a logout clears the prefixed one.
+    let set = &ann.set_cookie;
+    assert!(set.starts_with("__Host-hs_session="), "{set}");
+    for want in ["; Secure", "; Path=/", "; HttpOnly", "; SameSite=Strict"] {
+        assert!(set.contains(want), "{want}: {set}");
+    }
+    assert!(!set.to_ascii_lowercase().contains("domain="), "{set}");
+    let id = ann.cookie.split_once('=').unwrap().1;
+    let old = format!("hs_session={id}");
+    let (code, _, w) = c.web(
+        "GET",
+        "/auth/whoami",
+        &c.dashboard_host(),
+        &[("Cookie", &old)],
+        "",
+    );
+    assert_eq!(code, 401, "the old name: {w}");
+    let (code, head, _) = c.as_session(&ann, "POST", "/auth/logout", "");
+    assert_eq!(code, 200, "{head}");
+    assert!(
+        head.lines().any(|l| l
+            .to_ascii_lowercase()
+            .starts_with("set-cookie: __host-hs_session=;")
+            && l.contains("Max-Age=0")
+            && l.contains("Secure")),
+        "{head}"
+    );
+    let (code, _, _) = c.as_session(&ann, "GET", "/auth/whoami", "");
+    assert_eq!(code, 401, "logged out");
 
     // A body that stops arriving: given up after 10 s.
     let mut s = connect(lo, port, None);
