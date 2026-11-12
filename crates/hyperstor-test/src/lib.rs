@@ -949,9 +949,16 @@ impl Cluster {
 
     /// Starts the map service with `extra` options after its installed ones.
     pub fn start_meta_with(&mut self, extra: &[&str]) {
+        self.start_meta_with_env(extra, &[]);
+    }
+
+    /// Starts the map service with `extra` options and `env` variables
+    /// (test hooks such as `HS_RESTORE_DELAY_MS`).
+    pub fn start_meta_with_env(&mut self, extra: &[&str], env: &[(&str, &str)]) {
         let p = Command::new(self.bin.join("hyperstor-meta"))
             .args(env_args(&self.root, self.scratch.run(), "meta.env"))
             .args(extra)
+            .envs(env.iter().copied())
             .stderr(std::fs::File::create(&self.meta_log).unwrap())
             .spawn()
             .unwrap();

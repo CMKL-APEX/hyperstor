@@ -77,12 +77,28 @@ fn a_lost_store_comes_back_from_a_backup() {
     });
     c.stop_meta();
     std::fs::remove_dir_all(&store).unwrap();
-    c.start_meta_with(&["--restore", file.to_str().unwrap()]);
+    // On a slow disk the backup takes a while to write (#344): the API
+    // waits for it, so no one sees the store without the backup's tokens,
+    // revocations and settings, nor health ok before it is written.
+    c.start_meta_with_env(
+        &["--restore", file.to_str().unwrap()],
+        &[("HS_RESTORE_DELAY_MS", "1500")],
+    );
+    let t = std::time::Instant::now();
     c.ctl(&["status", "--wait", "30"]).ok();
     assert!(
         c.meta_log().contains("restored the backup of map epoch"),
         "{}",
         c.meta_log()
+    );
+    assert!(
+        t.elapsed() >= std::time::Duration::from_millis(1500),
+        "status answered before the backup was written"
+    );
+    let log = c.meta_log();
+    assert!(
+        log.find("restored the backup").unwrap() < log.find("cluster API on").unwrap(),
+        "{log}"
     );
 
     // Everything is back: the map, the token, the revocation; the volume
