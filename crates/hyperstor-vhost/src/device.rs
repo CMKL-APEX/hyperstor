@@ -873,22 +873,36 @@ async fn run_request(
     writable_len: u64,
 ) -> (u8, u32) {
     match req {
-        Request::Read { off, len } => match read_at(&disk.volume, off, len).await {
-            Ok(data) => match write_stream(mem, &segs.writable, 0, &data) {
-                Some(()) => (blk::S_OK, writable_len as u32),
-                None => (blk::S_IOERR, 1),
-            },
-            Err(_) => (blk::S_IOERR, 1),
-        },
-        Request::Write { off, len } => {
-            let write = || async {
-                let data = read_stream(mem, &segs.readable, 16, len).ok_or(None)?;
-                write_at(disk, off, data).await.map_err(Some)
-            };
-            match held(disk, write).await {
-                Ok(()) => (blk::S_OK, 1),
-                Err(()) => (blk::S_IOERR, 1),
+        // In pieces of at most `blk::PIECE`, one after another: a request
+        // holds one piece's buffer at a time, however long it is.
+        Request::Read { off, len } => {
+            let mut at = off;
+            while at < off + len {
+                let n = blk::piece(at, off + len);
+                let Ok(data) = read_at(&disk.volume, at, n).await else {
+                    return (blk::S_IOERR, 1);
+                };
+                if write_stream(mem, &segs.writable, at - off, &data).is_none() {
+                    return (blk::S_IOERR, 1);
+                }
+                at += n;
             }
+            (blk::S_OK, writable_len as u32)
+        }
+        Request::Write { off, len } => {
+            let mut at = off;
+            while at < off + len {
+                let n = blk::piece(at, off + len);
+                let write = || async {
+                    let data = read_stream(mem, &segs.readable, 16 + (at - off), n).ok_or(None)?;
+                    write_at(disk, at, data).await.map_err(Some)
+                };
+                if held(disk, write).await.is_err() {
+                    return (blk::S_IOERR, 1);
+                }
+                at += n;
+            }
+            (blk::S_OK, 1)
         }
         // Writes are acknowledged once every copy has them (10-volumes.md
         // §10.1): nothing to flush.

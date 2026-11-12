@@ -14,6 +14,11 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
 - **Virtio features:** multiqueue (one queue per vCPU, up to the reactors
   on the VM's NUMA node), packed virtqueues, `EVENT_IDX`, discard,
   write-zeroes, flush (10-volumes.md §10.1), and the config-change event for expand.
+- **Request size:** the device advertises `size_max` 64 KiB and `seg_max`
+  128, 8 MiB a request. UEFI firmware ignores both and reads a whole
+  file in one request, so a request of up to 1 GiB is served, 8 MiB at a
+  time (D297). Why: a VM's firmware loads large files (a unified kernel
+  image), and a request holds one piece's buffer however long it is.
 - **The disk's serial number** is the first 20 characters of the glidex
   disk id without dashes, unique within the VM. Tools in the guest, and
   the guest library (D33), find the volume behind a disk by it.

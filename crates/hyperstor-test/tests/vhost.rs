@@ -65,15 +65,32 @@ fn a_volume_is_served_over_vhost_user_blk() {
     assert_eq!(s, S_IOERR, "past the end");
     let (s, _, _) = g.request(T_IN, 1, &[], 4000);
     assert_eq!(s, S_IOERR, "not whole sectors");
-    // The limits a driver is told (size_max, seg_max) and what they add up
-    // to, 8 MiB: a request of it is served, a sector more refused.
+    // The limits a driver is told (size_max, seg_max), which add up to
+    // 8 MiB. Firmware ignores them and sends more in one request, in
+    // segments larger than size_max: such a request is served in pieces.
+    // 12 MiB from a sector inside a block, across a piece boundary,
+    // written and read in one request each, then read in small requests.
     assert_eq!(g.config_u32(8), 64 << 10, "size_max");
     assert_eq!(g.config_u32(12), 128, "seg_max");
-    assert_eq!(g.request(T_IN, 0, &[], 8 << 20).0, S_OK, "at the limit");
-    let (s, _, _) = g.request(T_IN, 0, &[], (8 << 20) + 512);
-    assert_eq!(s, S_IOERR, "past the limit");
-    let (s, _, _) = g.request(T_OUT, 0, &vec![0; (8 << 20) + 512], 0);
-    assert_eq!(s, S_IOERR, "a write past the limit");
+    // Bytes that don't repeat, so a piece put in the wrong place shows.
+    let big: Vec<u8> = (0..12u64 << 20)
+        .map(|i| (i.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 56) as u8)
+        .collect();
+    let at = (32 << 20) + 1536;
+    assert_eq!(
+        g.request(T_OUT, at / 512, &big, 0).0,
+        S_OK,
+        "a 12 MiB write"
+    );
+    let (s, back, _) = g.request(T_IN, at / 512, &[], 12 << 20);
+    assert_eq!(s, S_OK, "a 12 MiB read");
+    assert!(back == big, "the 12 MiB read differs");
+    for o in [0, (8 << 20) - 1536 - 4096, (12 << 20) - 4096] {
+        assert!(
+            g.read(at + o as u64, 4096) == big[o..o + 4096],
+            "small read at {o}"
+        );
+    }
     // 512-byte sectors (D126): the disk's logical blocks are sectors, its
     // physical ones the volume's 4 KiB blocks.
     assert_eq!(g.config_u32(20), 512, "blk_size");
