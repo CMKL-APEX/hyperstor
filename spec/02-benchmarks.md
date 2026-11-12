@@ -2518,3 +2518,70 @@ HS_VMB=1 HS_VMB_RT=10 HS_VMB_VMS=1 HS_VMB_CPUS=48 HS_VMB_NODES=3 \
   test checks under a quarter of a core over 2 s).
 - This is a larger gain at QD1 than the reactor's completion spin alone
   gave (+11%, I350): the guest no longer exits to notify.
+
+## 2026-11-12: a 4 KiB block's CRC32C by three streams and PCLMULQDQ (HS5b, I369)
+
+A development VM: 12 vCPUs of AMD EPYC 7742 (Zen 2; SSE4.2, PCLMULQDQ and
+AVX2, no AVX-512 or VPCLMULQDQ), Linux 6.8.0, Rust 1.99.1, release builds.
+Before: main at ac8c6db0 with `hyperstor-bench crc` timing 4 KiB blocks
+(d19c51a4); after: the codec change on top of it (`crc4k`, I369).
+
+`HS_BENCH_SECS=2 taskset -c 8 hyperstor-bench crc`, alternately, five
+rounds each; medians, with the range of the five.
+
+| Test | before | after | after / before |
+|---|---|---|---|
+| 1 MiB calls | 25.00 GB/s (24.94-25.06) | 25.00 GB/s (24.91-25.06) | 1.00x |
+| 4 KiB blocks of a 64 KiB buffer | 18.91 GB/s, 217 ns a block (216-218) | 25.28 GB/s, 162 ns (162-163) | 1.34x |
+| 4 KiB blocks of a 64 MiB buffer | 6.22 GB/s, 659 ns (654-662) | 6.09 GB/s, 672 ns (669-676) | 0.98x |
+
+End to end, I346's method: `HS_BENCH_SECS=3 hyperstor-bench cluster mem 1`,
+alternately, five rounds each; medians; CPU per operation of every thread
+of the process, as in I346; the range of the five in brackets.
+
+| Test | ops/s before → after | CPU µs per op before → after |
+|---|---|---|
+| 4 KiB random writes, QD1 | 5736 → 5727 (-0.2%) | 229.3 → 230.0 (+0.3%) [196.6-238.8] / [197.8-250.9] |
+| 4 KiB random writes, QD32 | 22642 → 22021 (-2.7%) | 156.9 → 161.5 (+2.9%) [135.3-161.8] / [142.9-169.5] |
+| 4 KiB random reads, QD1 | 13782 → 13209 (-4.2%) | 69.5 → 73.8 (+6.2%) [62.5-76.9] / [64.1-81.0] |
+| 4 KiB random reads, QD32 | 51196 → 45742 (-10.7%) | 45.4 → 50.5 (+11.2%) [40.6-50.2] / [40.9-52.0] |
+| 1 MiB writes, QD4 | 895 → 998 (+11.5%) | 3051.6 → 2817.0 (-7.7%) [2788.5-3410.8] / [2683.6-3437.1] |
+| 1 MiB reads, QD1 | 1082 → 1244 (+15.0%) | 1181.3 → 1039.5 (-12.0%) [1046.1-1277.6] / [1019.9-1248.8] |
+| 1 MiB reads, QD2 | 1628 → 1846 (+13.4%) | 1140.1 → 995.1 (-12.7%) [1007.9-1285.7] / [956.7-1207.7] |
+| 1 MiB reads, QD4 | 2533 → 2873 (+13.4%) | 1102.2 → 966.6 (-12.3%) [1001.9-1264.7] / [941.0-1201.1] |
+
+Before the change, on this VM and on a second of the same kind, three other
+ways to take a 4 KiB block's CRC32C, in a throwaway mode of the benchmark
+(not kept), against the `crc32c` crate (`crc32` instruction, three streams
+for the middle of a buffer, one for the rest). Every one gave the crate's CRC
+on 3,200 random blocks at 16 alignments.
+
+| Way | 4 KiB in cache, GB/s | against the crate |
+|---|---|---|
+| the crate | 19.3 | 1.00x |
+| PCLMULQDQ folding alone (`crc-fast` 1.10.0) | 14.9 | 0.76x (0.80-0.86x at 64 KiB to 1 MiB) |
+| "fusion", `crc32` streams and PCLMULQDQ folding at once (Cawley) | 23.3 | 1.21x |
+| three `crc32` streams over 1360, 1360 and 1368 bytes, joined by PCLMULQDQ (Cawley) | 25.5 | 1.32x |
+
+### Findings
+
+1. **A 4 KiB block's CRC is 1.34 times faster in cache**: 217 to 162 ns, 55 ns
+   a block, from 18.9 to 25.3 GB/s.
+2. **Out of cache there is no gain**: blocks walking 64 MiB are limited by
+   memory (6 GB/s), and measured 2% slower after, with the ranges apart.
+   Another run on the second VM of the kind gave the crate 9.6 GB/s there
+   and the other ways 7.4-7.8 (0.81x), so memory, not the CRC, sets that
+   number on these VMs.
+3. **End to end the change is not measurable**: the results go both ways
+   (1 MiB reads +13% ops/s, 4 KiB reads at QD32 -11%) and the five rounds of
+   each overlap. It is what the arithmetic says: a replicated write takes
+   about three passes of the CRC (the client's, the primary's check, a
+   replica's check), 3 x 55 ns of about 210 µs of CPU for 4 KiB (0.08%), and
+   3 x 256 blocks x 55 ns = 42 µs of about 2,950 µs for 1 MiB (1.4%), below
+   the variation of this test (about 10% between rounds).
+4. **The plain three streams beat "fusion" on Zen 2.** Cawley measured fusion
+   only on Intel (Broadwell, Skylake, Ice Lake), at 1.65 times three streams
+   there; here it is 0.91 times. PCLMULQDQ alone is slower than the crate
+   at every size up to 1 MiB.
+5. **Not measured**: a CPU with AVX-512 and VPCLMULQDQ, aarch64 (which uses
+   the crate), a drive or a network fast enough for the CPU to be the limit.

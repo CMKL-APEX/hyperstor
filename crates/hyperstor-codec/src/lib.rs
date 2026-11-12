@@ -8,6 +8,7 @@
 use thiserror::Error;
 
 pub mod align;
+mod crc4k;
 pub mod iobuf;
 
 pub use align::{AlignedBuf, BLOCK};
@@ -220,12 +221,19 @@ impl<'a> Dec<'a> {
 /// CRC32C (Castagnoli), hardware-accelerated where the CPU has it.
 #[inline]
 pub fn crc32c(data: &[u8]) -> u32 {
-    crc32c::crc32c(data)
+    crc32c_append(0, data)
 }
 
-/// Continues a CRC32C over more data.
+/// Continues a CRC32C over more data. A block of 4096 bytes, the unit the
+/// engine and the protocol checksum, takes a path cut to that length where
+/// the CPU allows (`crc4k`); every other length is the `crc32c` crate's.
 #[inline]
 pub fn crc32c_append(crc: u32, data: &[u8]) -> u32 {
+    if let Ok(block) = <&[u8; 4096]>::try_from(data)
+        && let Some(c) = crc4k::append(crc, block)
+    {
+        return c;
+    }
     crc32c::crc32c_append(crc, data)
 }
 
