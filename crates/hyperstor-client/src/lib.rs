@@ -225,7 +225,20 @@ impl Client {
         members: Vec<SocketAddr>,
         id: u64,
     ) -> Result<Rc<Client>, ClientError> {
+        Self::connect_members_as(members, id, random_u64().max(1)).await
+    }
+
+    /// [`Self::connect_members`] as client instance `instance` (never 0):
+    /// for a process with a client on each of its reactors, all one
+    /// instance to the cluster (04-decisions.md D291), so a blocklist entry
+    /// for it fences them all.
+    pub async fn connect_members_as(
+        members: Vec<SocketAddr>,
+        id: u64,
+        instance: u64,
+    ) -> Result<Rc<Client>, ClientError> {
         assert!(!members.is_empty(), "no map service members");
+        assert!(instance != 0, "instance 0 is a storage node's peers'");
         let c = Rc::new(Client {
             members: RefCell::new(members),
             leader: std::cell::Cell::new(0),
@@ -237,7 +250,7 @@ impl Client {
             id,
             // Never 0: storage nodes take 0 for peers, which are never
             // blocklisted.
-            instance: random_u64().max(1),
+            instance,
             lease_label: RefCell::new(String::new()),
             host: RefCell::new(String::new()),
             networks: RefCell::new(Vec::new()),

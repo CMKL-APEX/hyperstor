@@ -1183,6 +1183,45 @@ impl Client {
         }
     }
 
+    /// Takes over the renewal of a lease another client of this process
+    /// holds (`lease`, on volume `id`, taken with `label`), without asking
+    /// the volume's header for a new one (04-decisions.md D291): for a
+    /// service that moves a volume between its reactors, each with its own
+    /// client of the same instance. The header must name `lease` as its
+    /// holder's. The other client's handle must be dropped (not detached)
+    /// once this returns; until then both renew it, which the header's
+    /// primary takes as one holder.
+    pub async fn adopt(
+        self: &Rc<Self>,
+        id: u128,
+        lease: u64,
+        label: &str,
+    ) -> Result<Rc<Attached>, ClientError> {
+        let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        if lease == 0 || v.holder != Some(lease) {
+            return Err(ClientError::LeaseLost(id));
+        }
+        let a = Rc::new(Attached {
+            client: self.clone(),
+            volume: RefCell::new(v),
+            lease,
+            delegate: false,
+            delegates: RefCell::new(Vec::new()),
+            label: crate::cut_label(label),
+            lost: Cell::new(false),
+            paused: Cell::new(false),
+            inflight: Cell::new(0),
+            known: RefCell::new(HashMap::new()),
+            writes: Cell::new(0),
+        });
+        self.attached.borrow_mut().insert(id, Rc::downgrade(&a));
+        hyperstor_reactor::spawn(self.clone().watch(Rc::downgrade(&a)));
+        if !self.renewing.replace(true) {
+            hyperstor_reactor::spawn(self.clone().renew_leases());
+        }
+        Ok(a)
+    }
+
     /// Attaches volume `id` whose holder has died or is cut off
     /// (06-metadata.md §9, a forced takeover): waits until the holder's lease
     /// has expired (up to 4 s after its last renewal, D75), blocklists it,

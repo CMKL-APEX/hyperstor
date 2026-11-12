@@ -8,6 +8,7 @@
 | `hyperstord` | every storage node | Stores data on local devices and serves reads and writes |
 | `hyperstor-vhost` | every host that runs VMs on volumes | Serves volumes to the VMs as virtio disks, over vhost-user-blk |
 | `hyperstor-mgmt` | the map service's hosts | The web UI, people's logins, and the cluster API on their behalf |
+| `hyperstor-s3` | hosts that serve S3 clients, one or more per realm | Serves buckets and objects over S3's HTTP API |
 | your program, with `hyperstor-client` | anywhere on the network | Reads and writes volumes |
 
 ## The cluster map
@@ -147,3 +148,31 @@ time, and health warns that it flaps. A device that is **out**, because
 its node has been down for ten minutes, it failed, or an administrator
 took it out, gets no placement, and its PGs are copied to other
 devices.
+
+## Objects and key-value ranges
+
+The S3 gateway keeps each object's data in chunks like a volume's, and
+its buckets' indexes in **key-value ranges**: sorted tables split into
+range objects that grow, split and merge on their own, in a pool of
+their own or the data's. A bucket belongs to a tenant, and its name is
+unique within that tenant.
+
+## Tenants and realms
+
+A **tenant** owns volumes and buckets; clones inherit their parent's.
+A **realm** groups tenants with the pools they may use, the hosts that
+serve them (VM hosts and S3 gateways, by name) and the people who
+administer them: a role granted on a realm (`storage-admin@acme`, say) reaches
+only that realm's volumes, buckets, keys and operations. A cluster
+starts with one realm, `default`. Quotas and fair share between tenants
+are planned.
+
+## Networks
+
+A cluster can name **networks**, each a subnet (or an InfiniBand
+prefix). A device on a host with a port on a network gets an
+**endpoint** there, and clients reach it on the networks they are given,
+so data can move over a fast or dedicated network while the map service
+and the cluster API stay on the hosts' main addresses. A network is
+*trusted* or not; Hyperstor doesn't encrypt data on either yet. See
+[Several networks](admin-guide/planning.md#several-networks).

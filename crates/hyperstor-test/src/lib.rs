@@ -740,6 +740,7 @@ impl Cluster {
             node_procs: BTreeMap::new(),
         };
         c.start_meta();
+        c.meta_serving();
         for n in 0..nodes {
             c.start_node(n);
         }
@@ -1022,6 +1023,29 @@ impl Cluster {
             .spawn()
             .unwrap();
         self.node_procs.insert(n, p);
+    }
+
+    /// Waits until the map service is about to serve: it logs its cluster
+    /// API's address just before it answers on the map port. A storage
+    /// node gives up after about 2 s without a map service (systemd
+    /// starts it again; here nothing does), and on a busy runner the map
+    /// service can take longer than that to open its store. Fails with
+    /// its log if it exits first.
+    pub fn meta_serving(&mut self) {
+        let log = self.meta_log.clone();
+        let meta = self.meta.as_mut().expect("the map service started");
+        wait_for("the map service to serve", 30, || {
+            if let Ok(Some(st)) = meta.try_wait() {
+                panic!(
+                    "hyperstor-meta exited ({st}) before serving:\n{}",
+                    std::fs::read_to_string(&log).unwrap_or_default()
+                );
+            }
+            std::fs::read_to_string(&log)
+                .ok()?
+                .contains("hyperstor-meta: cluster API on ")
+                .then_some(())
+        });
     }
 
     /// Kills the map service (as a crash would) and waits for it to go.

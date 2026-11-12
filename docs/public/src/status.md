@@ -28,7 +28,7 @@ covered by tests that run on every change.
 | HS12: S3 gateway | Done |
 | HS13: S3 over RDMA | Planned |
 | HS14: Distributed filesystem | Planned |
-| HS15: Tenancy: quotas and fair share between tenants | Done |
+| HS15: Tenancy: quotas and fair share between tenants | In progress |
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
 | HS18: Pools and devices at run time | In progress |
@@ -108,7 +108,9 @@ covered by tests that run on every change.
 |---|---|
 | hyperstor-vhost: volumes over vhost-user-blk on the reactor, staged through its control socket, as 512e disks | In progress |
 | VMs boot from volumes under Cloud Hypervisor and QEMU | Done |
-| Adaptive polling, queues on reactors per NUMA node, zero copy from guest memory | Planned |
+| Reactors per NUMA node: a disk on its guest's node's reactor, its connection and lease moved there | In progress |
+| Adaptive polling: a disk attached with `poll` has its queues polled while busy and for a window after, its reactor spinning | Done |
+| Zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
 | A detach is refused while a hypervisor is connected, unless forced | Done |
 | hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |
@@ -188,6 +190,8 @@ covered by tests that run on every change.
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
 | Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
 | A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm | Done |
+| Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool | Planned |
+| Two-level fair share in the reactors: tenants share each priority class by weight, then volumes within a tenant | Planned |
 
 ## HS18: Pools and devices at run time
 

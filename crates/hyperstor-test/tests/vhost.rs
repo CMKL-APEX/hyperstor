@@ -298,6 +298,242 @@ fn a_detach_leaves_a_connected_disk_alone() {
     svc.stop();
 }
 
+/// D293: a disk attached with `poll` takes requests its guest makes
+/// available without notifying, while busy and just after; one without
+/// waits for the notification. The choice is listed and kept across a
+/// restart, and an idle polled disk lets its reactor sleep.
+#[test]
+fn a_polled_disk_takes_requests_its_guest_doesnt_notify() {
+    let c = Cluster::all_in_one("vhost-poll", 3);
+    let (a, b) = (volume(&c, "16M"), volume(&c, "16M"));
+    let mut svc = Service::start(&c, "vhost-poll", &[]);
+    let r = svc.ctl(serde_json::json!({"id": 1, "op": "attach", "args": {
+        "volume": a, "serial": "polled", "poll": true}}));
+    let sa = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
+    let sb = PathBuf::from(svc.attach(&b, "attach")["ok"]["socket"].as_str().unwrap());
+    let polled = |svc: &Service| -> Vec<(String, bool)> {
+        let l = svc.ctl(serde_json::json!({"id": 2, "op": "list"}));
+        let mut v: Vec<(String, bool)> = l["ok"]["disks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| (d["volume"].as_str().unwrap().to_string(), d["poll"] == true))
+            .collect();
+        v.sort();
+        v
+    };
+    let mut want = vec![(a.clone(), true), (b.clone(), false)];
+    want.sort();
+    assert_eq!(polled(&svc), want);
+    let data = pattern(9, 4096);
+    const READS: u32 = 200;
+    for event_idx in [false, true] {
+        let mut g = Guest::connect(&sa, event_idx);
+        g.write(8192, &data);
+        g.kick_after = Some(std::time::Duration::from_millis(20));
+        for _ in 0..READS {
+            assert!(g.read(8192, 4096) == data, "read back differs");
+        }
+        // Most are taken without a notification; a busy host may let the
+        // window pass now and then.
+        assert!(
+            g.late_kicks <= READS - 10,
+            "event_idx {event_idx}: {} of {READS} needed a notification",
+            g.late_kicks
+        );
+    }
+    let mut g = Guest::connect(&sb, true);
+    g.write(8192, &data);
+    g.kick_after = Some(std::time::Duration::from_millis(5));
+    for _ in 0..20 {
+        assert!(g.read(8192, 4096) == data);
+    }
+    assert_eq!(
+        g.late_kicks, 20,
+        "not polled: each waits for its notification"
+    );
+    drop(g);
+    // Idle, a polled disk's reactor sleeps: well under a core.
+    let g = Guest::connect(&sa, true);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let ticks = || {
+        let s = std::fs::read_to_string(format!("/proc/{}/stat", svc.pid())).unwrap();
+        let f: Vec<u64> = s[s.rfind(')').unwrap() + 2..]
+            .split_whitespace()
+            .map(|x| x.parse().unwrap_or(0))
+            .collect();
+        f[11] + f[12]
+    };
+    let before = ticks();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let used = ticks() - before;
+    assert!(used < 50, "{used} ticks in 2 s idle");
+    drop(g);
+    svc.restart();
+    assert_eq!(polled(&svc), want, "kept across a restart");
+    svc.stop();
+}
+
+/// The host's NUMA nodes with CPUs, and each one's first CPU.
+fn nodes() -> Vec<(u32, usize)> {
+    let mut out: Vec<(u32, usize)> = std::fs::read_dir("/sys/devices/system/node")
+        .into_iter()
+        .flatten()
+        .filter_map(|e| {
+            let e = e.ok()?;
+            let n = e.file_name().to_str()?.strip_prefix("node")?.parse().ok()?;
+            let list = std::fs::read_to_string(e.path().join("cpulist")).ok()?;
+            let first = list.trim().split([',', '-']).next()?.parse().ok()?;
+            Some((n, first))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// D290–D292: a reactor on each CPU of `--cpus`. A disk goes to the
+/// reactor of the node its guest's memory is bound to, else to the least
+/// loaded, and its lease goes with it (D291): I/O there works, as do a
+/// reconnect, `list` and a detach. On a host of one node both reactors
+/// are on it and only the least-loaded rule is seen.
+#[test]
+fn each_disk_runs_on_its_guests_reactor() {
+    let c = Cluster::all_in_one("vhost-numa", 3);
+    let (a, b) = (volume(&c, "16M"), volume(&c, "16M"));
+    let nodes = nodes();
+    let (cpus, bind) = match (nodes.first(), nodes.last()) {
+        (Some(f), Some(l)) if f.0 != l.0 => (format!("{},{}", f.1, l.1), Some(l.0)),
+        _ => ("0,1".to_string(), None),
+    };
+    let svc = Service::start(&c, "vhost-numa", &["--cpus", &cpus]);
+    let list = || {
+        let r = svc.ctl(serde_json::json!({"id": 1, "op": "list"}));
+        r["ok"]["disks"].as_array().unwrap().clone()
+    };
+    let reactor = |v: &str| {
+        let l = list();
+        let d = l.iter().find(|d| d["volume"] == v).unwrap();
+        assert_eq!(d["lost"], false, "{d}");
+        d["reactor"].as_u64().unwrap()
+    };
+    let sa = PathBuf::from(svc.attach(&a, "attach")["ok"]["socket"].as_str().unwrap());
+    let sb = PathBuf::from(svc.attach(&b, "attach")["ok"]["socket"].as_str().unwrap());
+    // Before a hypervisor connects, on the first reactor.
+    assert_eq!(reactor(&a), 0);
+    let data = pattern(3, 64 << 10);
+    let mut ga = Guest::connect_bound(&sa, true, bind);
+    ga.write(0, &data);
+    let ra = reactor(&a);
+    assert_eq!(
+        ra, 1,
+        "bound to the second reactor's node, or the least loaded of none"
+    );
+    if let Some(n) = bind {
+        let l = list();
+        let d = l.iter().find(|d| d["volume"] == a.as_str()).unwrap();
+        assert_eq!(d["node"], n, "{d}");
+    }
+    // Unbound: the least loaded.
+    let mut gb = Guest::connect(&sb, true);
+    gb.write(0, &data);
+    assert_eq!(reactor(&b), 0);
+    assert!(ga.read(0, data.len() as u32) == data);
+    assert!(gb.read(0, data.len() as u32) == data);
+    // A hypervisor reconnecting: the lease went with the disk, which takes
+    // what was written.
+    drop(ga);
+    let mut ga = Guest::connect_bound(&sa, true, bind);
+    assert!(ga.read(0, data.len() as u32) == data, "after a reconnect");
+    ga.write(64 << 10, &data);
+    assert_eq!(reactor(&a), 1);
+    drop(ga);
+    drop(gb);
+    for v in [&a, &b] {
+        let d = svc.ctl(serde_json::json!({"id": 2, "op": "detach", "args": {"volume": v}}));
+        assert!(d.get("ok").is_some(), "{d}");
+    }
+    assert!(svc.listed().is_empty());
+    // Detached from the reactor that held it: attached again from scratch.
+    let sa = PathBuf::from(svc.attach(&a, "attach")["ok"]["socket"].as_str().unwrap());
+    let mut ga = Guest::connect(&sa, true);
+    assert!(ga.read(64 << 10, data.len() as u32) == data);
+    drop(ga);
+    svc.stop();
+}
+
+/// Pins this thread to `cpu`.
+fn pin(cpu: usize) {
+    // SAFETY: cpu_set_t is plain data; CPU_SET writes within it.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_SET(cpu, &mut set);
+        assert_eq!(
+            libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set),
+            0
+        );
+    }
+}
+
+/// D292's second half: a guest whose memory isn't bound starts on the
+/// least-loaded reactor; once the pages its requests use show its memory
+/// is on another node, its disk moves to that node's reactor, requests in
+/// flight finished first, and goes on there. Needs two NUMA nodes.
+#[test]
+fn an_unbound_guests_disk_follows_its_pages() {
+    let nodes = nodes();
+    let (Some(first), Some(last)) = (nodes.first(), nodes.last()) else {
+        return;
+    };
+    if first.0 == last.0 {
+        eprintln!("one NUMA node: nothing to move between");
+        return;
+    }
+    let c = Cluster::all_in_one("vhost-pages", 3);
+    let a = volume(&c, "16M");
+    // Reactor 0 on the last node, 1 on the first: an unbound guest
+    // starts on 1, the least loaded that isn't the control socket's.
+    let cpus = format!("{},{}", last.1, first.1);
+    let svc = Service::start(&c, "vhost-pages", &["--cpus", &cpus]);
+    let reactor = || {
+        let r = svc.ctl(serde_json::json!({"id": 1, "op": "list"}));
+        let d = r["ok"]["disks"][0].clone();
+        assert_eq!(d["lost"], false, "{d}");
+        (d["reactor"].as_u64().unwrap(), d["node"].as_u64())
+    };
+    let sa = PathBuf::from(svc.attach(&a, "attach")["ok"]["socket"].as_str().unwrap());
+    // The guest's memory first touched on the last node.
+    pin(last.1);
+    let mut g = Guest::connect_touched(&sa, true);
+    let data = pattern(9, 256 << 10);
+    g.write(0, &data);
+    assert_eq!(reactor().0, 1, "unbound: the least loaded, not the first");
+    let t = std::time::Instant::now();
+    let mut i = 0u64;
+    while reactor().0 != 0 {
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(20),
+            "never moved"
+        );
+        i += 1;
+        g.write((i % 32) * (256 << 10), &data);
+    }
+    assert_eq!(reactor().1, Some(last.0 as u64));
+    // It goes on there, with what was written before and while it moved.
+    for k in 0..=i.min(31) {
+        assert!(
+            g.read(k * (256 << 10), data.len() as u32) == data,
+            "block {k}"
+        );
+    }
+    g.write(0, &data[..4096]);
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    assert_eq!(reactor().0, 0, "placed by its pages once");
+    drop(g);
+    let d = svc.ctl(serde_json::json!({"id": 2, "op": "detach", "args": {"volume": a}}));
+    assert!(d.get("ok").is_some(), "{d}");
+    svc.stop();
+}
+
 /// D183: a write refused for space (a device past full, D27) is held and
 /// tried again every second; space freed in time lets it finish, and past
 /// `--hold-full` the guest sees `IOERR`. An overwrite of written blocks

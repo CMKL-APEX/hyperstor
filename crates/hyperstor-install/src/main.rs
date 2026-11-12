@@ -39,6 +39,9 @@
 //!   runs VMs. `--vhost-user NAME` (repeatable) lets that user use its
 //!   control socket and gives its sockets the user's primary group
 //!   (D144); `--no-vhost` removes it. A restart keeps its volumes (D143).
+//!   Its reactors run on the host CPUs glidex reserves, the first of
+//!   each NUMA node (D290, host-topology.md H7); `--vhost-cpus LIST`
+//!   names others.
 //! - `--s3` adds `hyperstor-s3`, the S3 gateway (14-s3.md §14.2, D233),
 //!   listening on every address on `--s3-port` (8848, D247), with the site's
 //!   certificate in `--s3-tls DIR` (`s3.crt`, `s3.key`) or its own `s3`
@@ -79,7 +82,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -153,6 +156,9 @@ struct Settings {
     /// `hyperstor-s3`) reach storage on (D289): `auto`, those its storage
     /// nodes use; `none`; or names, in order.
     client_networks: String,
+    /// The CPUs `hyperstor-vhost`'s reactors run on (D290): `auto`, the
+    /// host CPUs glidex reserves; or a CPU list, one reactor per CPU.
+    vhost_cpus: String,
     /// The operator's own web certificate's directory (`web.crt`,
     /// `web.key`, kept current by their ACME client, D109); empty: the
     /// cluster CA's (D108).
@@ -221,6 +227,7 @@ impl Settings {
             mgmt_listen: "all".into(),
             endpoints: "auto".into(),
             client_networks: "auto".into(),
+            vhost_cpus: "auto".into(),
             web_tls: String::new(),
             tailscale_cert: false,
             mgmt_hosts: String::new(),
@@ -307,6 +314,7 @@ impl Settings {
                 "mgmt_listen" => self.mgmt_listen = v.to_string(),
                 "endpoints" => self.endpoints = v.to_string(),
                 "client_networks" => self.client_networks = v.to_string(),
+                "vhost_cpus" => self.vhost_cpus = v.to_string(),
                 "web_tls" => self.web_tls = v.to_string(),
                 "tailscale_cert" => self.tailscale_cert = v == "true",
                 "mgmt_hosts" => self.mgmt_hosts = v.to_string(),
@@ -395,6 +403,10 @@ impl Settings {
             String::new()
         } else {
             format!("client_networks = {}\n", self.client_networks)
+        } + &if self.vhost_cpus == "auto" {
+            String::new()
+        } else {
+            format!("vhost_cpus = {}\n", self.vhost_cpus)
         } + &if self.s3
             || self.all_in_one
             || self.s3_port != DEFAULT_S3_PORT
@@ -586,6 +598,7 @@ fn main() {
             "--mgmt-listen" => "mgmt_listen",
             "--endpoints" => "endpoints",
             "--client-networks" => "client_networks",
+            "--vhost-cpus" => "vhost_cpus",
             "--web-tls" => "web_tls",
             "--mgmt-hosts" => "mgmt_hosts",
             "--mgmt-proxy-ca" => "mgmt_proxy_ca",
@@ -621,6 +634,8 @@ fn main() {
                                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
                     })
             }
+            // CPUs as the kernel lists them (`0,16,32-33`).
+            "vhost_cpus" => v == "auto" || cpu_list_ok(&v),
             // Empty: back to the cluster CA's certificate.
             "web_tls" | "s3_tls" | "mgmt_proxy_ca" => v.is_empty() || v.starts_with('/'),
             // A realm's name (D248); empty: back to "default".
@@ -1393,6 +1408,11 @@ WantedBy=multi-user.target
 struct VhostPlan {
     uids: Vec<u32>,
     gids: Vec<u32>,
+    /// Its reactors' CPUs (`--cpus`, D290); empty: its default, the
+    /// first CPU of each NUMA node.
+    cpus: Vec<u32>,
+    /// Why the CPUs aren't what glidex reserves, for the operator.
+    warn: Vec<String>,
 }
 
 /// What this host runs: the map service and which storage nodes.
@@ -1519,7 +1539,7 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         n.shards = kept.iter().map(|k| k.1).collect();
         n.paths = kept.into_iter().map(|k| k.2).collect();
     }
-    p.vhost = s.runs_vhost().then(|| vhost_plan(s));
+    p.vhost = s.runs_vhost().then(|| vhost_plan(root, s));
     if p.vhost.is_some() && p.map.is_empty() {
         fail("--vhost needs the map service's addresses: --map ADDR[,ADDR...]");
     }
@@ -1571,10 +1591,15 @@ fn s3_only_plan(s: &Settings) -> Plan {
 
 /// The users `--vhost-user` names, as ids; an unknown one fails the
 /// install.
-fn vhost_plan(s: &Settings) -> VhostPlan {
+fn vhost_plan(root: &Path, s: &Settings) -> VhostPlan {
+    let glidex = fs::read_to_string(under(root, GLIDEX_CONFIG)).ok();
+    let nodes = glidex_topology::numa::read(Path::new("/sys"));
+    let (cpus, warn) = vhost_cpus(&s.vhost_cpus, glidex.as_deref(), &nodes);
     let mut v = VhostPlan {
         uids: Vec::new(),
         gids: Vec::new(),
+        cpus,
+        warn,
     };
     for u in s.vhost_users() {
         let (uid, gid) =
@@ -1585,6 +1610,89 @@ fn vhost_plan(s: &Settings) -> VhostPlan {
         }
     }
     v
+}
+
+/// glidex's control-plane configuration: its `cluster.node_reserved`
+/// keeps CPUs for the host (host-topology.md H7).
+const GLIDEX_CONFIG: &str = "/etc/glidex/control-plane.json";
+
+/// A CPU list as the kernel writes it: `0,16,32-33`.
+fn cpu_list_ok(v: &str) -> bool {
+    let n = |x: &str| !x.is_empty() && x.len() <= 5 && x.bytes().all(|b| b.is_ascii_digit());
+    !v.is_empty()
+        && v.split(',').all(|p| match p.split_once('-') {
+            Some((a, b)) => n(a) && n(b) && a.parse::<u32>().ok() <= b.parse::<u32>().ok(),
+            None => n(p),
+        })
+}
+
+/// D290: the CPUs `hyperstor-vhost`'s reactors run on, and what the
+/// operator should know about them. `wanted` is `--vhost-cpus`: a list
+/// is taken as given. `auto` takes the CPUs glidex reserves for the host
+/// (`cluster.node_reserved.cpu_list` in glidex's configuration),
+/// the first of each NUMA node, so each node's guests have a reactor no
+/// VM's vCPUs share. Without that list glidex reserves each node's first
+/// core, which is `hyperstor-vhost`'s own default: no `--cpus`.
+fn vhost_cpus(
+    wanted: &str,
+    glidex: Option<&str>,
+    nodes: &[glidex_topology::numa::Numa],
+) -> (Vec<u32>, Vec<String>) {
+    use glidex_topology::numa::parse_list;
+    if wanted != "auto" {
+        return (parse_list(wanted), Vec::new());
+    }
+    let Some(text) = glidex else {
+        return (Vec::new(), Vec::new());
+    };
+    let list = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) => match &v["cluster"]["node_reserved"]["cpu_list"] {
+            serde_json::Value::String(l) => parse_list(l),
+            serde_json::Value::Null => return (Vec::new(), Vec::new()),
+            _ => {
+                return (
+                    Vec::new(),
+                    vec![format!(
+                        "{GLIDEX_CONFIG}: cluster.node_reserved.cpu_list is not a list; reactors on each NUMA node's first CPU"
+                    )],
+                );
+            }
+        },
+        Err(e) => {
+            return (
+                Vec::new(),
+                vec![format!(
+                    "{GLIDEX_CONFIG}: {e}; reactors on each NUMA node's first CPU"
+                )],
+            );
+        }
+    };
+    if list.is_empty() {
+        return (
+            Vec::new(),
+            vec![
+                "glidex reserves no CPUs for the host (cluster.node_reserved.cpu_list is empty): reactors on each NUMA node's first CPU, which VMs may also get; --vhost-cpus names others".into(),
+            ],
+        );
+    }
+    let mut cpus = Vec::new();
+    let mut warn = Vec::new();
+    for n in nodes.iter().filter(|n| !n.cpus.is_empty()) {
+        match list.iter().filter(|c| n.cpus.contains(c)).min() {
+            Some(c) => cpus.push(*c),
+            None => warn.push(format!(
+                "glidex reserves no CPU on NUMA node {}: its guests' disks run on another node's reactor",
+                n.id
+            )),
+        }
+    }
+    if cpus.is_empty() {
+        warn = vec![
+            "none of the CPUs glidex reserves is online: reactors on each NUMA node's first CPU"
+                .into(),
+        ];
+    }
+    (cpus, warn)
 }
 
 /// A user's uid and primary gid.
@@ -3109,6 +3217,9 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             args += &format!(" --group {g}");
         }
         args += &networks_arg(s, p);
+        if !v.cpus.is_empty() {
+            args += &format!(" --cpus {}", glidex_topology::numa::format_list(&v.cpus));
+        }
         // It hands its sockets to these groups, so it is in them.
         let groups = if v.gids.is_empty() {
             "# No --vhost-user: only root and hyperstor use it.".to_string()
@@ -3921,6 +4032,9 @@ fn install(
         }
     }
     let mut units_changed = false;
+    for w in p.vhost.iter().flat_map(|v| &v.warn) {
+        eprintln!("hyperstor-install: hyperstor-vhost: {w}");
+    }
     if p.vhost.is_none() {
         let removed = remove_vhost(root, real && !no_start);
         units_changed |= !removed.is_empty();
@@ -5803,7 +5917,9 @@ mod tests {
             p.vhost,
             Some(VhostPlan {
                 uids: vec![0],
-                gids: vec![0]
+                gids: vec![0],
+                cpus: Vec::new(),
+                warn: Vec::new(),
             })
         );
         assert!(units(&p).contains(&"hyperstor-vhost.service".to_string()));
@@ -5840,6 +5956,83 @@ mod tests {
         t.apply(&s.save());
         assert!(t.vhost && t.vhost_users == "root");
         assert!(user_name_ok("glidex") && !user_name_ok("Root") && !user_name_ok("a b"));
+    }
+
+    /// D290: the reactors run on the CPUs glidex reserves for the host,
+    /// one per NUMA node; without a list, on `hyperstor-vhost`'s default,
+    /// which is glidex's; `--vhost-cpus` overrides, and is kept.
+    #[test]
+    fn vhost_reactors_run_on_the_cpus_glidex_reserves() {
+        use glidex_topology::numa::Numa;
+        let node = |id, cpus: Vec<u32>| Numa {
+            id,
+            cpus,
+            socket: None,
+        };
+        let nodes = vec![
+            node(0, (0..4).chain(8..12).collect()),
+            node(1, (4..8).chain(12..16).collect()),
+            node(2, Vec::new()),
+        ];
+        let conf = |l: &str| format!(r#"{{"cluster": {{"node_reserved": {{"cpu_list": {l}}}}}}}"#);
+        let (none, quiet) = (Vec::<u32>::new(), Vec::<String>::new());
+        // No glidex, or no list: its default, which is ours.
+        assert_eq!(
+            vhost_cpus("auto", None, &nodes),
+            (none.clone(), quiet.clone())
+        );
+        assert_eq!(
+            vhost_cpus("auto", Some("{}"), &nodes),
+            (none.clone(), quiet.clone())
+        );
+        assert_eq!(
+            vhost_cpus("auto", Some(&conf("null")), &nodes),
+            (none.clone(), quiet.clone())
+        );
+        // Whole cores with their siblings: one reactor per node.
+        assert_eq!(
+            vhost_cpus("auto", Some(&conf(r#""0,8,5,13""#)), &nodes),
+            (vec![0, 5], quiet.clone())
+        );
+        assert_eq!(
+            vhost_cpus("auto", Some(&conf(r#""2-3""#)), &nodes),
+            (
+                vec![2],
+                vec![
+                    "glidex reserves no CPU on NUMA node 1: its guests' disks run on another node's reactor"
+                        .to_string()
+                ]
+            )
+        );
+        // Reserving none, or nothing we can read: the default, said.
+        for c in [conf(r#""""#), conf("3"), "{".into(), conf(r#""99""#)] {
+            let (cpus, warn) = vhost_cpus("auto", Some(&c), &nodes);
+            assert!(cpus.is_empty() && warn.len() == 1, "{c}: {cpus:?} {warn:?}");
+        }
+        assert_eq!(
+            vhost_cpus("16,48", Some(&conf(r#""0""#)), &nodes),
+            (vec![16, 48], quiet.clone())
+        );
+        assert!(cpu_list_ok("0,16,32-33") && cpu_list_ok("7"));
+        for bad in ["", "a", "3-1", "1,,2", "-1", "1-", "123456"] {
+            assert!(!cpu_list_ok(bad), "{bad}");
+        }
+        // Given, it reaches the service and is kept across runs.
+        let mut s = Settings::defaults();
+        s.all_in_one = true;
+        s.vhost = true;
+        s.vhost_cpus = "16,48".into();
+        let p = plan(Path::new("/nonexistent"), &s, None);
+        let env = files(&s, &p)
+            .into_iter()
+            .find(|x| x.0.ends_with("vhost.env"))
+            .unwrap()
+            .1;
+        assert!(env.ends_with(" --cpus 16,48\n"), "{env}");
+        let mut t = Settings::defaults();
+        t.apply(&s.save());
+        assert_eq!(t.vhost_cpus, "16,48");
+        assert!(!Settings::defaults().save().contains("vhost_cpus"));
     }
 
     /// D289: this host's clients reach storage on the networks its storage
