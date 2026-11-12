@@ -102,6 +102,9 @@ The installer takes care of these; nothing needs doing by hand:
   `--mgmt-trusted-proxies` or `--mgmt-proxy-ca` so that it sees each
   person's address; otherwise everyone behind the proxy shares the
   proxy's (see [Behind a proxy](../reference/hyperstor-mgmt.md#behind-a-proxy)).
+- **Web UI sessions.** Over HTTPS the session cookie is named
+  `__Host-hs_session`, which browsers keep to the exact host. Sessions
+  from before the upgrade aren't recognised: everyone logs in once more.
 - **Connections to mgmt and the S3 gateway.** Each has 10 s to send a
   request's headers, and a kept connection with no request closes after
   2 minutes. Browsers and SDKs open a new one. mgmt takes request
