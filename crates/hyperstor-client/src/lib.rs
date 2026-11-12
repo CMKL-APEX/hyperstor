@@ -71,7 +71,18 @@ fn empty_answer(msg: &Msg) -> Option<Result<rpc::Reply, ClientError>> {
         _ => return None,
     })
 }
+/// Tries of a request to a PG's primary that fail other than by the
+/// primary answering it can't serve the PG yet (no primary in the map,
+/// no connection): at 10 ms more each time, about 1.9 s in all.
 const RETRIES: usize = 20;
+
+/// How long a request is tried again while the PG's primary answers it
+/// can't serve it yet (`Unavailable`, `StaleMap`, `NotPrimary`): a PG
+/// splitting, fenced for a map change, or a map the client hasn't got.
+/// Each lasts a few commits, which a slow or busy device can stretch past
+/// RETRIES's 1.9 s; a guest then sees a pause rather than an I/O error
+/// (D296).
+const BUSY_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ClientError {
@@ -504,12 +515,28 @@ impl Client {
         payload: Payload<'_>,
         make: &dyn Fn(Target, WireKey) -> Msg,
     ) -> Result<rpc::Reply, ClientError> {
+        let start = std::time::Instant::now();
         let mut last = String::new();
-        for attempt in 0..RETRIES {
+        // Tries that failed other than by a primary answering it can't
+        // serve the PG yet: they give up after RETRIES. Those answers
+        // (a split, a fence, a map change) give up only after BUSY_WAIT
+        // (D296).
+        let mut others = 0;
+        let mut busy = false;
+        let mut attempt = 0;
+        loop {
             if attempt > 0 {
+                if !busy {
+                    others += 1;
+                }
+                if others >= RETRIES || start.elapsed() >= BUSY_WAIT {
+                    return Err(ClientError::Exhausted(attempt, last));
+                }
                 sleep(Duration::from_millis((10 * attempt as u64).min(200))).await;
                 let _ = self.refresh_map().await;
             }
+            attempt += 1;
+            busy = false;
             let map = self.map();
             let p = map.pools.get(&pool).ok_or(ClientError::NoPool(pool))?;
             let key = match route {
@@ -585,7 +612,10 @@ impl Client {
                         ..
                     },
                     _,
-                )) => last = detail,
+                )) => {
+                    last = detail;
+                    busy = true;
+                }
                 Ok((Msg::Error { code, detail, .. }, _)) => {
                     return Err(ClientError::Server { code, detail });
                 }
@@ -593,7 +623,6 @@ impl Client {
                 Err(e) => last = e.to_string(),
             }
         }
-        Err(ClientError::Exhausted(RETRIES, last))
     }
 
     /// Splits `[off, off + len)` of a volume at chunk boundaries:

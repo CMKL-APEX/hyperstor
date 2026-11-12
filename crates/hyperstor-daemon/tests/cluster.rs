@@ -3705,6 +3705,61 @@ fn a_primary_cut_off_from_the_map_service_loses_no_acknowledged_write() {
     copies_agree(&map, devs, &[(v, 0)]);
 }
 
+/// D296: a write whose primary answers `Unavailable` for longer than the
+/// client's 20 quick tries (about 1.9 s) is tried again until the PG
+/// serves, here once the map service, slow to call the primary down
+/// (4 s), moves the PG; it isn't failed, as a guest's I/O error would be.
+#[test]
+fn a_write_waits_out_a_primary_that_cant_serve_yet() {
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        std::time::Duration::from_secs(4),
+        std::time::Duration::from_millis(300),
+        std::time::Duration::ZERO,
+    );
+    let meta = c.meta_addr;
+    let blocked = c.blocked[0].clone();
+    let (cut_tx, cut_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            let map = cl.map();
+            // A volume whose chunk 0 has its primary on node 0.
+            let v = (1u128..)
+                .find(|v| {
+                    let pg = pg_of(*v, 0, map.pools[&POOL].pg_count);
+                    map.devices[&map.pg(POOL, pg).unwrap().primary().unwrap()].node == 0
+                })
+                .unwrap();
+            cl.write(POOL, v, 0, pattern(1, 16 * 4096)).await.unwrap();
+            cut_tx.send(()).unwrap();
+            go_rx.recv().unwrap();
+            // Node 0's lease runs out: it answers `Unavailable` until the
+            // map service calls it down and the PG moves.
+            hyperstor_reactor::time::sleep(LEASE * 2).await;
+            let t = std::time::Instant::now();
+            cl.write(POOL, v, 0, pattern(2, 16 * 4096))
+                .await
+                .expect("the write waits for the PG to serve");
+            let took = t.elapsed();
+            assert!(
+                took > std::time::Duration::from_secs(2),
+                "the PG served within the quick tries ({took:?}): the test shows nothing"
+            );
+            assert!(cl.read(POOL, v, 0, 16 * 4096).await.unwrap() == pattern(2, 16 * 4096));
+        })
+    });
+    cut_rx.recv().unwrap();
+    blocked.store(true, std::sync::atomic::Ordering::Relaxed);
+    go_tx.send(()).unwrap();
+    client.join().unwrap();
+    blocked.store(false, std::sync::atomic::Ordering::Relaxed);
+    c.stop();
+}
+
 /// Peer reports (D40): with the map service's own timeout long (3 s), a
 /// node that dies is still replaced quickly, because its peers report it.
 #[test]
