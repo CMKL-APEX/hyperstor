@@ -21,6 +21,9 @@ http = "1"
 http-body = "1"
 libc.workspace = true
 serde = "1"
+# Reading the certificate mgmt serves, for an offer's pin (D306).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+ring = "0.17"
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "time"] }
 

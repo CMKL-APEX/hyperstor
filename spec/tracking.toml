@@ -1941,8 +1941,19 @@ id = "AD5"
 title = "People from glidex directories"
 
 [[milestone.item]]
-what = "mgmt trusts glidex directories: offers, redeem, the feed replica, logins through a directory, grants from the feed"
-spec = ["19-administration.md §23.12", "D305", "D306", "D307", "D308", "D309", "D310", "D311"]
+what = "mgmt trusts glidex directories: offers, redeem and ends, the feed replica and the tenants and projects it makes, reports with storage counts"
+spec = ["19-administration.md §23.12", "D306", "I380", "I381", "I382", "I383", "I384", "I385", "I386"]
+status = "done"
+tests = [
+    "hyperstor_meta::trust::tests::feeds_converge_on_the_records_through_failovers",
+    "hyperstor_meta::trust::tests::offers_are_spent_once_and_revoked_only_while_open",
+    "hyperstor_meta::trust::tests::a_feed_keeps_rows_of_admitted_tenants_and_ends_drop_them",
+    "directories::a_directory_s_feed_makes_its_tenants_and_projects",
+]
+
+[[milestone.item]]
+what = "Logins through a directory, grants from the feed, partitions"
+spec = ["19-administration.md §23.12", "D305", "D307", "D308", "D309", "D310", "D311"]
 status = "planned"
 
 [[milestone]]

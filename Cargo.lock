@@ -1215,12 +1215,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-tls"
+version = "0.0.8-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=aeae1abbaa5ede650db7e3ea397f29ca7259a1c0#aeae1abbaa5ede650db7e3ea397f29ca7259a1c0"
+dependencies = [
+ "arc-swap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "nix 0.31.3",
+ "rcgen",
+ "rustls-native-certs",
+ "rustls-pki-types",
+ "serde_json",
+ "sha2",
+ "socket2",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "x509-parser",
+]
+
+[[package]]
 name = "glidex-topology"
 version = "0.0.8-dev"
 source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
 dependencies = [
  "nix 0.31.3",
  "serde",
+]
+
+[[package]]
+name = "glidex-trust"
+version = "0.0.8-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=aeae1abbaa5ede650db7e3ea397f29ca7259a1c0#aeae1abbaa5ede650db7e3ea397f29ca7259a1c0"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "bytes",
+ "getrandom 0.4.3",
+ "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=aeae1abbaa5ede650db7e3ea397f29ca7259a1c0)",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jsonwebtoken",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1473,6 +1524,8 @@ dependencies = [
  "hyperstor-pki",
  "hyperstor-reactor",
  "libc",
+ "ring",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",
@@ -1526,7 +1579,7 @@ name = "hyperstor-install"
 version = "0.1.0"
 dependencies = [
  "connectrpc",
- "glidex-tls",
+ "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca)",
  "glidex-topology",
  "http",
  "hyperstor-api",
@@ -1573,6 +1626,7 @@ dependencies = [
  "connectrpc",
  "futures-util",
  "glidex-raftstore",
+ "glidex-trust",
  "http",
  "http-body-util",
  "hyper",
@@ -1612,7 +1666,8 @@ dependencies = [
  "connectrpc",
  "glidex-auth",
  "glidex-authd",
- "glidex-tls",
+ "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca)",
+ "glidex-trust",
  "http",
  "http-body-util",
  "hyper",
@@ -1719,7 +1774,8 @@ dependencies = [
  "base64 0.23.1",
  "connectrpc",
  "glidex-authd",
- "glidex-tls",
+ "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca)",
+ "glidex-trust",
  "hyperstor-api",
  "hyperstor-pki",
  "jsonwebtoken",

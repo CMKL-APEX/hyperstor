@@ -71,7 +71,7 @@ impl Api {
     /// What holds `tenant` (its volumes, those in the trash too, its
     /// buckets and its S3 keys), or project `project` of it, described for
     /// a refusal; read from the cluster when asked.
-    async fn holds(
+    pub(super) async fn holds(
         &self,
         tenancy: &Tenancy,
         tenant: u32,
@@ -173,6 +173,131 @@ impl Api {
     }
 }
 
+impl Api {
+    /// Checks a move of project `project` (of `t`) to tenant `to` and
+    /// starts it (D303), for whoever was allowed to ask: the pools of the
+    /// new realm, hosts bound to realms, bucket names and caps, then the
+    /// project `moving` and the operation. Refusals are audited as `who`'s.
+    pub(super) async fn start_project_move(
+        &self,
+        who: &str,
+        target: &str,
+        t: &Tenancy,
+        project: u32,
+        to: u32,
+        force: bool,
+    ) -> Result<pb::Operation, ConnectError> {
+        let refuse = |reason: &str, e: ConnectError| {
+            let e = with_reason(e, reason);
+            super::refused(who, "MoveProject", target, &e);
+            e
+        };
+        let Some(p) = t.project(project) else {
+            return Err(refuse(
+                "not_found",
+                ConnectError::not_found(format!("no project {project}")),
+            ));
+        };
+        let from = p.tenant;
+        let realms = self.realms().await?;
+        let realm_to = realms.realm_of(to);
+        let realm_from = realms.realm_of(from);
+        // The new realm may use every pool its volumes and buckets are in
+        // (D249).
+        let held = self.held(None).await?;
+        if let Some(h) = held
+            .iter()
+            .find(|h| h.project == project && !realms.may_use(realm_to, h.pool))
+        {
+            return Err(refuse(
+                "pool_not_in_realm",
+                ConnectError::failed_precondition(format!(
+                    "{} is in a pool realm {} may not use",
+                    h.what,
+                    realms.name(realm_to)
+                )),
+            ));
+        }
+        // Across realms, no host bound to realms may lose a volume it
+        // holds at its next attach (D251): while any host is bound, the
+        // project's volumes are detached first.
+        if realm_from != realm_to {
+            let (map, ..) = self.published().await?;
+            if !map.host_realms.is_empty()
+                && let Some(v) = self.attached_in(t, project).await?.first()
+            {
+                return Err(refuse(
+                    "in_use",
+                    ConnectError::failed_precondition(format!(
+                        "{v} is attached, and hosts are bound to realms: detach it first, as its host may not attach it in realm {}",
+                        realms.name(realm_to)
+                    )),
+                ));
+            }
+        }
+        // No name of its buckets taken in the new tenant (D243).
+        let BucketDone::List(theirs) = self.bucket_op(BucketOp::List { tenant: Some(to) }).await?
+        else {
+            return Err(ConnectError::internal("not a list"));
+        };
+        let BucketDone::List(ours) = self
+            .bucket_op(BucketOp::List { tenant: Some(from) })
+            .await?
+        else {
+            return Err(ConnectError::internal("not a list"));
+        };
+        let ours: Vec<_> = ours.into_iter().filter(|b| b.project == project).collect();
+        if let Some(b) = ours
+            .iter()
+            .find(|b| theirs.iter().any(|x| x.name == b.name))
+        {
+            return Err(refuse(
+                "bucket_exists",
+                ConnectError::failed_precondition(format!(
+                    "tenant {} has a bucket named {} already: rename one first",
+                    t.tenant_label(to),
+                    b.name
+                )),
+            ));
+        }
+        caps_hold(t, to, project, force)?;
+        // Moving: nothing new in it, its tenant's keys put new buckets in
+        // the tenant's default project; then the operation.
+        let started = self
+            .realm_rows("such project", move |db| {
+                tenancy::start_move(db, project, to)
+            })
+            .await;
+        Self::audited(who, "MoveProject", target, started.map(|_| ()))?;
+        let op = self
+            .start_op(
+                who,
+                "MoveProject",
+                crate::operations::Work::MoveProject { project, from, to },
+                target.to_string(),
+                format!(
+                    "moving project {} and {} bucket(s) to tenant {}",
+                    t.project_label(project),
+                    ours.len(),
+                    t.tenant_label(to)
+                ),
+                Some(from),
+            )
+            .await;
+        let op = match op {
+            Ok(op) => op,
+            Err(e) => {
+                // Not started: active again where it was.
+                let _ = self
+                    .realm_rows("such project", move |db| tenancy::undo_move(db, project))
+                    .await;
+                return Err(e);
+            }
+        };
+        Ok(op)
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl TenantService for Api {
     async fn move_project(
@@ -229,106 +354,9 @@ impl TenantService for Api {
                 ConnectError::permission_denied("--force is a cluster administrator's"),
             ));
         }
-        // The new realm may use every pool its volumes and buckets are in
-        // (D249).
-        let held = self.held(None).await?;
-        if let Some(h) = held
-            .iter()
-            .find(|h| h.project == req.project && !realms.may_use(realm_to, h.pool))
-        {
-            return Err(refuse(
-                "pool_not_in_realm",
-                ConnectError::failed_precondition(format!(
-                    "{} is in a pool realm {} may not use",
-                    h.what,
-                    realms.name(realm_to)
-                )),
-            ));
-        }
-        // Across realms, no host bound to realms may lose a volume it
-        // holds at its next attach (D251): while any host is bound, the
-        // project's volumes are detached first.
-        if realm_from != realm_to {
-            let (map, ..) = self.published().await?;
-            if !map.host_realms.is_empty()
-                && let Some(v) = self.attached_in(&t, req.project).await?.first()
-            {
-                return Err(refuse(
-                    "in_use",
-                    ConnectError::failed_precondition(format!(
-                        "{v} is attached, and hosts are bound to realms: detach it first, as its host may not attach it in realm {}",
-                        realms.name(realm_to)
-                    )),
-                ));
-            }
-        }
-        // No name of its buckets taken in the new tenant (D243).
-        let BucketDone::List(theirs) = self
-            .bucket_op(BucketOp::List {
-                tenant: Some(req.to),
-            })
-            .await?
-        else {
-            return Err(ConnectError::internal("not a list"));
-        };
-        let BucketDone::List(ours) = self
-            .bucket_op(BucketOp::List { tenant: Some(from) })
-            .await?
-        else {
-            return Err(ConnectError::internal("not a list"));
-        };
-        let ours: Vec<_> = ours
-            .into_iter()
-            .filter(|b| b.project == req.project)
-            .collect();
-        if let Some(b) = ours
-            .iter()
-            .find(|b| theirs.iter().any(|x| x.name == b.name))
-        {
-            return Err(refuse(
-                "bucket_exists",
-                ConnectError::failed_precondition(format!(
-                    "tenant {} has a bucket named {} already: rename one first",
-                    t.tenant_label(req.to),
-                    b.name
-                )),
-            ));
-        }
-        caps_hold(&t, req.to, req.project, req.force)?;
-        // Moving: nothing new in it, its tenant's keys put new buckets in
-        // the tenant's default project; then the operation.
-        let (project, to) = (req.project, req.to);
-        let started = self
-            .realm_rows("such project", move |db| {
-                tenancy::start_move(db, project, to)
-            })
-            .await;
-        Self::audited(&who, "MoveProject", &target, started.map(|_| ()))?;
         let op = self
-            .start_op(
-                &who,
-                "MoveProject",
-                crate::operations::Work::MoveProject { project, from, to },
-                target.clone(),
-                format!(
-                    "moving project {} and {} bucket(s) to tenant {}",
-                    t.project_label(project),
-                    ours.len(),
-                    t.tenant_label(to)
-                ),
-                Some(from),
-            )
-            .await;
-        let op = match op {
-            Ok(op) => op,
-            Err(e) => {
-                // Not started: active again where it was.
-                let _ = self
-                    .realm_rows("such project", move |db| tenancy::undo_move(db, project))
-                    .await;
-                return Err(e);
-            }
-        };
+            .start_project_move(&who, &target, &t, req.project, req.to, req.force)
+            .await?;
         Ok(pb::MoveProjectResponse {
             operation: buffa::MessageField::some(op),
             ..Default::default()

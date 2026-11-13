@@ -524,7 +524,17 @@ evidence.
 
 ### 23.12 People from glidex directories (D305–D311)
 
-Settled 2026-11-12 (05-decision-log.md points 267–273); not built. With realms as
+Settled 2026-11-12 (05-decision-log.md points 267–273). Built: the
+trust, offers, redeems and ends, the feed and what it makes, and reports
+(I380, #360 stage 4), with these choices open for review: the records
+and the replica in the map service's settings table, which checks the
+handshake (I381); the cluster key made on first use; tenants and
+projects gone from the feed kept unlinked (I382); names and clashes
+(I383); a directory's realm (I384). Settled: reports send used bytes
+from the space counters, 0 until they exist (D313, #364); a directory's
+pin of mgmt's certificate follows renewals through the reports, and an
+offer names mgmt's direct address, not a proxy's (D312, glidex#501). Not yet:
+logins, grants from the feed, the UIs and the driver. With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
 directories the way a glidex cluster does (glidex 19-tenancy.md §7,
@@ -544,7 +554,7 @@ cluster, through glidex's own handshake and feed:
 
 | Step | glidex (19-tenancy.md) | hyperstor |
 |---|---|---|
-| Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the installer, kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
+| Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the map service's leader on first use (I380), kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
 | Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate |
 | Redeem | the tenant's admin runs `gxctl tenant opt-in --offer` at the directory (D65) | unchanged: the directory redeems at mgmt, which pins the directory's keys; the first redeemed offer of a directory makes its realm (or links the one named) |
 | Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica as rows of the map service's store, where people's records are now (D98); every mgmt reads them |

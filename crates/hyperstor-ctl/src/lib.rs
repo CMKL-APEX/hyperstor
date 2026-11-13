@@ -1059,6 +1059,23 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TenantService.RenameProject", "project rename"),
     ("TenantService.DeleteProject", "project delete"),
     ("TenantService.MoveProject", "project move"),
+    ("TrustService.CreateOffer", "admission offer"),
+    ("TrustService.ListOffers", "admission list"),
+    ("TrustService.RevokeOffer", "admission revoke"),
+    (
+        "TrustService.ListTrustedDirectories",
+        "admission directories",
+    ),
+    ("TrustService.EndTrust", "admission end"),
+    ("TrustService.SetOperator", "cluster set-operator"),
+    // hyperstor-mgmt's own calls for directories (D306): no command.
+    ("TrustService.GetTrustKey", "hyperstor-mgmt"),
+    ("TrustService.RelayRedeem", "hyperstor-mgmt"),
+    ("TrustService.RelayEnd", "hyperstor-mgmt"),
+    ("TrustService.GetFeedWork", "hyperstor-mgmt"),
+    ("TrustService.ApplyFeed", "hyperstor-mgmt"),
+    ("TrustService.GetTrustReport", "hyperstor-mgmt"),
+    ("TrustService.EndNoticed", "hyperstor-mgmt"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
     ("TrashService.PurgeFromTrash", "trash purge"),
@@ -1359,6 +1376,72 @@ pub fn tenants_text(r: &pb::ListTenantsResponse) -> String {
             projects.join(","),
             glidex
         );
+    }
+    o
+}
+
+/// `admission list`: the offers made to directories' tenants (D306).
+pub fn offers_text(r: &pb::ListOffersResponse) -> String {
+    if r.offers.is_empty() {
+        return "No offers.\n".into();
+    }
+    let mut o = format!(
+        "{:<18}  {:<9}  {:<16}  {:<16}  {:<12}  {:<16}  {}\n",
+        "OFFER", "STATE", "TENANT", "NAME", "REALM", "EXPIRES", "DIRECTORY"
+    );
+    for x in &r.offers {
+        let _ = writeln!(
+            o,
+            "{:<18}  {:<9}  {:<16}  {:<16}  {:<12}  {:<16}  {}",
+            x.id,
+            x.state,
+            x.tenant,
+            x.name,
+            x.realm,
+            utc(x.expires_unix),
+            x.directory
+        );
+    }
+    o
+}
+
+/// `admission directories`: each trusted directory, its realm, its feed
+/// and its tenants here, and what of its feed couldn't be done (D306).
+pub fn directories_text(r: &pb::ListTrustedDirectoriesResponse, now: u64) -> String {
+    if r.directories.is_empty() {
+        return "No trusted directories.\n".into();
+    }
+    let mut o = String::new();
+    for d in &r.directories {
+        let checked = if d.checked_unix == 0 {
+            "never".to_string()
+        } else {
+            format!("{}s ago", now.saturating_sub(d.checked_unix))
+        };
+        let _ = writeln!(
+            o,
+            "{}  ({}, realm {})\n  feed: revision {}, answered {checked}",
+            d.issuer,
+            d.id,
+            d.realm,
+            if d.revision.is_empty() {
+                "none yet"
+            } else {
+                d.revision.get(..12).unwrap_or(&d.revision)
+            }
+        );
+        for t in &d.tenants {
+            let here = if t.tenant == 0 {
+                "not made yet".to_string()
+            } else {
+                format!("tenant {} (id {})", t.name, t.tenant)
+            };
+            let op = if t.operator { ", the operator" } else { "" };
+            let _ = writeln!(o, "  {} ({}): {here}{op}", t.slug, t.id);
+        }
+        for b in &d.blocked {
+            let _ = writeln!(o, "  not done yet: {b}");
+        }
     }
     o
 }

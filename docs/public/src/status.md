@@ -37,7 +37,7 @@ covered by tests that run on every change.
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
 | AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
-| AD5: People from glidex directories | Planned |
+| AD5: People from glidex directories | In progress |
 | AD4: A tenant's storage in glidex's UI | Planned |
 
 ## HS0: Local storage engine and reactor
@@ -296,4 +296,5 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| mgmt trusts glidex directories: offers, redeem, the feed replica, logins through a directory, grants from the feed | Planned |
+| mgmt trusts glidex directories: offers, redeem and ends, the feed replica and the tenants and projects it makes, reports with storage counts | Done |
+| Logins through a directory, grants from the feed, partitions | Planned |

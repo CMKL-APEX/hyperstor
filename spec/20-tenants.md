@@ -240,7 +240,8 @@ its mapping to glidex are the owner's choices; the transfer of a
 project (D303) and per-volume ownership (D300) are drafted for review.
 The records, projects on volumes, clones, buckets and keys, and roles
 on a tenant or a project are built (I378, #360 stage 1), and so is the
-transfer (§24.9.1, I379, stage 2); quotas and the glidex side are not. It amends D61's mapping (a glidex project was to be a
+transfer (§24.9.1, I379, stage 2), and so is the feed's part below
+(I380–I384, stage 4); quotas and logins through glidex are not. It amends D61's mapping (a glidex project was to be a
 hyperstor tenant) so that the same word means the same thing on both
 sides.
 

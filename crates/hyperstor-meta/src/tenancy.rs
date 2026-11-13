@@ -599,6 +599,48 @@ pub fn delete_project(db: &Db, id: u32, holds: &[String]) -> Result<(), Error> {
     })
 }
 
+/// Sets tenant `id`'s glidex link (a directory's issuer and the glidex
+/// tenant's id), or clears it with both empty: a tenant whose directory
+/// is no longer trusted stays, unlinked (19-administration.md §23.12).
+pub fn set_tenant_link(db: &Db, id: u32, directory: &str, glidex_id: &str) -> Result<(), Error> {
+    write(db, |t, now| {
+        let Some(old) = now.tenant(id) else {
+            return Err(Error::NotFound);
+        };
+        if !glidex_id.is_empty()
+            && now
+                .tenants
+                .iter()
+                .any(|x| x.id != id && x.directory == directory && x.glidex_id == glidex_id)
+        {
+            return Err(refused(
+                "tenant_exists",
+                format!("glidex tenant {glidex_id} has a tenant already"),
+            ));
+        }
+        let new = Tenant {
+            directory: directory.to_string(),
+            glidex_id: glidex_id.to_string(),
+            ..old.clone()
+        };
+        put(t, &format!("{TENANT}{id}"), &new.encode())
+    })
+}
+
+/// Sets project `id`'s glidex id, or clears it with an empty one.
+pub fn set_project_link(db: &Db, id: u32, glidex_id: &str) -> Result<(), Error> {
+    write(db, |t, now| {
+        let Some(old) = now.project(id) else {
+            return Err(Error::NotFound);
+        };
+        let new = Project {
+            glidex_id: glidex_id.to_string(),
+            ..old.clone()
+        };
+        put(t, &format!("{PROJECT}{id}"), &new.encode())
+    })
+}
+
 /// Starts moving project `id` to tenant `to` (20-tenants.md §24.9.1,
 /// D303): it becomes `moving`, so nothing new is made in it, and keys of
 /// its tenant that put new buckets in it put them in the tenant's default

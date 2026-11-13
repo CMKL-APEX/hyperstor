@@ -278,6 +278,27 @@ namespace Hyperstor {
   action "S3Service.RevokeS3Key" in [Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  // Whom the cluster trusts (D306): offers are credentials to a
+  // directory, and ending trust or naming the operator tenant is hard to
+  // undo.
+  action "TrustService.CreateOffer" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrustService.ListOffers" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrustService.RevokeOffer" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrustService.ListTrustedDirectories" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrustService.EndTrust" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TrustService.SetOperator" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   // Which gateway takes a tenant's keys (D250).
   action "RealmService.SetTenantRealm" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }

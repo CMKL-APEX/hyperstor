@@ -27,6 +27,7 @@ pub mod store;
 pub mod tenancy;
 pub mod tokens;
 pub mod transfer;
+pub mod trust;
 
 use hyperstor_reactor::time::sleep;
 use std::cell::{Cell, RefCell};

@@ -23,6 +23,8 @@ pub struct Members {
     seeds: Vec<String>,
     /// Where calls go, in turn: the leader's first.
     order: RwLock<Vec<String>>,
+    /// The leader's API address, from the last member list that named one.
+    leader: RwLock<Option<String>>,
     http: HttpClient,
     nudge: tokio::sync::Notify,
 }
@@ -31,6 +33,7 @@ impl Members {
     pub fn new(seeds: Vec<String>, tls: Arc<connectrpc::rustls::ClientConfig>) -> Arc<Members> {
         Arc::new(Members {
             order: RwLock::new(seeds.clone()),
+            leader: RwLock::new(None),
             seeds,
             http: HttpClient::with_tls(tls),
             nudge: tokio::sync::Notify::new(),
@@ -40,6 +43,17 @@ impl Members {
     /// Where calls go now, in turn.
     pub fn addrs(&self) -> Vec<String> {
         self.order.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Whether the map service's leader is on this host, by its API
+    /// address: the one mgmt that pulls directories' feeds (D306).
+    pub fn leader_here(&self) -> bool {
+        self.leader
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_deref()
+            .and_then(|a| a.parse::<std::net::SocketAddr>().ok())
+            .is_some_and(|a| glidex_tls::is_local_ip(a.ip()))
     }
 
     /// The client config for the member at `addr`.
@@ -95,7 +109,13 @@ impl Members {
         for a in self.addrs() {
             let c = hyperstor_api::MemberServiceClient::new(self.http(), Self::config(&a));
             if let Ok(r) = c.list_members(pb::ListMembersRequest::default()).await {
-                let next = order(&r.into_owned().members, &self.seeds);
+                let members = r.into_owned().members;
+                let leader = members
+                    .iter()
+                    .find(|m| m.leader && !m.api_address.is_empty())
+                    .map(|m| m.api_address.clone());
+                *self.leader.write().unwrap_or_else(|e| e.into_inner()) = leader;
+                let next = order(&members, &self.seeds);
                 let mut cur = self.order.write().unwrap_or_else(|e| e.into_inner());
                 if next.first() != cur.first() && !next.is_empty() {
                     eprintln!(
