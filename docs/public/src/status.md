@@ -193,6 +193,9 @@ covered by tests that run on every change.
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
 | Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
 | A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm | Done |
+| Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hyperstorctl tenant` and `project` | Done |
+| Roles on a tenant or a project (`role@tenant:NAME`, `role@project:TENANT/NAME`): mgmt names them with the realms a call reaches, and the map service shows and changes only their volumes, buckets, keys and projects | Done |
+| Moving a project to another tenant, of the same realm or another, as a long operation | Planned |
 | Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool | Planned |
 | Two-level fair share in the reactors: tenants share each priority class by weight, then volumes within a tenant | Planned |
 

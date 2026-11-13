@@ -1145,6 +1145,12 @@ message Volume {
   uint32 tenant = 8;
   // In lists: the tenant's realm (D286).
   string realm = 9;
+  // Its project (20-tenants.md §24.9, D300): the one its header names, or
+  // its tenant's default project; 0: none (the cluster's own, or a tenant
+  // without a record).
+  uint32 project = 10;
+  // In lists: the project as `tenant/project`, by names; empty for none.
+  string project_name = 11 [json_name = "project_name"];
 }
 
 message ListVolumesRequest {
@@ -1166,6 +1172,9 @@ message CreateVolumeRequest {
   // Its tenant (D258); 0: none. Refused in a pool the tenant's realm may
   // not use (D249).
   uint32 tenant = 5;
+  // Its project (D300), whose tenant it then is; 0: its tenant's default
+  // project. Naming both, they must agree.
+  uint32 project = 6;
 }
 
 message CreateVolumeResponse {
@@ -1240,6 +1249,9 @@ message CloneVolumeRequest {
   string name = 3;
   // The clone's id, 32 hexadecimal digits; empty: drawn at random.
   string new_id = 4 [json_name = "new_id"];
+  // The clone's project (D300), which may be another tenant's; 0: the
+  // parent's project and tenant.
+  uint32 project = 5;
 }
 
 message CloneVolumeResponse {

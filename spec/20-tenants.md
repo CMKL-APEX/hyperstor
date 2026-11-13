@@ -238,7 +238,9 @@ work (22-nfs.md, still proposed).
 Proposed 2026-11-12 (05-decision-log.md points 261–266): the model and
 its mapping to glidex are the owner's choices; the transfer of a
 project (D303) and per-volume ownership (D300) are drafted for review.
-Not built. It amends D61's mapping (a glidex project was to be a
+The records, projects on volumes, clones, buckets and keys, and roles
+on a tenant or a project are built (I378, #360 stage 1); the transfer
+(§24.9.1), quotas and the glidex side are not. It amends D61's mapping (a glidex project was to be a
 hyperstor tenant) so that the same word means the same thing on both
 sides.
 

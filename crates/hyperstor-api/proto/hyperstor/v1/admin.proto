@@ -575,6 +575,9 @@ message CreateS3KeyRequest {
   uint32 tenant = 1;
   // What the key is for, shown in lists: up to 200 characters.
   string description = 2;
+  // The project its new buckets go to (D300), one of the tenant's; 0:
+  // the tenant's default project.
+  uint32 project = 3;
 }
 
 message CreateS3KeyResponse {
@@ -594,6 +597,8 @@ message S3Key {
   string created_by = 5 [json_name = "created_by"];
   // In answers: the realm of the key's tenant (D248).
   string realm = 6;
+  // The project its new buckets go to; 0: the tenant's default project.
+  uint32 project = 7;
 }
 
 message ListS3KeysRequest {}
@@ -658,6 +663,11 @@ message S3Bucket {
   // Its objects, and their bytes (each object's latest version).
   uint64 objects = 10;
   uint64 bytes = 11;
+  // Its project (D300); 0: its tenant's default project, for a bucket
+  // made before projects.
+  uint32 project = 12;
+  // The project as `tenant/project`, by names; empty for none.
+  string project_name = 13 [json_name = "project_name"];
 }
 
 message ListS3BucketsRequest {
@@ -703,6 +713,8 @@ message S3GatewayKey {
   string id = 1;
   string secret = 2;
   uint32 tenant = 3;
+  // The project the key's new buckets go to; 0: the tenant's default.
+  uint32 project = 4;
 }
 
 message GetS3GatewayResponse {
@@ -789,3 +801,121 @@ message GetClusterKeyResponse {
   // member answering has none.
   string cluster_key = 1 [json_name = "cluster_key"];
 }
+
+// Tenants and projects (20-tenants.md §24.9, 04-decisions.md D299–D301):
+// a tenant is an organization's account (its bucket names, keys, caps);
+// a project, under it, owns volumes and buckets. Every tenant has a
+// project "default" that takes containers naming none.
+service TenantService {
+  // Makes a tenant and its default project; with `id`, adopts a tenant
+  // used before records (on volumes, buckets or keys). Write.
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse);
+
+  // The tenants with records, and their projects. Read.
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse);
+
+  // Renames a tenant. Write.
+  rpc RenameTenant(RenameTenantRequest) returns (RenameTenantResponse);
+
+  // Deletes a tenant that has no project but its default, no volume,
+  // bucket or key, and is in realm "default". Write.
+  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse);
+
+  // Makes a project of a tenant. Write.
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+
+  // Renames a project; a default project keeps its name. Write.
+  rpc RenameProject(RenameProjectRequest) returns (RenameProjectResponse);
+
+  // Deletes a project with no volume or bucket; a default project goes
+  // with its tenant. Write.
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+}
+
+message Project {
+  // 1 or more, unique in the cluster.
+  uint32 id = 1;
+  uint32 tenant = 2;
+  // 1-63 of a-z, 0-9 and -; unique within its tenant.
+  string name = 3;
+  // "active", or "moving" to another tenant.
+  string state = 4;
+  // Its id in glidex; empty: none.
+  string glidex_id = 5 [json_name = "glidex_id"];
+  uint64 created_unix = 6 [json_name = "created_unix"];
+  string created_by = 7 [json_name = "created_by"];
+  // Whether it is its tenant's default project.
+  bool is_default = 8 [json_name = "is_default"];
+}
+
+message Tenant {
+  // 1 or more, unique in the cluster.
+  uint32 id = 1;
+  // 1-63 of a-z, 0-9 and -, not "default".
+  string name = 2;
+  // The glidex directory it comes from (its issuer), and its id there;
+  // empty: none.
+  string directory = 3;
+  string glidex_id = 4 [json_name = "glidex_id"];
+  uint32 default_project = 5 [json_name = "default_project"];
+  uint64 created_unix = 6 [json_name = "created_unix"];
+  string created_by = 7 [json_name = "created_by"];
+  // In answers: its realm, and its projects by id.
+  string realm = 8;
+  repeated Project projects = 9;
+}
+
+message CreateTenantRequest {
+  string name = 1;
+  // A tenant used before records to adopt; 0: the next free id.
+  uint32 id = 2;
+  string directory = 3;
+  string glidex_id = 4 [json_name = "glidex_id"];
+}
+
+message CreateTenantResponse {
+  Tenant tenant = 1;
+}
+
+message ListTenantsRequest {}
+
+message ListTenantsResponse {
+  // By id.
+  repeated Tenant tenants = 1;
+}
+
+message RenameTenantRequest {
+  uint32 id = 1;
+  string name = 2;
+}
+
+message RenameTenantResponse {}
+
+message DeleteTenantRequest {
+  uint32 id = 1;
+}
+
+message DeleteTenantResponse {}
+
+message CreateProjectRequest {
+  uint32 tenant = 1;
+  string name = 2;
+  string glidex_id = 3 [json_name = "glidex_id"];
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message RenameProjectRequest {
+  uint32 id = 1;
+  string name = 2;
+}
+
+message RenameProjectResponse {}
+
+message DeleteProjectRequest {
+  uint32 id = 1;
+}
+
+message DeleteProjectResponse {}

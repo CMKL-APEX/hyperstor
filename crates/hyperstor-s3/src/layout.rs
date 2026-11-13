@@ -121,6 +121,9 @@ pub struct BucketInfo {
     /// Whether every write since it was made kept its counts (§14.6):
     /// buckets made by an earlier build have none.
     pub counted: bool,
+    /// Its project (20-tenants.md §24.9, D300); 0: its tenant's default
+    /// project, as for a bucket made before projects.
+    pub project: u32,
 }
 
 impl BucketInfo {
@@ -129,7 +132,8 @@ impl BucketInfo {
         e.u8(V1)
             .u32(self.tenant)
             .u64(self.created)
-            .bool(self.counted);
+            .bool(self.counted)
+            .u32(self.project);
         e.into_vec()
     }
 
@@ -140,6 +144,7 @@ impl BucketInfo {
             tenant: d.u32()?,
             created: d.u64()?,
             counted: d.remaining() > 0 && d.bool()?,
+            project: if d.remaining() > 0 { d.u32()? } else { 0 },
         })
     }
 }
@@ -600,12 +605,22 @@ mod tests {
             tenant: 3,
             created: 4,
             counted: true,
+            project: 9,
         };
         assert_eq!(BucketInfo::decode(&b.encode()), Ok(b.clone()));
-        // A record from before counts: not counted.
+        // A record from before projects: project 0 (D300)...
+        assert_eq!(
+            BucketInfo::decode(&b.encode()[..14]),
+            Ok(BucketInfo {
+                project: 0,
+                ..b.clone()
+            })
+        );
+        // ...and from before counts: not counted.
         let old = &b.encode()[..13];
         let uncounted = BucketInfo {
             counted: false,
+            project: 0,
             ..b
         };
         assert_eq!(BucketInfo::decode(old), Ok(uncounted));

@@ -3,7 +3,7 @@
 //! from a file the operator writes, one key per line,
 //!
 //! ```text
-//! # access key id, secret, tenant
+//! # access key id, secret, tenant[, project for its new buckets]
 //! EXAMPLEKEYID0000 <secret> 1
 //! ```
 //!
@@ -18,6 +18,9 @@ use zeroize::Zeroizing;
 pub struct Key {
     pub secret: Zeroizing<String>,
     pub tenant: u32,
+    /// The project its new buckets go to (20-tenants.md §24.9, D300); 0:
+    /// the tenant's default project.
+    pub project: u32,
 }
 
 #[derive(Default)]
@@ -37,7 +40,7 @@ impl Keys {
         Keys::parse(&text).map_err(|e| format!("{shown}: {e}"))
     }
 
-    /// Lines of `id secret tenant`; `#` starts a comment.
+    /// Lines of `id secret tenant [project]`; `#` starts a comment.
     pub fn parse(text: &str) -> Result<Keys, String> {
         let mut keys = HashMap::new();
         for (n, line) in text.lines().enumerate() {
@@ -46,15 +49,19 @@ impl Keys {
                 continue;
             }
             // Never the line itself: it holds a secret.
-            let bad = || format!("line {}: not `id secret tenant`", n + 1);
+            let bad = || format!("line {}: not `id secret tenant [project]`", n + 1);
             let f: Vec<&str> = line.split_whitespace().collect();
-            let [id, secret, tenant] = f[..] else {
-                return Err(bad());
+            let (id, secret, tenant, project) = match f[..] {
+                [id, secret, tenant] => (id, secret, tenant, "0"),
+                [id, secret, tenant, project] => (id, secret, tenant, project),
+                _ => return Err(bad()),
             };
             let tenant = tenant.parse().map_err(|_| bad())?;
+            let project = project.parse().map_err(|_| bad())?;
             let key = Key {
                 secret: Zeroizing::new(secret.to_string()),
                 tenant,
+                project,
             };
             if keys.insert(id.to_string(), key).is_some() {
                 return Err(format!("line {}: key {id} again", n + 1));
@@ -63,11 +70,30 @@ impl Keys {
         Ok(Keys(keys))
     }
 
-    /// From `(id, secret, tenant)`s, as the cluster API gives them.
+    /// From `(id, secret, tenant)`s.
     pub fn from_keys(keys: impl IntoIterator<Item = (String, Zeroizing<String>, u32)>) -> Keys {
+        Keys::from_keys_in(
+            keys.into_iter()
+                .map(|(id, secret, tenant)| (id, secret, tenant, 0)),
+        )
+    }
+
+    /// From `(id, secret, tenant, project)`s, as the cluster API gives them.
+    pub fn from_keys_in(
+        keys: impl IntoIterator<Item = (String, Zeroizing<String>, u32, u32)>,
+    ) -> Keys {
         Keys(
             keys.into_iter()
-                .map(|(id, secret, tenant)| (id, Key { secret, tenant }))
+                .map(|(id, secret, tenant, project)| {
+                    (
+                        id,
+                        Key {
+                            secret,
+                            tenant,
+                            project,
+                        },
+                    )
+                })
                 .collect(),
         )
     }
@@ -98,6 +124,16 @@ mod tests {
             Some(("s2", 4))
         );
         assert!(Keys::parse("AK1 s1").is_err());
+        assert_eq!(
+            Keys::parse("AK1 s1 3 12")
+                .unwrap()
+                .get("AK1")
+                .unwrap()
+                .project,
+            12
+        );
+        assert_eq!(k.get("AK2").unwrap().project, 0);
+        assert!(Keys::parse("AK1 s1 3 12 13").is_err());
         assert!(Keys::parse("AK1 s1 x").is_err());
         assert!(Keys::parse("AK1 s1 1\nAK1 s2 1").is_err());
         let e = Keys::parse("AK1 hidden-secret").err().unwrap();

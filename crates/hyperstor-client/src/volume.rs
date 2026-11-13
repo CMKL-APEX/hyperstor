@@ -184,9 +184,13 @@ pub struct Volume {
     pub incarnation: u64,
     /// When it went to the trash (Unix seconds), while [`VolumeState::Trashed`].
     pub trashed_unix: u64,
-    /// Its lineage's tenant (D61, D258), which clones and copies take: 0
-    /// for none, in realm `default`.
+    /// Its tenant (D61, D258): its project's when it names one, else its
+    /// lineage's, which clones and copies take; 0 for none, in realm
+    /// `default`.
     pub tenant: u32,
+    /// Its project (20-tenants.md §24.9, D300); 0: its tenant's default
+    /// project. A clone may name another than its parent's.
+    pub project: u32,
 }
 
 /// A snapshot of a volume (10-volumes.md §10.3): the volume as it was at
@@ -295,8 +299,10 @@ fn encode(v: &Volume) -> Vec<u8> {
     e.seq(&trashed, |e, (ep, t)| {
         e.u64(*ep).u64(*t);
     });
-    // Its tenant (D258). Older readers stop before it.
+    // Its tenant (D258), then its project (D300). Older readers stop
+    // before each.
     e.u32(v.tenant);
+    e.u32(v.project);
     e.into_vec()
 }
 
@@ -341,6 +347,7 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             incarnation: 0,
             trashed_unix: 0,
             tenant: 0,
+            project: 0,
         };
         if fmt == 2 {
             v.head_epoch = d.u64()?;
@@ -371,6 +378,9 @@ fn decode(id: u128, l: &Looked) -> Result<Volume, ClientError> {
             }
             if d.remaining() > 0 {
                 v.tenant = d.u32()?;
+            }
+            if d.remaining() > 0 {
+                v.project = d.u32()?;
             }
         }
         Ok::<_, hyperstor_codec::DecodeError>(v)
@@ -425,6 +435,20 @@ impl Client {
         name: &str,
         tenant: u32,
     ) -> Result<Volume, ClientError> {
+        self.create_volume_in(pool, size, id, name, tenant, 0).await
+    }
+
+    /// [`Self::create_volume_for`], in `project` of `tenant` (D300; 0:
+    /// the tenant's default project).
+    pub async fn create_volume_in(
+        &self,
+        pool: u32,
+        size: u64,
+        id: Option<u128>,
+        name: &str,
+        tenant: u32,
+        project: u32,
+    ) -> Result<Volume, ClientError> {
         let map = self.map();
         if pool == META_POOL || !map.pools.contains_key(&pool) {
             return Err(ClientError::NoPool(pool));
@@ -454,6 +478,7 @@ impl Client {
             incarnation: random_u64() | 1,
             trashed_unix: 0,
             tenant,
+            project,
         };
         self.put_new(&v).await?;
         Ok(v)
@@ -1584,6 +1609,7 @@ mod tests {
             incarnation: 0,
             trashed_unix: 0,
             tenant: 0,
+            project: 0,
         };
         assert_eq!(v.layers(), vec![(2, 0, 9), (0, 0, 3)]);
         // Reset to 3 at head 5, then to 6 at head 8.
@@ -1623,6 +1649,7 @@ mod tests {
             incarnation: 11,
             trashed_unix: 0,
             tenant: 5,
+            project: 12,
         };
         let l = Looked {
             size: 0,
@@ -1644,17 +1671,28 @@ mod tests {
             kv_bytes: None,
         };
         assert_eq!(decode(7, &l).unwrap(), v);
-        // The tenant comes last (4 bytes), after the trash's fields: 8
-        // bytes of the volume's time, then the trashed snapshots (none
-        // here: a 4-byte count).
+        // The project comes last (4 bytes), after the tenant (4 bytes),
+        // after the trash's fields: 8 bytes of the volume's time, then the
+        // trashed snapshots (none here: a 4-byte count).
         let h = encode(&v);
-        let (tenant_len, trash_len) = (4, 8 + 4);
+        let (project_len, trash_len) = (4, 8 + 4);
+        let tenant_len = 4 + project_len;
         let v0 = Volume {
             tenant: 0,
+            project: 0,
             ..v.clone()
         };
-        // A header from before tenants reads as tenant 0 (D258)...
+        // A header from before projects reads as project 0 (D300)...
         let mut old = l.clone();
+        old.attrs[1].1 = h[..h.len() - project_len].to_vec();
+        assert_eq!(
+            decode(7, &old).unwrap(),
+            Volume {
+                project: 0,
+                ..v.clone()
+            }
+        );
+        // ...from before tenants as tenant 0 (D258)...
         old.attrs[1].1 = h[..h.len() - tenant_len].to_vec();
         assert_eq!(decode(7, &old).unwrap(), v0);
         // ...from before the trash as not in it...

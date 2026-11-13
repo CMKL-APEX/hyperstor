@@ -42,6 +42,7 @@ mod ops;
 mod perf;
 mod realms;
 mod s3;
+mod tenants;
 mod trash;
 pub use admin::{Signing, parse_token};
 
@@ -607,14 +608,16 @@ impl Api {
                         {
                             let p = format!("{} for {p}", who.uri());
                             if let Some(r) = realms {
-                                match r.to_str().ok().and_then(hyperstor_api::parse_realms) {
-                                    Some(r) => reach = Some(r),
+                                match r.to_str().ok().and_then(hyperstor_api::parse_reach) {
+                                    Some(r) => {
+                                        reach = Some(r.iter().map(|w| w.to_string()).collect())
+                                    }
                                     None => {
                                         return Err(refuse(
                                             &p,
                                             with_reason(
                                                 ConnectError::invalid_argument(
-                                                    "realms aren't names, comma-separated",
+                                                    "realms, tenant:NAME and project:TENANT/NAME, comma-separated, are what a call is limited to",
                                                 ),
                                                 "invalid_argument",
                                             ),
@@ -3159,13 +3162,21 @@ impl ClusterService for Api {
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let vols = volume_result(rx.recv().await)?;
         let names = self.realm_names(&scope).await;
+        let tenancy = self.tenancy_names(&scope).await;
         Ok(pb::ListVolumesResponse {
             volumes: vols
                 .iter()
-                .filter(|v| scope.tenant(v.tenant))
-                .map(|v| pb::Volume {
-                    realm: names.realm_name(v.tenant),
-                    ..volume_pb(v)
+                .filter(|v| scope.container(v.tenant, v.project))
+                .map(|v| {
+                    let tenant = tenancy.tenant_of(v.tenant, v.project);
+                    let project = tenancy.project_of(tenant, v.project);
+                    pb::Volume {
+                        realm: names.realm_name(tenant),
+                        tenant,
+                        project,
+                        project_name: tenancy.project_label(project),
+                        ..volume_pb(v)
+                    }
                 })
                 .collect(),
             ..Default::default()
@@ -3182,23 +3193,43 @@ impl ClusterService for Api {
         if req.tenant != 0 {
             target.push_str(&format!(" tenant {}", req.tenant));
         }
+        if req.project != 0 {
+            target.push_str(&format!(" project {}", req.project));
+        }
         let (who, reach) = self.authorize_in(&ctx, "CreateVolume", &target, true)?;
         let scope = self.scope(reach).await?;
-        if req.tenant == 0 {
+        // A project names its tenant (D300).
+        let tenancy = self.tenancy().await?;
+        let (tenant, project) = match project_owner(
+            &tenancy,
+            req.tenant,
+            req.project,
+            &who,
+            "CreateVolume",
+            &target,
+        ) {
+            Ok(o) => o,
+            Err(e) => return Err(e),
+        };
+        if tenant == 0 && project == 0 {
             scope.named(
                 &who,
                 "CreateVolume",
                 &target,
-                "the volume's tenant",
+                "the volume's tenant or project",
                 "tenant_required",
             )?;
         }
-        if !scope.tenant(req.tenant) {
+        if !scope.container(tenant, project) {
             return Err(scope.outside(
                 &who,
                 "CreateVolume",
                 &target,
-                &format!("tenant {}", req.tenant),
+                &if req.project != 0 {
+                    format!("project {}", tenancy.project_label(project))
+                } else {
+                    format!("tenant {tenant}")
+                },
             ));
         }
         let id = if req.id.is_empty() {
@@ -3208,12 +3239,12 @@ impl ClusterService for Api {
         };
         // Only in a pool the tenant's realm may use (D249, D258).
         let realms = self.realms().await?;
-        let realm = realms.realm_of(req.tenant);
+        let realm = realms.realm_of(tenant);
         if !realms.may_use(realm, req.pool) {
             let why = format!(
                 "realm {} of tenant {} may not use pool {}",
                 realms.name(realm),
-                req.tenant,
+                tenant,
                 req.pool
             );
             audit(&who, "CreateVolume", &target, &format!("failed: {why}"));
@@ -3232,7 +3263,8 @@ impl ClusterService for Api {
                         size: req.size,
                         name: req.name.to_string(),
                         id,
-                        tenant: req.tenant,
+                        tenant,
+                        project,
                         reply,
                     })
                     .map_err(|_| ConnectError::unavailable("map service stopped"))?;
@@ -3420,12 +3452,21 @@ impl ClusterService for Api {
         } else {
             Some(parse_volume_id(req.new_id)?)
         };
-        let target = format!("volume {id:032x} snapshot {}", req.epoch);
+        let mut target = format!("volume {id:032x} snapshot {}", req.epoch);
+        // Into another project, maybe another tenant's (D300).
+        // Resolved to its tenant once the caller is known (snap).
+        let owner = if req.project == 0 {
+            None
+        } else {
+            target.push_str(&format!(" into project {}", req.project));
+            Some((0, req.project))
+        };
         let op = crate::SnapOp::Clone {
             id,
             epoch: req.epoch,
             name: req.name.to_string(),
             new_id,
+            owner,
         };
         match self.snap(&ctx, "CloneVolume", target, true, op).await? {
             crate::SnapDone::Volume(v) => Ok(pb::CloneVolumeResponse {
@@ -3830,6 +3871,14 @@ impl Api {
     ) -> Result<crate::SnapDone, ConnectError> {
         let (who, reach) = self.authorize_in(ctx, rpc, &target, write)?;
         let scope = self.scope(reach).await?;
+        let mut op = op;
+        if let crate::SnapOp::Clone {
+            owner: Some(owner), ..
+        } = &mut op
+        {
+            let tenancy = self.tenancy().await?;
+            *owner = project_owner(&tenancy, 0, owner.1, &who, rpc, &target)?;
+        }
         match &op {
             crate::SnapOp::Group { ids, .. } => {
                 for id in ids {
@@ -3838,6 +3887,40 @@ impl Api {
             }
             crate::SnapOp::DeleteGroup { group } => {
                 self.group_in(&scope, *group, &who, rpc, &target).await?
+            }
+            crate::SnapOp::Clone {
+                id,
+                owner: Some((tenant, project)),
+                ..
+            } => {
+                self.volume_in(&scope, *id, &who, rpc, &target).await?;
+                // The clone's own project must be reached too, and its
+                // tenant's realm may use the parent's pool, where the clone
+                // stays (D249).
+                let tenancy = self.tenancy().await?;
+                if !scope.container(*tenant, *project) {
+                    return Err(scope.outside(
+                        &who,
+                        rpc,
+                        &target,
+                        &format!("project {}", tenancy.project_label(*project)),
+                    ));
+                }
+                let v = self.volume_any(*id).await?;
+                let realms = self.realms().await?;
+                let realm = realms.realm_of(*tenant);
+                if !realms.may_use(realm, v.pool) {
+                    let why = format!(
+                        "realm {} of tenant {tenant} may not use pool {}",
+                        realms.name(realm),
+                        v.pool
+                    );
+                    audit(&who, rpc, &target, &format!("failed: {why}"));
+                    return Err(with_reason(
+                        ConnectError::failed_precondition(why),
+                        "pool_not_in_realm",
+                    ));
+                }
             }
             crate::SnapOp::List { id }
             | crate::SnapOp::Get { id }
@@ -3913,6 +3996,53 @@ fn parse_volume_id(s: &str) -> Result<u128, ConnectError> {
         .map_err(|_| ConnectError::invalid_argument(format!("{s}: not a volume id")))
 }
 
+/// The (tenant, project) a creation naming `tenant` and `project` lands
+/// in (D300): a project names its tenant, and naming both they must
+/// agree; a moving project takes nothing new (D303). With no project, the
+/// tenant's default project, when it has a record; else none (0).
+fn project_owner(
+    tenancy: &crate::tenancy::Tenancy,
+    tenant: u32,
+    project: u32,
+    who: &str,
+    op: &str,
+    target: &str,
+) -> Result<(u32, u32), ConnectError> {
+    let fail = |e: ConnectError| {
+        refused(who, op, target, &e);
+        e
+    };
+    if project == 0 {
+        return Ok((tenant, tenancy.project_of(tenant, 0)));
+    }
+    let Some(p) = tenancy.project(project) else {
+        return Err(fail(with_reason(
+            ConnectError::not_found(format!("no project {project}")),
+            "not_found",
+        )));
+    };
+    if tenant != 0 && tenant != p.tenant {
+        return Err(fail(with_reason(
+            ConnectError::invalid_argument(format!(
+                "project {} is tenant {}'s, not tenant {tenant}'s",
+                tenancy.project_label(project),
+                p.tenant
+            )),
+            "invalid_argument",
+        )));
+    }
+    if p.state == crate::tenancy::ProjectState::Moving {
+        return Err(fail(with_reason(
+            ConnectError::failed_precondition(format!(
+                "project {} is moving to another tenant: try again once it has",
+                tenancy.project_label(project)
+            )),
+            "project_moving",
+        )));
+    }
+    Ok((p.tenant, p.id))
+}
+
 fn volume_pb(v: &crate::Volume) -> pb::Volume {
     pb::Volume {
         id: format!("{:032x}", v.id),
@@ -3928,6 +4058,7 @@ fn volume_pb(v: &crate::Volume) -> pb::Volume {
         version: v.version,
         attached_by: v.holder.map(|h| format!("{h:016x}")).unwrap_or_default(),
         tenant: v.tenant,
+        project: v.project,
         ..Default::default()
     }
 }
@@ -4056,6 +4187,7 @@ pub fn spawn(
                 let router = hyperstor_api::AuditServiceExt::register(api.clone(), router);
                 let router = s3::register(api.clone(), router);
                 let router = realms::register(api.clone(), router);
+                let router = tenants::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {

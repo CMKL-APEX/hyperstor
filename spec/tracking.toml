@@ -1130,6 +1130,37 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hyperstorctl tenant` and `project`"
+spec = ["20-tenants.md §24.9", "D299", "D300", "I378"]
+status = "done"
+# Also shown by hyperstor_client::volume::tests::headers_round_trip,
+# hyperstor_s3::layout::tests::records_decode_as_encoded,
+# hyperstor_s3::keys::tests::keys_parse and
+# hyperstor_meta::s3keys::tests::keys_and_placements_are_rows_of_the_settings,
+# tracked above.
+tests = [
+    "hyperstor_meta::tenancy::tests::tenants_and_projects_get_ids_never_given_twice",
+    "hyperstor_meta::tenancy::tests::a_glidex_tenant_has_one_tenant",
+    "hyperstor_meta::tenancy::tests::names",
+    "tenants::tenants_and_projects_own_volumes_and_keys",
+]
+
+[[milestone.item]]
+what = "Roles on a tenant or a project (`role@tenant:NAME`, `role@project:TENANT/NAME`): mgmt names them with the realms a call reaches, and the map service shows and changes only their volumes, buckets, keys and projects"
+spec = ["20-tenants.md §24.9", "D301", "I378"]
+status = "done"
+tests = [
+    "hyperstor_mgmt::policy::tests::grants_in_a_tenant_or_project_reach_it",
+    "hyperstor_api::tests::reach_names_realms_tenants_and_projects",
+    "tenants::roles_on_a_tenant_or_project_reach_only_it",
+]
+
+[[milestone.item]]
+what = "Moving a project to another tenant, of the same realm or another, as a long operation"
+spec = ["20-tenants.md §24.9.1", "D303"]
+status = "planned"
+
+[[milestone.item]]
 what = "Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool"
 spec = ["20-tenants.md §24.4"]
 status = "planned"

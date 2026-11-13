@@ -31,6 +31,8 @@ pub const DEFAULT_PLACEMENT: &str = "default";
 pub struct S3Key {
     pub id: String,
     pub tenant: u32,
+    /// The project its new buckets go to (D300); 0: the tenant's default.
+    pub project: u32,
     pub description: String,
     pub created_unix: u64,
     pub created_by: String,
@@ -46,7 +48,8 @@ impl S3Key {
             .str(&self.description)
             .u64(self.created_unix)
             .str(&self.created_by)
-            .bytes(&self.sealed);
+            .bytes(&self.sealed)
+            .u32(self.project);
         e.into_vec()
     }
 
@@ -59,6 +62,8 @@ impl S3Key {
             created_unix: d.u64()?,
             created_by: d.str()?.to_string(),
             sealed: d.bytes()?.to_vec(),
+            // Appended (D300): a key from before has none.
+            project: if d.remaining() > 0 { d.u32()? } else { 0 },
         };
         d.finish()?;
         Ok(k)
@@ -262,6 +267,7 @@ mod tests {
         S3Key {
             id: id.into(),
             tenant,
+            project: if tenant == 2 { 12 } else { 0 },
             description: "backups".into(),
             created_unix: 1_700_000_000,
             created_by: "hyperstor://9/admin/local".into(),

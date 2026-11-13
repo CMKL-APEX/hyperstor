@@ -74,6 +74,9 @@ namespace Hyperstor {
   action "RealmService.ListRealms" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "TenantService.ListTenants" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "Dashboard.Read" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
@@ -147,6 +150,25 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "RealmService.DeleteRealm" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  // Tenants and projects (D299, D300).
+  action "TenantService.CreateTenant" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TenantService.RenameTenant" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TenantService.DeleteTenant" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TenantService.CreateProject" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TenantService.RenameProject" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "TenantService.DeleteProject" in [Action::"store", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetScrubSettings" in [Action::"store"] appliesTo {

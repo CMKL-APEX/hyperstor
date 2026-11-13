@@ -348,6 +348,39 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s
   belong to a tenant when made with `create-volume --tenant N`, and only
   in pools its realm may use; clones take their volume's tenant.
 
+### Tenants and projects
+
+A tenant is an organization's account: its bucket names, its S3 keys,
+its realm. A project, under a tenant, owns volumes and buckets, and is
+where space will be counted. Every tenant has a project `default`, which
+takes whatever names no project, so you need projects only once you
+want them. Under glidex, a glidex tenant is a Hyperstor tenant and a
+glidex project a Hyperstor project.
+
+```bash
+hyperstorctl tenant create --name lab                 # tenant and its project "default"
+hyperstorctl tenant create --name acme --tenant 42    # a record for tenant 42, already in use
+hyperstorctl project create --tenant 43 --name web
+hyperstorctl project list --tenant 43
+hyperstorctl create-volume --size 10G --name disk --project 7   # project 7's, so tenant 43's
+hyperstorctl clone-volume --id ID --epoch 3 --name vm1 --project 9   # another tenant's clone
+hyperstorctl s3 key create --tenant 43 --project 7    # its new buckets go in project 7
+```
+
+- Tenant and project numbers are given once in the cluster, never
+  again, even after a delete. A tenant number in use before records
+  existed (on a volume, bucket or key) gets a record with `tenant create
+  --tenant N`.
+- A project names its tenant: a volume made in a project is that
+  tenant's. A clone may be in another project, or another tenant's, than
+  the volume it reads through: the blocks it writes are its own, the
+  ones it still reads are its parent's.
+- Roles can be given on a tenant or a project, as on a realm:
+  `storage-admin@tenant:lab` manages lab's projects, volumes and
+  buckets; `viewer@project:lab/web` sees project web's alone.
+- A project with volumes or buckets, and a tenant with projects, volumes,
+  buckets or keys, can't be deleted.
+
 ## Running as services by hand
 
 Without the installer, a minimal unit for a storage node:

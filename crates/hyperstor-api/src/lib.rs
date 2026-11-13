@@ -31,7 +31,9 @@ pub fn valid_person(p: &str) -> bool {
 
 /// The header with which `hyperstor-mgmt` limits a call it makes on a
 /// person's behalf to realms, their names comma-separated (04-decisions.md
-/// D260, D262): the person holds the role the call needs only in those.
+/// D260, D262), and to tenants and projects (`tenant:NAME`,
+/// `project:TENANT/NAME`, D301; [`parse_reach`]): the person holds the
+/// role the call needs only in those.
 /// The map service believes it only with [`ON_BEHALF_HEADER`] from mgmt's
 /// certificate, then shows and changes only what is in those realms, and
 /// refuses what reaches the cluster as a whole.
@@ -56,6 +58,55 @@ pub fn parse_realms(v: &str) -> Option<Vec<String>> {
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
         .then_some(names)
+}
+
+/// One place a call or a grant may be limited to (04-decisions.md D262,
+/// D301): a realm, a tenant or a project, by names.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Within {
+    Realm(String),
+    /// `tenant:NAME`.
+    Tenant(String),
+    /// `project:TENANT/NAME`.
+    Project(String, String),
+}
+
+impl Within {
+    /// `acme`, `tenant:acme` or `project:acme/web`; `None` if it isn't
+    /// one of those, each name 1-63 of a-z, 0-9 and `-`.
+    pub fn parse(v: &str) -> Option<Within> {
+        let name = |n: &str| {
+            !n.is_empty()
+                && n.len() <= 63
+                && n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        };
+        if let Some(t) = v.strip_prefix("tenant:") {
+            return name(t).then(|| Within::Tenant(t.to_string()));
+        }
+        if let Some(p) = v.strip_prefix("project:") {
+            let (t, n) = p.split_once('/')?;
+            return (name(t) && name(n)).then(|| Within::Project(t.to_string(), n.to_string()));
+        }
+        name(v).then(|| Within::Realm(v.to_string()))
+    }
+}
+
+impl std::fmt::Display for Within {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Within::Realm(r) => f.write_str(r),
+            Within::Tenant(t) => write!(f, "tenant:{t}"),
+            Within::Project(t, p) => write!(f, "project:{t}/{p}"),
+        }
+    }
+}
+
+/// What a [`REALMS_HEADER`] limits a call to: realms, tenants and
+/// projects, comma-separated, each as [`Within::parse`] takes it; `None`
+/// if any isn't one.
+pub fn parse_reach(v: &str) -> Option<Vec<Within>> {
+    v.split(',').map(Within::parse).collect()
 }
 
 /// The domain of the API's error reasons.
@@ -135,6 +186,32 @@ mod tests {
             &"a".repeat(64),
         ] {
             assert_eq!(super::parse_realms(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn reach_names_realms_tenants_and_projects() {
+        use super::Within;
+        assert_eq!(
+            super::parse_reach("acme,tenant:lab,project:lab/web"),
+            Some(vec![
+                Within::Realm("acme".into()),
+                Within::Tenant("lab".into()),
+                Within::Project("lab".into(), "web".into()),
+            ])
+        );
+        for bad in [
+            "tenant:",
+            "project:lab",
+            "project:/web",
+            "tenant:Lab",
+            "x:y",
+            "",
+        ] {
+            assert_eq!(super::parse_reach(bad), None, "{bad}");
+        }
+        for w in ["acme", "tenant:lab", "project:lab/web"] {
+            assert_eq!(Within::parse(w).unwrap().to_string(), w);
         }
     }
 
