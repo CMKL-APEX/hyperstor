@@ -414,8 +414,13 @@ hyperstorctl cluster set-operator --tenant 12
 - mgmt must serve HTTPS (`--web-tls`) at `--url`, reachable from the
   directory: the directory redeems the offer there and pins the
   certificate's SHA-256, which `admission offer` reads from the address
-  (or takes from `--pin`) and prints. Behind a proxy that serves its own
-  certificate, give the one the directory sees.
+  (or takes from `--pin`) and prints. Give the address the directory
+  reaches mgmt by directly, not a proxy's or a Cloudflare Tunnel's
+  public name: a proxy's certificate changes without mgmt knowing. When
+  mgmt's certificate is renewed, the directory can no longer end the
+  trust from its side until the offer is made again; mgmt's own ends,
+  the feed and reports keep working. Pins that follow renewals wait for
+  glidex (glidex#501).
 - The offer is spent by its first redeem, and lasts 7 days (`--days`,
   up to 30). Its token is printed once; only a hash of its secret is
   kept.

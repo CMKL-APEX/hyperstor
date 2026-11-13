@@ -1603,3 +1603,12 @@ recommendation each:
 | 272 | The UI: mgmt's, with links and usage in glidex (recommended); that, plus a tenant's storage pages inline in glidex through mgmt's API; or glidex only under glidex | Inline in glidex too | D310 |
 | 273 | Keeping a glidex cluster to its directories' projects: its identity bound to realms (recommended); checked against its admissions; or trusted | Bound to realms | D311 |
 
+## Stage 4's open points, reviewed (2026-11-13)
+
+Building stage 4 of #360 (mgmt trusting glidex directories) left two
+points for the owner, asked with options and a recommendation each:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 274 | A directory pins mgmt's certificate, which renewals change: as built (documented); a long-lived certificate for directories on a name or port of its own; or the next pin sent in the signed reports, a glidex change (recommended, as the pilot's directory reaches mgmt directly) | The next pin in the reports; filed as glidex#501 | D312 |
+| 275 | `volume_used_bytes` in reports: 0 until the space counters exist (recommended); an estimate from PG bytes; or a walk of chunk indexes | 0 for now, with the counters filed for v0.0.8 | D313, #364 |

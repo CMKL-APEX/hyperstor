@@ -530,8 +530,10 @@ trust, offers, redeems and ends, the feed and what it makes, and reports
 and the replica in the map service's settings table, which checks the
 handshake (I381); the cluster key made on first use; tenants and
 projects gone from the feed kept unlinked (I382); names and clashes
-(I383); a directory's realm (I384); reports without used bytes until
-space is counted (I385); the pin of mgmt's certificate (I386). Not yet:
+(I383); a directory's realm (I384). Settled: reports send used bytes
+from the space counters, 0 until they exist (D313, #364); a directory's
+pin of mgmt's certificate follows renewals through the reports, and an
+offer names mgmt's direct address, not a proxy's (D312, glidex#501). Not yet:
 logins, grants from the feed, the UIs and the driver. With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
