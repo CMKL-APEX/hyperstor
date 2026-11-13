@@ -1058,6 +1058,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TenantService.CreateProject", "project create"),
     ("TenantService.RenameProject", "project rename"),
     ("TenantService.DeleteProject", "project delete"),
+    ("TenantService.MoveProject", "project move"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
     ("TrashService.PurgeFromTrash", "trash purge"),

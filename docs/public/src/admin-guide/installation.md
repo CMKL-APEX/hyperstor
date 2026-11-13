@@ -380,6 +380,16 @@ hyperstorctl s3 key create --tenant 43 --project 7    # its new buckets go in pr
   buckets; `viewer@project:lab/web` sees project web's alone.
 - A project with volumes or buckets, and a tenant with projects, volumes,
   buckets or keys, can't be deleted.
+- A project moves to another tenant with `hyperstorctl project move
+  --project 7 --to 42 --wait 60`: its volumes become the new tenant's at
+  once, and each bucket takes the new tenant's name, keeping its objects;
+  the old tenant's keys stop finding it. Nothing is copied. It is refused
+  first if the new tenant's realm may not use the project's pools, if the
+  new tenant already has a bucket of one of its names, or, between
+  realms while hosts are bound to realms, if one of its volumes is
+  attached (detach it first). A key of the old tenant that put new
+  buckets in the project puts them in its default project from then on.
+  The move can't be cancelled; if a bucket can't move it is undone.
 
 ## Running as services by hand
 

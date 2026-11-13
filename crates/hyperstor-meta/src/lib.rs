@@ -26,6 +26,7 @@ pub mod settings;
 pub mod store;
 pub mod tenancy;
 pub mod tokens;
+pub mod transfer;
 
 use hyperstor_reactor::time::sleep;
 use std::cell::{Cell, RefCell};
@@ -345,6 +346,8 @@ pub enum Admin {
     /// map's epoch.
     SyncRealms {
         realms: realms::Realms,
+        /// Moved projects' tenants now (D303).
+        projects: std::collections::BTreeMap<u32, u32>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
     /// Claims or renews a port for `holder` (D205); `renew` only an
@@ -541,6 +544,14 @@ pub enum BucketOp {
         tenant: u32,
         name: String,
     },
+    /// Moves bucket `name`, table `table`, from tenant `from` to `to`
+    /// (D303).
+    Move {
+        from: u32,
+        to: u32,
+        name: String,
+        table: u64,
+    },
 }
 
 /// A bucket as the store has it: its tenant and name, when it was made
@@ -549,6 +560,8 @@ pub enum BucketOp {
 /// count failed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketRow {
+    /// Its table's id: the bucket itself, whatever its name (D303).
+    pub table: u64,
     pub tenant: u32,
     /// Its project as its record names it (D300); 0: none.
     pub project: u32,
@@ -563,6 +576,7 @@ pub struct BucketRow {
 pub enum BucketDone {
     List(Vec<BucketRow>),
     Deleted,
+    Moved(hyperstor_s3::Moved),
 }
 
 /// Runs a bucket operation as a client of the cluster (D254).
@@ -577,12 +591,14 @@ async fn run_bucket_op(
             S3Error::NoSuchBucket(_) => VolumeFault::NotFound,
             S3Error::BucketNotEmpty(_) => VolumeFault::InUse,
             S3Error::InvalidBucketName(_) => VolumeFault::Invalid,
+            S3Error::BucketExists(_) => VolumeFault::Exists,
             _ => VolumeFault::Unavailable,
         };
         (kind, e.to_string())
     };
     let row = async |b: hyperstor_s3::Bucket| BucketRow {
         counts: s3.counts(&b).await.ok().flatten(),
+        table: b.table.id,
         tenant: b.info.tenant,
         project: b.info.project,
         name: b.name,
@@ -611,6 +627,16 @@ async fn run_bucket_op(
             s3.delete_bucket(tenant, &name).await.map_err(fault)?;
             BucketDone::Deleted
         }
+        BucketOp::Move {
+            from,
+            to,
+            name,
+            table,
+        } => BucketDone::Moved(
+            s3.move_bucket(from, to, &name, table)
+                .await
+                .map_err(fault)?,
+        ),
     })
 }
 
@@ -1646,12 +1672,17 @@ impl Meta {
                     if self.persisted.get()
                         && let Some(s) = &*self.scrub_store.borrow()
                     {
-                        match realms::load(&s.db) {
-                            Ok(r) => {
+                        match (realms::load(&s.db), tenancy::load(&s.db)) {
+                            (Ok(r), Ok(t)) => {
                                 let (hosts, tenants) = r.map_view();
-                                self.map.borrow_mut().set_realm_view(hosts, tenants);
+                                let projects = t.map_view(!hosts.is_empty());
+                                self.map
+                                    .borrow_mut()
+                                    .set_realm_view(hosts, tenants, projects);
                             }
-                            Err(e) => eprintln!("hyperstor-meta: realms not read: {e:?}"),
+                            (Err(e), _) | (_, Err(e)) => {
+                                eprintln!("hyperstor-meta: realms not read: {e:?}")
+                            }
                         }
                     }
                 }
@@ -3126,11 +3157,20 @@ impl Meta {
                 } => {
                     self.reply_published(reply, self.set_lending(port.as_deref(), lending), |e| e);
                 }
-                Admin::SyncRealms { realms, reply } => {
+                Admin::SyncRealms {
+                    realms,
+                    projects,
+                    reply,
+                } => {
                     let r = if self.leads() {
                         let (hosts, tenants) = realms.map_view();
+                        let projects = if hosts.is_empty() {
+                            Default::default()
+                        } else {
+                            projects
+                        };
                         let mut map = self.map.borrow_mut();
-                        map.set_realm_view(hosts, tenants);
+                        map.set_realm_view(hosts, tenants, projects);
                         Ok(map.epoch)
                     } else {
                         Err(self.not_leader())

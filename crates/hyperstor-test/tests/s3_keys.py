@@ -62,6 +62,13 @@ def main():
         keys = [o["Key"] for o in s3.list_objects_v2(Bucket=args[0]).get("Contents", [])]
         assert keys == ["k"], keys
         print("roundtrip ok")
+    elif step == "has":
+        # Whether this key finds the bucket (a moved one, D303).
+        try:
+            s3.head_bucket(Bucket=args[0])
+            print("yes")
+        except botocore.exceptions.ClientError as e:
+            print(code(e))
     elif step == "denied":
         try:
             s3.list_buckets()

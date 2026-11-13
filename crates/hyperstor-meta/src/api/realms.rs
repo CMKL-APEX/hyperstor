@@ -63,6 +63,17 @@ impl Scope {
                 .contains(&self.tenancy.project_of(tenant, project))
     }
 
+    /// Whether a bucket of `tenant` naming `project` is reached: its tenant,
+    /// whose name it bears (D243), or its project if that is its tenant's
+    /// (D301, I379).
+    pub(super) fn bucket_in(&self, tenant: u32, project: u32) -> bool {
+        self.whole()
+            || self.tenant(tenant)
+            || self
+                .projects
+                .contains(&self.tenancy.bucket_project(tenant, project))
+    }
+
     /// Whether the call is limited to tenants or projects (not only realms).
     pub(super) fn below_realms(&self) -> bool {
         !self.tenants.is_empty() || !self.projects.is_empty()
@@ -207,6 +218,9 @@ impl Api {
     pub(super) async fn held(&self, tenant: Option<u32>) -> Result<Vec<InPool>, ConnectError> {
         let mut out = Vec::new();
         let (map, ..) = self.published().await?;
+        // A project names its tenant (D300, D303): a moved project's
+        // volumes are its new tenant's whatever their headers say.
+        let tenancy = self.tenancy().await?;
         let name = |id: u32| {
             map.pools
                 .get(&id)
@@ -219,7 +233,7 @@ impl Api {
             for pool in [b.index_pool, b.data_pool] {
                 out.push(InPool {
                     tenant: b.tenant,
-                    project: b.project,
+                    project: tenancy.bucket_project(b.tenant, b.project),
                     pool,
                     what: format!("bucket {}/{} (pool {})", b.tenant, b.name, name(pool)),
                 });
@@ -235,10 +249,11 @@ impl Api {
                 })
                 .map_err(|_| ConnectError::unavailable("map service stopped"))?;
             for v in super::volume_result(rx.recv().await)? {
-                if tenant.is_none_or(|t| t == v.tenant) {
+                let owner = tenancy.tenant_of(v.tenant, v.project);
+                if tenant.is_none_or(|t| t == owner) {
                     out.push(InPool {
-                        tenant: v.tenant,
-                        project: v.project,
+                        tenant: owner,
+                        project: tenancy.project_of(owner, v.project),
                         pool: v.pool,
                         what: format!("volume {:032x} (pool {})", v.id, name(v.pool)),
                     });
@@ -248,13 +263,19 @@ impl Api {
         Ok(out)
     }
 
-    /// Mirrors the realm rows' host bindings and tenants' realms into the
-    /// map (D259), answered once storage nodes can read them.
+    /// Mirrors the realm rows' host bindings and tenants' realms, and
+    /// moved projects' tenants (D303), into the map (D259), answered once
+    /// storage nodes can read them.
     pub(super) async fn sync_realms(&self) -> Result<(), ConnectError> {
         let realms = self.realms().await?;
+        let projects = self.tenancy().await?.map_view(true);
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::SyncRealms { realms, reply })
+            .send(Admin::SyncRealms {
+                realms,
+                projects,
+                reply,
+            })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         match rx.recv().await {
             Some(Ok(_)) => Ok(()),
@@ -413,14 +434,14 @@ impl Api {
         target: &str,
     ) -> Result<(), ConnectError> {
         let realms = self.realms().await?;
-        let realm = realms.realm_of(v.tenant);
+        let tenant = self.tenancy().await?.tenant_of(v.tenant, v.project);
+        let realm = realms.realm_of(tenant);
         if realms.may_use(realm, pool) {
             return Ok(());
         }
         let why = format!(
-            "realm {} of tenant {} may not use pool {pool}",
+            "realm {} of tenant {tenant} may not use pool {pool}",
             realms.name(realm),
-            v.tenant
         );
         super::audit(who, op, target, &format!("failed: {why}"));
         Err(with_reason(

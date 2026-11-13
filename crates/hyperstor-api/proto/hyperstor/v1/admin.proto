@@ -830,6 +830,13 @@ service TenantService {
   // Deletes a project with no volume or bucket; a default project goes
   // with its tenant. Write.
   rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+
+  // Moves a project to another tenant, of the same realm or another
+  // (20-tenants.md §24.9.1, D303), as an operation: its buckets renamed
+  // under the new tenant, then its record. Refused first unless the new
+  // realm may use its pools, no host bound to realms holds its volumes
+  // across realms, and the new tenant has none of its bucket names. Write.
+  rpc MoveProject(MoveProjectRequest) returns (MoveProjectResponse);
 }
 
 message Project {
@@ -919,3 +926,16 @@ message DeleteProjectRequest {
 }
 
 message DeleteProjectResponse {}
+
+message MoveProjectRequest {
+  uint32 project = 1;
+  // The tenant it goes to.
+  uint32 to = 2;
+  // Past the new tenant's caps (a cluster administrator only); caps
+  // aren't kept yet, so it changes nothing today.
+  bool force = 3;
+}
+
+message MoveProjectResponse {
+  Operation operation = 1;
+}

@@ -8486,6 +8486,84 @@ fn s3_objects_match_a_model() {
     }
 }
 
+/// A bucket moves to another tenant (20-tenants.md §24.9.1, D303): its
+/// table renamed under the new tenant's name in one atomic operation, its
+/// id, project and objects kept; the old tenant no longer finds it, a
+/// write in flight under the old handle still lands; done again it answers
+/// that it was; a name the new tenant holds refuses it; one gone meanwhile
+/// is left alone.
+#[test]
+fn a_bucket_moves_to_another_tenant() {
+    use hyperstor_s3::{Config, Meta, Moved, S3, S3Error};
+    let zero = std::time::Duration::ZERO;
+    let c = Cluster::start_kv(
+        3, 1, LEASE, DOWN_AFTER, zero, zero, DOWN_OUT, zero, false, KV_OFF,
+    );
+    let meta = c.meta_addr;
+    let client = std::thread::spawn(move || {
+        block_on(async move {
+            let s3 = S3::open(Client::connect(meta, 5).await.unwrap(), Config::default());
+            let put = async |b: &hyperstor_s3::Bucket, key: &[u8], data: &[u8]| {
+                let mut p = s3.put(b, key, data.len() as u64).await.unwrap();
+                p.write(data).await.unwrap();
+                p.finish(Meta::default()).await.unwrap();
+            };
+            let b = s3
+                .create_bucket_in("photos", 1, 7, POOL, POOL)
+                .await
+                .unwrap();
+            put(&b, b"a", b"one").await;
+            put(&b, b"b", b"two").await;
+            // Tenant 2 has a bucket of another name; tenant 3 one of this.
+            s3.create_bucket("other", 2, POOL, POOL).await.unwrap();
+            s3.create_bucket("photos", 3, POOL, POOL).await.unwrap();
+            let r = s3.move_bucket(1, 3, "photos", b.id()).await;
+            assert!(matches!(r, Err(S3Error::BucketExists(_))), "{r:?}");
+            assert_eq!(s3.bucket(1, "photos").await.unwrap().id(), b.id());
+            assert_eq!(
+                s3.move_bucket(1, 2, "photos", b.id()).await.unwrap(),
+                Moved::Now
+            );
+            // Once: done again, it was.
+            assert_eq!(
+                s3.move_bucket(1, 2, "photos", b.id()).await.unwrap(),
+                Moved::Already
+            );
+            let r = s3.bucket(1, "photos").await;
+            assert!(matches!(r, Err(S3Error::NoSuchBucket(_))), "{r:?}");
+            let moved = s3.bucket(2, "photos").await.unwrap();
+            assert_eq!(moved.id(), b.id());
+            assert_eq!((moved.info.tenant, moved.info.project), (2, 7));
+            // A write in flight under the old handle (the table id) lands,
+            // and the objects are the new tenant's.
+            put(&b, b"c", b"three").await;
+            for (k, v) in [(&b"a"[..], &b"one"[..]), (b"b", b"two"), (b"c", b"three")] {
+                let e = s3.head(&moved, k).await.unwrap().unwrap();
+                assert_eq!(s3.read(&moved, &e, 0, v.len() as u64).await.unwrap(), v);
+            }
+            let names = |bs: Vec<hyperstor_s3::Bucket>| -> Vec<String> {
+                bs.into_iter().map(|b| b.name).collect()
+            };
+            assert_eq!(names(s3.buckets(1).await.unwrap()), Vec::<String>::new());
+            assert_eq!(names(s3.buckets(2).await.unwrap()), ["other", "photos"]);
+            // A bucket made since under the old tenant's name is another
+            // bucket: left alone; one gone, too.
+            s3.create_bucket("photos", 1, POOL, POOL).await.unwrap();
+            assert_eq!(
+                s3.move_bucket(1, 2, "photos", b.id()).await.unwrap(),
+                Moved::Already
+            );
+            assert_eq!(
+                s3.move_bucket(1, 4, "nothing", 42).await.unwrap(),
+                Moved::Gone
+            );
+            assert_eq!(names(s3.buckets(1).await.unwrap()), ["photos"]);
+        })
+    });
+    client.join().unwrap();
+    c.stop();
+}
+
 /// AWS's Python SDK against a gateway on a cluster (14-s3.md §14.7, stage
 /// 2): `crates/hyperstor-s3/tests/sdk.py`, with keys made for the run and
 /// a certificate from a CA made for it. Needs boto3 in `HS_S3_SDK_PYTHON`

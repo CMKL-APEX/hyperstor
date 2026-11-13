@@ -169,6 +169,34 @@ pub fn create(db: &Db, k: &S3Key) -> Result<(), Error> {
     })
 }
 
+/// In a write of the settings table: the keys of `tenant` whose new
+/// buckets go to `project` go to the tenant's default project instead
+/// (D303: the project is leaving `tenant`); how many changed.
+pub(crate) fn retarget(
+    t: &mut glidex_raftstore::store::RecTable<'_, store::MapSchema>,
+    tenant: u32,
+    project: u32,
+) -> Result<u32, Error> {
+    let mut found = Vec::new();
+    for row in t.range(KEY..).map_err(StoreError::from)? {
+        let (k, v) = row.map_err(StoreError::from)?;
+        let Some(id) = k.value().strip_prefix(KEY) else {
+            break;
+        };
+        let key =
+            S3Key::decode(id, v.value()).map_err(|e| Error::Store(format!("{KEY}{id}: {e}")))?;
+        if key.tenant == tenant && key.project == project {
+            found.push(key);
+        }
+    }
+    for mut k in found.iter().cloned() {
+        k.project = 0;
+        t.insert(format!("{KEY}{}", k.id).as_str(), k.encode().as_slice())
+            .map_err(StoreError::from)?;
+    }
+    Ok(found.len() as u32)
+}
+
 /// Deletes key `id`. Only the leader.
 pub fn revoke(db: &Db, id: &str) -> Result<(), Error> {
     let row = format!("{KEY}{id}");

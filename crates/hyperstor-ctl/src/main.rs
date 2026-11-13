@@ -159,7 +159,8 @@
 //!   rename --project ID --name N`, `project delete --project ID`:
 //!   tenants and their projects (20-tenants.md §24.9, D299, D300);
 //!   `create-volume`, `clone-volume` and `s3 key create` take `--project
-//!   ID`;
+//!   ID`; `project move --project ID --to TENANT [--force] [--wait SECS]`
+//!   moves a project to another tenant as an operation (§24.9.1, D303);
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -213,7 +214,7 @@ use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -410,8 +411,10 @@ struct Args {
     /// `s3 key create`, `tenant ...`, `project create|list`.
     tenant: Option<u32>,
     /// `create-volume`, `clone-volume`, `s3 key create`, `project
-    /// rename|delete` (20-tenants.md §24.9, D300).
+    /// rename|delete|move` (20-tenants.md §24.9, D300).
     project: Option<u32>,
+    /// `project move`: the tenant it goes to (D303).
+    to: Option<u32>,
     /// `realm tenant|pool|host`, `s3 placement set|delete`: a realm, or
     /// for `realm pool` and `realm host` realms, comma-separated, or `any`
     /// (D248, D249, D251).
@@ -526,6 +529,7 @@ fn main() {
         tenant: None,
         realm: None,
         project: None,
+        to: None,
         description: None,
         data_pool: None,
         index_pool: None,
@@ -558,6 +562,7 @@ fn main() {
             "--ttl" => a.ttl = num(it.next()),
             "--tenant" => a.tenant = Some(num(it.next())),
             "--project" => a.project = Some(num(it.next())),
+            "--to" => a.to = Some(num(it.next())),
             "--realm" => a.realm = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--description" => a.description = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--data-pool" => a.data_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -772,8 +777,9 @@ fn main() {
                             Some("create" | "list" | "delete" | "tenant" | "pool" | "host")
                         )
                     }
-                    "tenant" | "project" => {
-                        matches!(sub, Some("create" | "list" | "rename" | "delete"))
+                    "tenant" => matches!(sub, Some("create" | "list" | "rename" | "delete")),
+                    "project" => {
+                        matches!(sub, Some("create" | "list" | "rename" | "delete" | "move"))
                     }
                     "pool" => {
                         matches!(
@@ -981,7 +987,10 @@ fn main() {
     };
     // Projects (D300): named by number where a command acts on one, and
     // optional where a volume, clone or key may go in one.
-    let project_needed = matches!(cmd.as_str(), "project rename" | "project delete");
+    let project_needed = matches!(
+        cmd.as_str(),
+        "project rename" | "project delete" | "project move"
+    );
     let project_ok = match a.project {
         Some(_) => {
             project_needed
@@ -998,6 +1007,7 @@ fn main() {
     );
     if !tenant_ok
         || !project_ok
+        || ((cmd == "project move") != a.to.is_some())
         || (named && a.name.is_empty())
         || (matches!(
             cmd.as_str(),
@@ -1149,7 +1159,8 @@ fn main() {
             && cmd != "pool delete"
             && cmd != "device remove"
             && cmd != "cert renew"
-            && cmd != "claim release")
+            && cmd != "claim release"
+            && cmd != "project move")
     {
         usage();
     }
@@ -1648,7 +1659,11 @@ where
         "s3" => return s3(S3ServiceClient::new(transport, config), cmd, a).await,
         "realm" => return realms(RealmServiceClient::new(transport, config), cmd, a).await,
         "tenant" | "project" => {
-            return tenants(TenantServiceClient::new(transport, config), cmd, a).await;
+            let ops = OperationServiceClient::new(transport.clone(), config.clone());
+            return match tenants(TenantServiceClient::new(transport, config), cmd, a).await? {
+                Next::Follow(id) => follow(&ops, id, a).await,
+                n => Ok(n),
+            };
         }
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
@@ -3170,6 +3185,32 @@ where
                 })
                 .await?;
             println!("project {id} deleted");
+        }
+        "project move" => {
+            let (id, to) = (
+                a.project.expect("checked with the arguments"),
+                a.to.expect("checked with the arguments"),
+            );
+            let r = client
+                .move_project(pb::MoveProjectRequest {
+                    project: id,
+                    to,
+                    force: a.force,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let op = r.operation.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "project {id} moving to tenant {to}: operation {} (hyperstorctl op watch --id {})\n",
+                    op.id, op.id
+                )
+            });
+            return Ok(match a.wait {
+                Some(_) => Next::Follow(op.id),
+                None => Next::Exit(0),
+            });
         }
         _ => usage(),
     }

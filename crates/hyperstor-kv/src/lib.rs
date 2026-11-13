@@ -757,6 +757,55 @@ impl Store {
             .collect()
     }
 
+    /// Renames table `from` to `to`, its record's user part replaced by
+    /// `info`, in one atomic operation on the root: its id, ranges and rows
+    /// stay as they are, so nothing is copied (20-tenants.md §24.9.1,
+    /// D303). Refused if `to` exists. Done once: a retry after an unknown
+    /// outcome finds `to` with the same id and answers it.
+    pub async fn rename_table(
+        &self,
+        from: &[u8],
+        to: &[u8],
+        info: &[u8],
+    ) -> Result<Table, KvError> {
+        let Some(old) = self.table(from).await? else {
+            return match self.table(to).await? {
+                Some(t) => Err(KvError::TableExists(shown(&t.name))),
+                None => Err(KvError::NoTable(shown(from))),
+            };
+        };
+        let new = Table {
+            name: to.to_vec(),
+            info: info.to_vec(),
+            ..old.clone()
+        };
+        let r = self
+            .root_exec(&[
+                WireOp::AssertKv {
+                    key: table_key(from),
+                    value: Some(old.encode()),
+                },
+                WireOp::AssertKv {
+                    key: table_key(to),
+                    value: None,
+                },
+                WireOp::KvDel(table_key(from)),
+                WireOp::KvPut(table_key(to), new.encode()),
+                WireOp::KvPut(id_key(old.id), to.to_vec()),
+            ])
+            .await;
+        match r {
+            Ok(()) => Ok(new),
+            Err(e) => match self.table(to).await? {
+                // Applied, its answer lost.
+                Some(t) if t.id == old.id => Ok(t),
+                Some(_) => Err(KvError::TableExists(shown(to))),
+                None if conflict(&e) => Err(KvError::Conflict),
+                None => Err(e.into()),
+            },
+        }
+    }
+
     /// Deletes table `name` and all its rows (§28.3). A delete that stops
     /// half-way leaves the name free and the rest to delete again.
     pub async fn delete_table(&self, name: &[u8]) -> Result<(), KvError> {

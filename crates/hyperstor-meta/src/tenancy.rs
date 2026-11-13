@@ -92,6 +92,9 @@ pub struct Project {
     pub glidex_id: String,
     pub created_unix: u64,
     pub created_by: String,
+    /// The tenant it was made in, which its volumes' headers name: the
+    /// map tells storage nodes its tenant once it differs (D303).
+    pub made_in: u32,
 }
 
 impl Project {
@@ -105,13 +108,14 @@ impl Project {
             })
             .str(&self.glidex_id)
             .u64(self.created_unix)
-            .str(&self.created_by);
+            .str(&self.created_by)
+            .u32(self.made_in);
         e.into_vec()
     }
 
     fn decode(id: u32, b: &[u8]) -> Result<Project, DecodeError> {
         let mut d = Dec::new(b);
-        Ok(Project {
+        let mut p = Project {
             id,
             tenant: d.u32()?,
             name: d.str()?.to_string(),
@@ -122,7 +126,14 @@ impl Project {
             glidex_id: d.str()?.to_string(),
             created_unix: d.u64()?,
             created_by: d.str()?.to_string(),
-        })
+            made_in: 0,
+        };
+        p.made_in = if d.remaining() > 0 {
+            d.u32()?
+        } else {
+            p.tenant
+        };
+        Ok(p)
     }
 }
 
@@ -179,6 +190,32 @@ impl Tenancy {
             None if id == 0 => String::new(),
             None => format!("#{id}"),
             Some(p) => format!("{}/{}", self.tenant_label(p.tenant), p.name),
+        }
+    }
+
+    /// What storage nodes need of projects, for the cluster map (D303):
+    /// while `bound` (a host is bound to realms), each project moved from
+    /// the tenant it was made in, and its tenant now.
+    pub fn map_view(&self, bound: bool) -> std::collections::BTreeMap<u32, u32> {
+        if !bound {
+            return Default::default();
+        }
+        self.projects
+            .iter()
+            .filter(|p| p.tenant != p.made_in)
+            .map(|p| (p.id, p.tenant))
+            .collect()
+    }
+
+    /// The project a bucket of `tenant` naming `project` counts to: the
+    /// one named if it is that tenant's, else the tenant's default
+    /// project. A bucket's name is its tenant's (D243), so one made under a
+    /// key that still named a project that has since moved stays with its
+    /// tenant (I379).
+    pub fn bucket_project(&self, tenant: u32, project: u32) -> u32 {
+        match self.project(project) {
+            Some(p) if p.tenant == tenant => project,
+            _ => self.project_of(tenant, 0),
         }
     }
 
@@ -367,6 +404,7 @@ pub fn create_tenant(db: &Db, n: &NewTenant, in_use: &[u32]) -> Result<(u32, u32
             glidex_id: String::new(),
             created_unix: n.created_unix,
             created_by: n.created_by.clone(),
+            made_in: id,
         };
         put(t, &format!("{TENANT}{id}"), &tenant.encode())?;
         put(t, &format!("{PROJECT}{project}"), &p.encode())?;
@@ -488,6 +526,7 @@ pub fn create_project(
             glidex_id: glidex_id.to_string(),
             created_unix,
             created_by: created_by.to_string(),
+            made_in: tenant,
         };
         put(t, &format!("{PROJECT}{id}"), &p.encode())?;
         put_next(t, NEXT_PROJECT, id + 1)?;
@@ -557,6 +596,102 @@ pub fn delete_project(db: &Db, id: u32, holds: &[String]) -> Result<(), Error> {
         t.remove(format!("{PROJECT}{id}").as_str())
             .map_err(StoreError::from)?;
         Ok(())
+    })
+}
+
+/// Starts moving project `id` to tenant `to` (20-tenants.md §24.9.1,
+/// D303): it becomes `moving`, so nothing new is made in it, and keys of
+/// its tenant that put new buckets in it put them in the tenant's default
+/// project instead. Refused for a default project, one moving already, a
+/// tenant without a record, or its own tenant. Its tenant now.
+pub fn start_move(db: &Db, id: u32, to: u32) -> Result<u32, Error> {
+    write(db, |t, now| {
+        let Some(p) = now.project(id) else {
+            return Err(Error::NotFound);
+        };
+        if now
+            .tenant(p.tenant)
+            .is_some_and(|x| x.default_project == id)
+        {
+            return Err(refused(
+                "default_project",
+                "a tenant's default project stays with its tenant".into(),
+            ));
+        }
+        if p.state == ProjectState::Moving {
+            return Err(refused(
+                "project_moving",
+                format!("project {} is moving already", now.project_label(id)),
+            ));
+        }
+        if now.tenant(to).is_none() {
+            return Err(Error::NotFound);
+        }
+        if p.tenant == to {
+            return Err(refused(
+                "invalid_argument",
+                format!("project {} is tenant {to}'s already", now.project_label(id)),
+            ));
+        }
+        if now.project_named(to, &p.name).is_some() {
+            return Err(refused(
+                "project_exists",
+                format!(
+                    "tenant {} has a project named {}",
+                    now.tenant_label(to),
+                    p.name
+                ),
+            ));
+        }
+        let from = p.tenant;
+        let moving = Project {
+            state: ProjectState::Moving,
+            ..p.clone()
+        };
+        put(t, &format!("{PROJECT}{id}"), &moving.encode())?;
+        crate::s3keys::retarget(t, from, id)?;
+        Ok(from)
+    })
+}
+
+/// Ends moving project `id` to tenant `to`, in one write: its tenant is
+/// `to` and it is `active`; keys of its old tenant still naming it are
+/// retargeted again (made by a gateway's stale copy meanwhile). Done once:
+/// again, it changes nothing.
+pub fn finish_move(db: &Db, id: u32, to: u32) -> Result<(), Error> {
+    write(db, |t, now| {
+        let Some(p) = now.project(id) else {
+            return Err(Error::NotFound);
+        };
+        if now.tenant(to).is_none() {
+            return Err(Error::NotFound);
+        }
+        let from = p.tenant;
+        let moved = Project {
+            tenant: to,
+            state: ProjectState::Active,
+            ..p.clone()
+        };
+        put(t, &format!("{PROJECT}{id}"), &moved.encode())?;
+        if from != to {
+            crate::s3keys::retarget(t, from, id)?;
+        }
+        Ok(())
+    })
+}
+
+/// Undoes a move of project `id` that couldn't finish: `active` again in
+/// the tenant it was in.
+pub fn undo_move(db: &Db, id: u32) -> Result<(), Error> {
+    write(db, |t, now| {
+        let Some(p) = now.project(id) else {
+            return Err(Error::NotFound);
+        };
+        let back = Project {
+            state: ProjectState::Active,
+            ..p.clone()
+        };
+        put(t, &format!("{PROJECT}{id}"), &back.encode())
     })
 }
 
@@ -682,6 +817,65 @@ mod tests {
         // In a realm: refused until back in "default".
         crate::realms::set_tenant(&db, c, r, &[]).unwrap();
         assert_eq!(refusal(delete_tenant(&db, c, &[])), "tenant_in_use");
+    }
+
+    /// D303's records: moving, then the tenant in one write; keys of the
+    /// old tenant naming the project go to its default; a move is refused
+    /// for a default project, to its own tenant, or twice at once; a moved
+    /// project travels in the map's view while a host is bound.
+    #[test]
+    fn a_project_moves_between_tenants() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("map.redb")).unwrap();
+        let (a, ad) = create_tenant(&db, &new("a"), &[]).unwrap();
+        let (b, _) = create_tenant(&db, &new("b"), &[]).unwrap();
+        let p = create_project(&db, a, "web", "", 1, "x").unwrap();
+        let key = |id: &str, project| crate::s3keys::S3Key {
+            id: id.into(),
+            tenant: a,
+            project,
+            description: String::new(),
+            created_unix: 0,
+            created_by: String::new(),
+            sealed: vec![1],
+        };
+        crate::s3keys::create(&db, &key("HSA", p)).unwrap();
+        crate::s3keys::create(&db, &key("HSB", 0)).unwrap();
+        assert_eq!(refusal(start_move(&db, ad, b)), "default_project");
+        assert_eq!(refusal(start_move(&db, p, a)), "invalid_argument");
+        assert_eq!(start_move(&db, p, 99), Err(Error::NotFound));
+        assert_eq!(start_move(&db, p, b), Ok(a));
+        assert_eq!(refusal(start_move(&db, p, b)), "project_moving");
+        let now = load(&db).unwrap();
+        assert_eq!(now.project(p).unwrap().state, ProjectState::Moving);
+        assert!(
+            crate::s3keys::keys(&db)
+                .unwrap()
+                .iter()
+                .all(|k| k.project == 0)
+        );
+        // Nothing in the map until it has moved, and only while bound.
+        assert!(now.map_view(true).is_empty());
+        finish_move(&db, p, b).unwrap();
+        finish_move(&db, p, b).unwrap();
+        let now = load(&db).unwrap();
+        let moved = now.project(p).unwrap();
+        assert_eq!(
+            (moved.tenant, moved.state, moved.made_in),
+            (b, ProjectState::Active, a)
+        );
+        assert_eq!(now.map_view(true).get(&p), Some(&b));
+        assert!(now.map_view(false).is_empty());
+        // A bucket naming a project that is no longer its tenant's counts
+        // to its tenant's default (I379).
+        assert_eq!(now.bucket_project(a, p), ad);
+        assert_eq!(now.bucket_project(b, p), p);
+        // Undone: active where it is.
+        start_move(&db, p, a).unwrap();
+        undo_move(&db, p).unwrap();
+        let back = load(&db).unwrap();
+        assert_eq!(back.project(p).unwrap().tenant, b);
+        assert_eq!(back.project(p).unwrap().state, ProjectState::Active);
     }
 
     #[test]

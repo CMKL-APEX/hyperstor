@@ -4157,6 +4157,7 @@ pub fn spawn(
                 let settings = store
                     .clone()
                     .map(|db| Arc::new(crate::settings::Settings::new(db)));
+                let store_for_ops = store.clone();
                 // The API others reach this member at: on every address,
                 // the map's host.
                 let advertised = listener.local_addr().ok().map(|mut a| {
@@ -4173,6 +4174,7 @@ pub fn spawn(
                     }),
                     settings,
                     advertised,
+                    store_for_ops,
                 );
                 tokio::spawn(runner.clone().upkeep(trash_scan));
                 let api = Arc::new(Api {

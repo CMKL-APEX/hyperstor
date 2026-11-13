@@ -118,6 +118,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TenantService.CreateProject", Group::Store, false),
     ("TenantService.RenameProject", Group::Store, false),
     ("TenantService.DeleteProject", Group::Store, true),
+    // Moving a project between tenants (D303): their data, fresh.
+    ("TenantService.MoveProject", Group::Store, true),
     // Weakening scrub is a deliberate choice (D226): a fresh login.
     ("ClusterService.SetScrubSettings", Group::Store, false),
     ("ClusterService.WeakenScrubSettings", Group::Store, true),
@@ -194,6 +196,7 @@ pub const IN_REALM: &[&str] = &[
     "TenantService.CreateProject",
     "TenantService.RenameProject",
     "TenantService.DeleteProject",
+    "TenantService.MoveProject",
     // Those on its tenants' volumes and one's own (D283).
     "OperationService.GetOperation",
     "OperationService.ListOperations",
