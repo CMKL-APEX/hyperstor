@@ -942,13 +942,48 @@ fn ui_file(dir: &std::path::Path, path: &str) -> Resp {
     }
 }
 
-/// Refuses grants in realms that don't exist (D263): a grant in a realm
-/// made later would otherwise wake up with it.
+/// Refuses grants in realms, tenants and projects that don't exist (D263,
+/// D301): a grant in one made later would otherwise wake up with it.
 async fn realms_exist(state: &State, roles: &[String]) -> Result<(), Resp> {
-    let named: Vec<&str> = roles
+    use hyperstor_api::Within;
+    let within: Vec<Within> = roles
         .iter()
         .filter_map(|g| policy::grant(g).and_then(|(_, r)| r))
+        .filter_map(Within::parse)
         .collect();
+    let named: Vec<&str> = within
+        .iter()
+        .filter_map(|w| match w {
+            Within::Realm(r) => Some(r.as_str()),
+            _ => None,
+        })
+        .collect();
+    if within.len() > named.len() {
+        let tenants = match state
+            .members
+            .each(hyperstor_api::TenantServiceClient::new, |c| async move {
+                c.list_tenants(pb::ListTenantsRequest::default())
+                    .await
+                    .map(|r| r.into_owned())
+            })
+            .await
+        {
+            Ok(r) => r.tenants,
+            Err(e) => return Err(api_error(&e)),
+        };
+        for w in &within {
+            let there = match w {
+                Within::Realm(_) => true,
+                Within::Tenant(t) => tenants.iter().any(|x| &x.name == t),
+                Within::Project(t, p) => tenants
+                    .iter()
+                    .any(|x| &x.name == t && x.projects.iter().any(|y| &y.name == p)),
+            };
+            if !there {
+                return Err(error(404, "not_found", &format!("no {w}")));
+            }
+        }
+    }
     if named.is_empty() {
         return Ok(());
     }

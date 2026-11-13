@@ -685,7 +685,22 @@ impl Client {
         name: &str,
         new_id: Option<u128>,
     ) -> Result<Volume, ClientError> {
+        self.clone_snapshot_for(id, epoch, name, new_id, None).await
+    }
+
+    /// [`Self::clone_snapshot`], owned by `owner` (tenant, project) rather
+    /// than by its parent's (D300): a clone may be in another project, or
+    /// another tenant's, than the volume it reads through.
+    pub async fn clone_snapshot_for(
+        &self,
+        id: u128,
+        epoch: u64,
+        name: &str,
+        new_id: Option<u128>,
+        owner: Option<(u32, u32)>,
+    ) -> Result<Volume, ClientError> {
         let v = self.volume(id).await?.ok_or(ClientError::NoVolume(id))?;
+        let (tenant, project) = owner.unwrap_or((v.tenant, v.project));
         // Not one in the trash (D54).
         let s = v
             .snapshot(epoch)
@@ -738,7 +753,8 @@ impl Client {
             skip: Vec::new(),
             incarnation: v.incarnation,
             trashed_unix: 0,
-            tenant: v.tenant,
+            tenant,
+            project,
         };
         if let Err(e) = self.put_new(&c).await {
             self.forget_branch(v.lineage, b).await?;

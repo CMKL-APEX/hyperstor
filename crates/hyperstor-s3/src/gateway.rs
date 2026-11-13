@@ -139,10 +139,10 @@ async fn fetch(
         {
             Ok(r) => {
                 let r = r.into_owned();
-                let keys = Keys::from_keys(
+                let keys = Keys::from_keys_in(
                     r.keys
                         .into_iter()
-                        .map(|k| (k.id, zeroize::Zeroizing::new(k.secret), k.tenant)),
+                        .map(|k| (k.id, zeroize::Zeroizing::new(k.secret), k.tenant, k.project)),
                 );
                 let placements = r
                     .placements
@@ -802,6 +802,7 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         crate::now_secs(),
     )?;
     let tenant = key.tenant;
+    let project = key.project;
     drop(served);
     let m = req.method().clone();
     let host = header(req.headers(), "host").map(str::to_string);
@@ -825,7 +826,14 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
         (Target::Bucket(b), Method::PUT) => {
             only(&q, &[])?;
             let body = small_body(signed.clone(), signing, req.into_body()).await?;
-            create_bucket(state, &b, tenant, &placement_of(&body, &signed.region)?).await
+            create_bucket(
+                state,
+                &b,
+                tenant,
+                project,
+                &placement_of(&body, &signed.region)?,
+            )
+            .await
         }
         (Target::Bucket(b), Method::HEAD) => {
             only(&q, &[])?;
@@ -1785,6 +1793,7 @@ async fn create_bucket(
     state: &State,
     name: &str,
     tenant: u32,
+    project: u32,
     placement: &str,
 ) -> Result<Response<Body>, ApiError> {
     let Some((data, index)) = state.served().placements.get(placement).cloned() else {
@@ -1824,7 +1833,7 @@ async fn create_bucket(
                     "the bucket pools don't exist",
                 ));
             };
-            Ok(s3.create_bucket(&n, tenant, i, d).await)
+            Ok(s3.create_bucket_in(&n, tenant, project, i, d).await)
         })
         .await??;
     r?;

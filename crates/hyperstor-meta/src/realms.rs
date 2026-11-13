@@ -302,6 +302,8 @@ pub fn set_host(db: &Db, host: &str, realms: &[u32]) -> Result<(), Error> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InPool {
     pub tenant: u32,
+    /// Its project as its header or record names it (D300); 0: none.
+    pub project: u32,
     pub pool: u32,
     pub what: String,
 }
@@ -567,6 +569,7 @@ mod tests {
         set_tenant(&db, 6, b, &[]).unwrap();
         let vol = |tenant, pool| InPool {
             tenant,
+            project: 0,
             pool,
             what: format!("volume of {tenant}"),
         };

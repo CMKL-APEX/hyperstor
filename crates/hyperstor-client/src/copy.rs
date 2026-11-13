@@ -168,13 +168,14 @@ impl Client {
                 if n.pool == pool
                     && n.size == v.size
                     && n.lineage == new_id
-                    && n.tenant == v.tenant =>
+                    && n.tenant == v.tenant
+                    && n.project == v.project =>
             {
                 self.drop_data(pool, new_id, n.size, &[0]).await?;
             }
             Some(_) => return Err(ClientError::VolumeExists(new_id)),
             None => {
-                self.create_volume_for(pool, v.size, Some(new_id), name, v.tenant)
+                self.create_volume_in(pool, v.size, Some(new_id), name, v.tenant, v.project)
                     .await?;
             }
         }

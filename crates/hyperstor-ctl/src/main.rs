@@ -153,6 +153,13 @@
 //!   delete --name N`, `realm tenant --tenant N --realm R`, `realm pool
 //!   --pool P --realm R[,R...]|any`: realms, the tenants in them and the
 //!   pools they may use (20-tenants.md §24.8, D248–D250);
+//! - `tenant create --name N [--tenant ID]`, `tenant list`, `tenant
+//!   rename --tenant ID --name N`, `tenant delete --tenant ID`; `project
+//!   create --tenant ID --name N`, `project list [--tenant ID]`, `project
+//!   rename --project ID --name N`, `project delete --project ID`:
+//!   tenants and their projects (20-tenants.md §24.9, D299, D300);
+//!   `create-volume`, `clone-volume` and `s3 key create` take `--project
+//!   ID`;
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -200,13 +207,13 @@ use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
     AuditServiceClient, CaServiceClient, ClusterServiceClient, MapServiceClient,
     MemberServiceClient, NodeServiceClient, OperationServiceClient, RealmServiceClient,
-    S3ServiceClient, TokenServiceClient, TrashServiceClient,
+    S3ServiceClient, TenantServiceClient, TokenServiceClient, TrashServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -400,8 +407,11 @@ struct Args {
     /// Through hyperstor-mgmt, which passes on whole answers only: an
     /// operation is followed by asking again, not by a watch.
     poll: bool,
-    /// `s3 key create`.
+    /// `s3 key create`, `tenant ...`, `project create|list`.
     tenant: Option<u32>,
+    /// `create-volume`, `clone-volume`, `s3 key create`, `project
+    /// rename|delete` (20-tenants.md §24.9, D300).
+    project: Option<u32>,
     /// `realm tenant|pool|host`, `s3 placement set|delete`: a realm, or
     /// for `realm pool` and `realm host` realms, comma-separated, or `any`
     /// (D248, D249, D251).
@@ -515,6 +525,7 @@ fn main() {
         poll: false,
         tenant: None,
         realm: None,
+        project: None,
         description: None,
         data_pool: None,
         index_pool: None,
@@ -546,6 +557,7 @@ fn main() {
             "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--ttl" => a.ttl = num(it.next()),
             "--tenant" => a.tenant = Some(num(it.next())),
+            "--project" => a.project = Some(num(it.next())),
             "--realm" => a.realm = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--description" => a.description = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--data-pool" => a.data_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -728,7 +740,8 @@ fn main() {
             }
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
-            | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network"
+            | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network" | "tenant"
+            | "project"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -758,6 +771,9 @@ fn main() {
                             sub,
                             Some("create" | "list" | "delete" | "tenant" | "pool" | "host")
                         )
+                    }
+                    "tenant" | "project" => {
+                        matches!(sub, Some("create" | "list" | "rename" | "delete"))
                     }
                     "pool" => {
                         matches!(
@@ -946,13 +962,47 @@ fn main() {
     // Buckets (D246): show and delete name one by --tenant and --name; list
     // may keep to one tenant.
     let bucket_one = matches!(cmd.as_str(), "s3 bucket show" | "s3 bucket delete");
-    let tenant_needed = bucket_one || matches!(cmd.as_str(), "s3 key create" | "realm tenant");
+    let tenant_needed = bucket_one
+        || matches!(
+            cmd.as_str(),
+            "s3 key create" | "realm tenant" | "tenant rename" | "tenant delete" | "project create"
+        );
     let tenant_ok = match a.tenant {
-        // A volume's tenant is optional (D258).
-        Some(_) => tenant_needed || cmd == "s3 bucket list" || cmd == "create-volume",
+        // A volume's tenant is optional (D258); `tenant create` may adopt
+        // a tenant's number, `project list` keep to one tenant.
+        Some(_) => {
+            tenant_needed
+                || matches!(
+                    cmd.as_str(),
+                    "s3 bucket list" | "create-volume" | "tenant create" | "project list"
+                )
+        }
         None => !tenant_needed,
     };
+    // Projects (D300): named by number where a command acts on one, and
+    // optional where a volume, clone or key may go in one.
+    let project_needed = matches!(cmd.as_str(), "project rename" | "project delete");
+    let project_ok = match a.project {
+        Some(_) => {
+            project_needed
+                || matches!(
+                    cmd.as_str(),
+                    "create-volume" | "clone-volume" | "s3 key create"
+                )
+        }
+        None => !project_needed,
+    };
+    let named = matches!(
+        cmd.as_str(),
+        "tenant create" | "tenant rename" | "project create" | "project rename"
+    );
     if !tenant_ok
+        || !project_ok
+        || (named && a.name.is_empty())
+        || (matches!(
+            cmd.as_str(),
+            "tenant list" | "tenant delete" | "project list" | "project delete"
+        ) && !a.name.is_empty())
         || (bucket_one && a.name.is_empty())
         || (a.description.is_some() && !matches!(cmd.as_str(), "s3 key create" | "realm create"))
         || (matches!(cmd.as_str(), "realm tenant" | "realm pool" | "realm host")
@@ -1597,6 +1647,9 @@ where
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
         "s3" => return s3(S3ServiceClient::new(transport, config), cmd, a).await,
         "realm" => return realms(RealmServiceClient::new(transport, config), cmd, a).await,
+        "tenant" | "project" => {
+            return tenants(TenantServiceClient::new(transport, config), cmd, a).await;
+        }
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
@@ -1821,6 +1874,7 @@ where
                     name: a.name.clone(),
                     id: a.id.clone().unwrap_or_default(),
                     tenant: a.tenant.unwrap_or_default(),
+                    project: a.project.unwrap_or_default(),
                     ..Default::default()
                 })
                 .await;
@@ -2897,6 +2951,7 @@ where
             let r = client
                 .create_s3_key(pb::CreateS3KeyRequest {
                     tenant: a.tenant.expect("checked with the arguments"),
+                    project: a.project.unwrap_or_default(),
                     description: a.description.clone().unwrap_or_default(),
                     ..Default::default()
                 })
@@ -3012,6 +3067,111 @@ where
                 a.name
             );
         }
+    }
+    Ok(Next::Exit(0))
+}
+
+/// `tenant create|list|rename|delete` and `project
+/// create|list|rename|delete` (20-tenants.md §24.9, D299, D300).
+async fn tenants<T>(
+    client: TenantServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    match cmd {
+        "tenant create" => {
+            let r = client
+                .create_tenant(pb::CreateTenantRequest {
+                    name: a.name.clone(),
+                    id: a.tenant.unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let (id, p) = r
+                .tenant
+                .as_option()
+                .map_or((0, 0), |t| (t.id, t.default_project));
+            show(a, &r, || {
+                format!(
+                    "tenant {} made (id {id}), with project default (id {p})\n",
+                    a.name
+                )
+            });
+        }
+        "tenant list" | "project list" => {
+            let mut r = client
+                .list_tenants(pb::ListTenantsRequest::default())
+                .await?
+                .into_owned();
+            if let Some(t) = a.tenant {
+                r.tenants.retain(|x| x.id == t);
+            }
+            if cmd == "tenant list" {
+                show(a, &r, || tenants_text(&r));
+            } else {
+                show(a, &r, || projects_text(&r));
+            }
+        }
+        "tenant rename" => {
+            let id = a.tenant.expect("checked with the arguments");
+            client
+                .rename_tenant(pb::RenameTenantRequest {
+                    id,
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("tenant {id} is named {}", a.name);
+        }
+        "tenant delete" => {
+            let id = a.tenant.expect("checked with the arguments");
+            client
+                .delete_tenant(pb::DeleteTenantRequest {
+                    id,
+                    ..Default::default()
+                })
+                .await?;
+            println!("tenant {id} deleted");
+        }
+        "project create" => {
+            let r = client
+                .create_project(pb::CreateProjectRequest {
+                    tenant: a.tenant.expect("checked with the arguments"),
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let id = r.project.as_option().map_or(0, |p| p.id);
+            show(a, &r, || format!("project {} made (id {id})\n", a.name));
+        }
+        "project rename" => {
+            let id = a.project.expect("checked with the arguments");
+            client
+                .rename_project(pb::RenameProjectRequest {
+                    id,
+                    name: a.name.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("project {id} is named {}", a.name);
+        }
+        "project delete" => {
+            let id = a.project.expect("checked with the arguments");
+            client
+                .delete_project(pb::DeleteProjectRequest {
+                    id,
+                    ..Default::default()
+                })
+                .await?;
+            println!("project {id} deleted");
+        }
+        _ => usage(),
     }
     Ok(Next::Exit(0))
 }
@@ -3421,6 +3581,7 @@ where
                     epoch,
                     name: a.name.clone(),
                     new_id: a.new_id.clone().unwrap_or_default(),
+                    project: a.project.unwrap_or_default(),
                     ..Default::default()
                 })
                 .await?

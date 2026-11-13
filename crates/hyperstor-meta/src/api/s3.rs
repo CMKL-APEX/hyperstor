@@ -94,7 +94,7 @@ impl Api {
     }
 
     /// Runs `f` on the store off the API's thread; "not found" is `what`'s.
-    async fn s3_rows<T: Send + 'static>(
+    pub(super) async fn s3_rows<T: Send + 'static>(
         &self,
         what: &str,
         f: impl FnOnce(&crate::store::Db) -> Result<T, TokenError> + Send + 'static,
@@ -143,6 +143,7 @@ impl Api {
     async fn buckets_pb(&self, rows: Vec<BucketRow>) -> Result<Vec<pb::S3Bucket>, ConnectError> {
         let (map, ..) = self.published().await?;
         let realms = self.realms().await?;
+        let tenancy = self.tenancy().await.unwrap_or_default();
         let name = |id: u32| {
             map.pools
                 .get(&id)
@@ -162,10 +163,46 @@ impl Api {
                 counted: b.counts.is_some(),
                 objects: b.counts.map_or(0, |c| c.0),
                 bytes: b.counts.map_or(0, |c| c.1),
+                project: tenancy.project_of(b.tenant, b.project),
+                project_name: tenancy.project_label(tenancy.project_of(b.tenant, b.project)),
                 name: b.name,
                 ..Default::default()
             })
             .collect())
+    }
+}
+
+impl Api {
+    /// Bucket `tenant/name`'s row if `scope` reaches it: its tenant, or its
+    /// project (D301). One outside answers as one that doesn't exist
+    /// (D244); read for a call limited below its tenant only.
+    async fn bucket_reached(
+        &self,
+        scope: &super::realms::Scope,
+        who: &str,
+        op: &str,
+        target: &str,
+        tenant: u32,
+        name: &str,
+    ) -> Result<Vec<BucketRow>, ConnectError> {
+        let get = || BucketOp::Get {
+            tenant,
+            name: name.to_string(),
+        };
+        if scope.tenant(tenant) {
+            let BucketDone::List(rows) = self.bucket_op(get()).await? else {
+                return Err(ConnectError::internal("not a list"));
+            };
+            return Ok(rows);
+        }
+        if let Ok(BucketDone::List(rows)) = self.bucket_op(get()).await
+            && rows.iter().all(|b| scope.container(b.tenant, b.project))
+            && !rows.is_empty()
+        {
+            return Ok(rows);
+        }
+        scope.bucket(who, op, target, tenant)?;
+        Err(ConnectError::internal("a bucket outside was reached"))
     }
 }
 
@@ -193,7 +230,7 @@ impl S3Service for Api {
         let BucketDone::List(mut rows) = self.bucket_op(BucketOp::List { tenant }).await? else {
             return Err(ConnectError::internal("not a list"));
         };
-        rows.retain(|b| scope.tenant(b.tenant));
+        rows.retain(|b| scope.container(b.tenant, b.project));
         Ok(pb::ListS3BucketsResponse {
             buckets: self.buckets_pb(rows).await?,
             ..Default::default()
@@ -209,12 +246,10 @@ impl S3Service for Api {
         let target = format!("bucket {}/{}", req.tenant, req.name);
         let (who, reach) = self.authorize_in(&ctx, "GetS3Bucket", &target, false)?;
         let (tenant, name) = bucket_of(req.tenant, req.name)?;
-        self.scope(reach)
-            .await?
-            .bucket(&who, "GetS3Bucket", &target, tenant)?;
-        let BucketDone::List(rows) = self.bucket_op(BucketOp::Get { tenant, name }).await? else {
-            return Err(ConnectError::internal("not a list"));
-        };
+        let scope = self.scope(reach).await?;
+        let rows = self
+            .bucket_reached(&scope, &who, "GetS3Bucket", &target, tenant, &name)
+            .await?;
         Ok(pb::GetS3BucketResponse {
             bucket: self.buckets_pb(rows).await?.into_iter().next().into(),
             ..Default::default()
@@ -229,9 +264,11 @@ impl S3Service for Api {
     ) -> ServiceResult<pb::DeleteS3BucketResponse> {
         let target = format!("bucket {}/{}", req.tenant, req.name);
         let (who, reach) = self.authorize_in(&ctx, "DeleteS3Bucket", &target, true)?;
-        self.scope(reach)
-            .await?
-            .bucket(&who, "DeleteS3Bucket", &target, req.tenant)?;
+        let scope = self.scope(reach).await?;
+        if let Ok((tenant, name)) = bucket_of(req.tenant, req.name) {
+            self.bucket_reached(&scope, &who, "DeleteS3Bucket", &target, tenant, &name)
+                .await?;
+        }
         let r = match bucket_of(req.tenant, req.name) {
             Ok((tenant, name)) => self
                 .bucket_op(BucketOp::Delete { tenant, name })
@@ -257,6 +294,19 @@ impl S3Service for Api {
         if !scope.tenant(req.tenant) {
             return Err(scope.outside(&who, "CreateS3Key", &target, &target));
         }
+        // Its project is one of its tenant's (D300).
+        if req.project != 0 {
+            let tenancy = self.tenancy().await?;
+            if tenancy
+                .project(req.project)
+                .is_none_or(|p| p.tenant != req.tenant)
+            {
+                return Err(invalid(format!(
+                    "tenant {} has no project {}",
+                    req.tenant, req.project
+                )));
+            }
+        }
         if req.description.chars().count() > 200 || req.description.chars().any(char::is_control) {
             return Err(invalid(
                 "a description has at most 200 characters, none of them control characters",
@@ -267,6 +317,7 @@ impl S3Service for Api {
         let k = S3Key {
             id: id.clone(),
             tenant: req.tenant,
+            project: req.project,
             description: req.description.to_string(),
             created_unix: super::admin::now_unix(),
             created_by: who.clone(),
@@ -285,6 +336,7 @@ impl S3Service for Api {
             key: buffa::MessageField::some(pb::S3Key {
                 id: k.id,
                 tenant: k.tenant,
+                project: k.project,
                 description: k.description,
                 created_unix: k.created_unix,
                 created_by: k.created_by,
@@ -313,6 +365,7 @@ impl S3Service for Api {
                     realm: realms.name(realms.realm_of(k.tenant)),
                     id: k.id,
                     tenant: k.tenant,
+                    project: k.project,
                     description: k.description,
                     created_unix: k.created_unix,
                     created_by: k.created_by,
@@ -474,12 +527,13 @@ impl S3Service for Api {
         // answers aren't.
         let who = self.authorize_as(&ctx, "GetS3Gateway", "s3 keys", Need::S3)?;
         let key = self.cluster_key()?;
-        let (keys, placements, realms) = self
+        let (keys, placements, realms, tenancy) = self
             .s3_rows("key", |db| {
                 Ok((
                     s3keys::keys(db)?,
                     s3keys::placements(db)?,
                     realms::load(db)?,
+                    crate::tenancy::load(db)?,
                 ))
             })
             .await?;
@@ -531,6 +585,8 @@ impl S3Service for Api {
                 id: k.id,
                 secret: String::from_utf8_lossy(&secret).into_owned(),
                 tenant: k.tenant,
+                // Its new buckets name their project (D300).
+                project: tenancy.project_of(k.tenant, k.project),
                 ..Default::default()
             });
         }

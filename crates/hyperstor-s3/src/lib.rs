@@ -360,6 +360,20 @@ impl S3 {
         index_pool: u32,
         data_pool: u32,
     ) -> Result<Bucket> {
+        self.create_bucket_in(name, tenant, 0, index_pool, data_pool)
+            .await
+    }
+
+    /// [`Self::create_bucket`], in `project` of `tenant` (D300; 0: the
+    /// tenant's default project).
+    pub async fn create_bucket_in(
+        &self,
+        name: &str,
+        tenant: u32,
+        project: u32,
+        index_pool: u32,
+        data_pool: u32,
+    ) -> Result<Bucket> {
         if !valid_bucket_name(name) {
             return Err(S3Error::InvalidBucketName(name.into()));
         }
@@ -367,6 +381,7 @@ impl S3 {
             tenant,
             created: now_ms(),
             counted: true,
+            project,
         };
         let made = self
             .kv

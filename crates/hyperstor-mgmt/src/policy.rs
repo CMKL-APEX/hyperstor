@@ -21,6 +21,9 @@
 //!   the calls of [`IN_REALM`], and only that realm's tenants, volumes,
 //!   buckets, keys, placements and people's grants: mgmt names the realms
 //!   in [`hyperstor_api::REALMS_HEADER`] and the map service applies them.
+//! - Tenants and projects (D301): `role@tenant:NAME` and
+//!   `role@project:TENANT/NAME` hold the same way in one tenant, or one
+//!   project (its volumes and buckets alone), named in the same header.
 
 use glidex_auth::cedar::{AuthContext, Decision, Engine, Model, PolicySource, Query};
 use serde_json::{Value, json};
@@ -65,6 +68,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.ListS3Buckets", Group::Read, false),
     ("S3Service.GetS3Bucket", Group::Read, false),
     ("RealmService.ListRealms", Group::Read, false),
+    ("TenantService.ListTenants", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
@@ -106,6 +110,14 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("RealmService.CreateRealm", Group::Store, false),
     ("RealmService.SetPoolRealms", Group::Store, false),
     ("RealmService.DeleteRealm", Group::Store, true),
+    // Tenants and projects (D299, D300): accounts and what owns volumes
+    // and buckets.
+    ("TenantService.CreateTenant", Group::Store, false),
+    ("TenantService.RenameTenant", Group::Store, false),
+    ("TenantService.DeleteTenant", Group::Store, true),
+    ("TenantService.CreateProject", Group::Store, false),
+    ("TenantService.RenameProject", Group::Store, false),
+    ("TenantService.DeleteProject", Group::Store, true),
     // Weakening scrub is a deliberate choice (D226): a fresh login.
     ("ClusterService.SetScrubSettings", Group::Store, false),
     ("ClusterService.WeakenScrubSettings", Group::Store, true),
@@ -177,6 +189,11 @@ pub const IN_REALM: &[&str] = &[
     "S3Service.ListS3Buckets",
     "S3Service.GetS3Bucket",
     "RealmService.ListRealms",
+    // Its tenants and their projects (D301).
+    "TenantService.ListTenants",
+    "TenantService.CreateProject",
+    "TenantService.RenameProject",
+    "TenantService.DeleteProject",
     // Those on its tenants' volumes and one's own (D283).
     "OperationService.GetOperation",
     "OperationService.ListOperations",
@@ -205,23 +222,25 @@ pub const IN_REALM: &[&str] = &[
     "People.SetRoles",
 ];
 
-/// A grant's role and realm: `viewer`, cluster-wide, or `viewer@acme`.
-/// `None` if the role isn't one or the realm isn't a name (1-63 of a-z,
-/// 0-9 and `-`, "default" among them).
+/// A grant's role and where it holds: `viewer`, cluster-wide;
+/// `viewer@acme`, in a realm; `viewer@tenant:lab`, in a tenant;
+/// `viewer@project:lab/web`, in a project (D263, D301). `None` if the
+/// role isn't one or the place isn't one of those, each name 1-63 of a-z,
+/// 0-9 and `-` ("default" among realms).
 pub fn grant(g: &str) -> Option<(&str, Option<&str>)> {
-    let (role, realm) = match g.split_once('@') {
-        Some((r, realm)) => (r, Some(realm)),
+    let (role, within) = match g.split_once('@') {
+        Some((r, w)) => (r, Some(w)),
         None => (g, None),
     };
     if !ROLES.contains(&role) {
         return None;
     }
-    if let Some(r) = realm
-        && hyperstor_api::parse_realms(r).is_none_or(|v| v.len() != 1)
+    if let Some(w) = within
+        && hyperstor_api::Within::parse(w).is_none()
     {
         return None;
     }
-    Some((role, realm))
+    Some((role, within))
 }
 
 /// Where a call reaches (D262).
@@ -541,6 +560,30 @@ mod tests {
         assert_eq!(r(&["root@acme"], "ClusterService.ListVolumes", None), None);
     }
 
+    /// Grants in a tenant or a project reach the same calls as in a realm
+    /// (D301), named the same way, beside realm grants.
+    #[test]
+    fn grants_in_a_tenant_or_project_reach_it() {
+        let e = engine();
+        let r = |roles: &[&str], action: &str| {
+            let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
+            reach(&e, "ann", &roles, action, "pam", 5, None).ok()
+        };
+        let at = |v: &[&str]| Some(Reach::Realms(v.iter().map(|s| s.to_string()).collect()));
+        let lab = ["storage-admin@tenant:lab", "security-admin@tenant:lab"];
+        assert_eq!(r(&lab, "ClusterService.CreateVolume"), at(&["tenant:lab"]));
+        assert_eq!(r(&lab, "TenantService.CreateProject"), at(&["tenant:lab"]));
+        assert_eq!(r(&lab, "S3Service.CreateS3Key"), at(&["tenant:lab"]));
+        assert_eq!(r(&lab, "TenantService.CreateTenant"), None);
+        assert_eq!(r(&lab, "RealmService.SetTenantRealm"), None);
+        let web = ["viewer@project:lab/web", "storage-admin@acme"];
+        assert_eq!(
+            r(&web, "ClusterService.ListVolumes"),
+            at(&["acme", "project:lab/web"])
+        );
+        assert_eq!(r(&web, "ClusterService.DeleteVolume"), at(&["acme"]));
+    }
+
     /// What a realm reaches is something people do.
     #[test]
     fn realm_calls_are_people_calls() {
@@ -552,7 +595,23 @@ mod tests {
         }
         assert_eq!(grant("viewer@acme"), Some(("viewer", Some("acme"))));
         assert_eq!(grant("viewer"), Some(("viewer", None)));
-        for bad in ["root", "viewer@", "viewer@a,b", "viewer@A", "@acme"] {
+        assert_eq!(
+            grant("storage-admin@tenant:lab"),
+            Some(("storage-admin", Some("tenant:lab")))
+        );
+        assert_eq!(
+            grant("viewer@project:lab/web"),
+            Some(("viewer", Some("project:lab/web")))
+        );
+        for bad in [
+            "root",
+            "viewer@",
+            "viewer@a,b",
+            "viewer@A",
+            "@acme",
+            "viewer@tenant:",
+            "viewer@project:lab",
+        ] {
             assert_eq!(grant(bad), None, "{bad}");
         }
     }

@@ -894,12 +894,12 @@ fn dash(s: &str) -> &str {
 
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     let mut out = format!(
-        "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  ATTACHED BY\n",
-        "ID", "NAME", "SIZE", "STATE", "TENANT", "REALM"
+        "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  {:<20}  ATTACHED BY\n",
+        "ID", "NAME", "SIZE", "STATE", "TENANT", "REALM", "PROJECT"
     );
     for v in &r.volumes {
         out.push_str(&format!(
-            "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  {}\n",
+            "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  {:<20}  {}\n",
             v.id,
             v.name,
             v.size,
@@ -912,6 +912,8 @@ pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
             },
             // Named in lists (D286).
             dash(&v.realm),
+            // `tenant/project` by names (D300).
+            dash(&v.project_name),
             if v.attached_by.is_empty() {
                 "-"
             } else {
@@ -1049,6 +1051,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("RealmService.SetTenantRealm", "realm tenant"),
     ("RealmService.SetHostRealms", "realm host"),
     ("RealmService.SetPoolRealms", "realm pool"),
+    ("TenantService.CreateTenant", "tenant create"),
+    ("TenantService.ListTenants", "tenant list"),
+    ("TenantService.RenameTenant", "tenant rename"),
+    ("TenantService.DeleteTenant", "tenant delete"),
+    ("TenantService.CreateProject", "project create"),
+    ("TenantService.RenameProject", "project rename"),
+    ("TenantService.DeleteProject", "project delete"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
     ("TrashService.PurgeFromTrash", "trash purge"),
@@ -1326,6 +1335,60 @@ pub fn s3_keys_text(r: &pb::ListS3KeysResponse) -> String {
 }
 
 /// Realms, their tenants and pools (D248, D249).
+/// `tenant list`: each tenant with its realm, glidex link and projects
+/// (20-tenants.md §24.9).
+pub fn tenants_text(r: &pb::ListTenantsResponse) -> String {
+    let mut o = format!(
+        "{:<20}  {:>6}  {:<12}  {:<24}  {}\n",
+        "TENANT", "ID", "REALM", "PROJECTS", "GLIDEX"
+    );
+    for t in &r.tenants {
+        let projects: Vec<String> = t.projects.iter().map(|p| p.name.clone()).collect();
+        let glidex = if t.glidex_id.is_empty() {
+            "-".to_string()
+        } else {
+            format!("{} at {}", t.glidex_id, t.directory)
+        };
+        let _ = writeln!(
+            o,
+            "{:<20}  {:>6}  {:<12}  {:<24}  {}",
+            t.name,
+            t.id,
+            t.realm,
+            projects.join(","),
+            glidex
+        );
+    }
+    o
+}
+
+/// `project list`: each tenant's projects, the default one marked.
+pub fn projects_text(r: &pb::ListTenantsResponse) -> String {
+    let mut o = format!(
+        "{:<20}  {:>6}  {:<20}  {:<8}  {}\n",
+        "PROJECT", "ID", "TENANT", "STATE", "GLIDEX"
+    );
+    for t in &r.tenants {
+        for p in &t.projects {
+            let name = if p.is_default {
+                format!("{} (default)", p.name)
+            } else {
+                p.name.clone()
+            };
+            let _ = writeln!(
+                o,
+                "{:<20}  {:>6}  {:<20}  {:<8}  {}",
+                name,
+                p.id,
+                t.name,
+                p.state,
+                dash(&p.glidex_id)
+            );
+        }
+    }
+    o
+}
+
 pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
     let mut o = format!(
         "{:<12}  {:>4}  {:<24}  {:<24}  {:<24}  {}\n",

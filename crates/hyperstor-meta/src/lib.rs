@@ -24,6 +24,7 @@ pub mod s3keys;
 pub mod scrubs;
 pub mod settings;
 pub mod store;
+pub mod tenancy;
 pub mod tokens;
 
 use hyperstor_reactor::time::sleep;
@@ -197,6 +198,8 @@ pub enum Admin {
         id: Option<u128>,
         /// D258; 0: none.
         tenant: u32,
+        /// D300; 0: the tenant's default project.
+        project: u32,
         reply: VolumeReply<Volume>,
     },
     ExpandVolume {
@@ -487,6 +490,8 @@ pub enum SnapOp {
         epoch: u64,
         name: String,
         new_id: Option<u128>,
+        /// The clone's (tenant, project) when not its parent's (D300).
+        owner: Option<(u32, u32)>,
     },
     Rollback {
         id: u128,
@@ -545,6 +550,8 @@ pub enum BucketOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketRow {
     pub tenant: u32,
+    /// Its project as its record names it (D300); 0: none.
+    pub project: u32,
     pub name: String,
     pub created_ms: u64,
     pub index_pool: u32,
@@ -577,6 +584,7 @@ async fn run_bucket_op(
     let row = async |b: hyperstor_s3::Bucket| BucketRow {
         counts: s3.counts(&b).await.ok().flatten(),
         tenant: b.info.tenant,
+        project: b.info.project,
         name: b.name,
         created_ms: b.info.created,
         index_pool: b.table.index_pool,
@@ -716,7 +724,11 @@ async fn run_snap_op(
             epoch,
             name,
             new_id,
-        } => SnapDone::Volume(c.clone_snapshot(id, epoch, &name, new_id).await?),
+            owner,
+        } => SnapDone::Volume(
+            c.clone_snapshot_for(id, epoch, &name, new_id, owner)
+                .await?,
+        ),
         SnapOp::Rollback { id, epoch } => SnapDone::Volume(c.rollback(id, epoch).await?),
         SnapOp::Get { id } => {
             SnapDone::Volume(c.volume(id).await?.ok_or(ClientError::NoVolume(id))?)
@@ -2902,6 +2914,7 @@ impl Meta {
                     name,
                     id,
                     tenant,
+                    project,
                     reply,
                 } => {
                     let c = connect(client.clone());
@@ -2909,7 +2922,7 @@ impl Meta {
                         let r = async {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
-                            c.create_volume_for(pool, size, id, &name, tenant)
+                            c.create_volume_in(pool, size, id, &name, tenant, project)
                                 .await
                                 .map_err(volume_fault)
                         };

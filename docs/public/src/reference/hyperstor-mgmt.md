@@ -104,6 +104,12 @@ first login makes an account with no roles. What a role allows:
 | `storage-admin` | Also create and delete volumes and snapshots, clones, roll volumes back, purge the trash and set its grace periods, add and remove members |
 | `security-admin` | People and their roles, join tokens, certificates, map backups, the audit log; nothing else |
 
+**Roles in a tenant or a project.** The same way, `role@tenant:NAME`
+(`storage-admin@tenant:lab`) holds in one tenant: its projects, volumes,
+snapshots, trashed volumes, buckets and keys. `role@project:TENANT/NAME`
+(`viewer@project:lab/web`) holds in one project: its volumes and
+buckets alone. A tenant or project named in a grant must exist.
+
 **Roles in a realm.** A role may also be granted in one realm, as
 `role@realm` (`storage-admin@acme`), beside cluster-wide roles. It then
 reaches only that realm's tenants' volumes, snapshots and trashed
@@ -179,7 +185,7 @@ never goes in `FILE` itself.
 | `GET /auth/oidc/callback` | Where the provider sends the browser back; then on to `return_to` with a session |
 | `POST /auth/logout` | Ends the session |
 | `GET`, `POST /auth/tokens`, `DELETE /auth/tokens/ID` | Your API tokens: list, make (`{"name", "days"?}`; the token is shown once), revoke |
-| `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators). Roles are `role` or `role@realm`; a security administrator in realms sees and sets only those realms' grants, and the rest stay |
+| `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators). Roles are `role`, `role@realm`, `role@tenant:NAME` or `role@project:TENANT/NAME`; a security administrator in realms sees and sets only those realms' grants, and the rest stay |
 | `POST /api/hyperstor.v1.SERVICE/METHOD` | The cluster API's call, as it came (Connect, gRPC-Web; JSON or protobuf), if your roles allow it |
 | `/api/status` | `GetStatus`, as JSON |
 | `/api/pgs?pool=N` | `ListPgs` for pool N |

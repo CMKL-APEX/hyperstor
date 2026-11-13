@@ -87,7 +87,7 @@ impl TrashService for Api {
         Ok(pb::ListTrashResponse {
             items: items
                 .iter()
-                .filter(|t| scope.tenant(t.tenant()))
+                .filter(|t| scope.container(t.tenant(), t.project()))
                 .map(|t| pb::TrashItem {
                     realm: names.realm_name(t.tenant()),
                     ..item_pb(self, t)

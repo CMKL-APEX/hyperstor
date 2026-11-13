@@ -58,6 +58,13 @@ impl Trashed {
             Trashed::Volume(v) | Trashed::Snapshot(v, _) => v.tenant,
         }
     }
+
+    /// Its volume's project as the header names it (D300).
+    pub fn project(&self) -> u32 {
+        match self {
+            Trashed::Volume(v) | Trashed::Snapshot(v, _) => v.project,
+        }
+    }
 }
 
 /// What's in the trash among `volumes`: trashed volumes (with their

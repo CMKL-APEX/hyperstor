@@ -4,6 +4,7 @@
 
 use super::{Api, with_reason};
 use crate::realms::{self, DEFAULT_REALM, InPool, Realm, Realms};
+use crate::tenancy::Tenancy;
 use crate::tokens::TokenError;
 use crate::{Admin, BucketDone, BucketOp};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
@@ -23,12 +24,17 @@ fn invalid(msg: impl Into<String>) -> ConnectError {
     )
 }
 
-/// The realms a call reaches (D262): every one, or those a person holds
-/// the call's role in. Realms that don't exist reach nothing.
+/// What a call reaches (D262, D301): everything, or the realms, tenants
+/// and projects a person holds the call's role in. Those that don't exist
+/// reach nothing.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Scope {
     ids: Option<Vec<u32>>,
+    /// Tenants and projects reached, by id, when limited.
+    tenants: Vec<u32>,
+    projects: Vec<u32>,
     pub(super) realms: Realms,
+    pub(super) tenancy: Tenancy,
 }
 
 impl Scope {
@@ -41,9 +47,25 @@ impl Scope {
         self.ids.as_ref().is_none_or(|l| l.contains(&id))
     }
 
-    /// Whether `tenant`'s realm is reached; tenant 0 is "default"'s.
+    /// Whether `tenant` is reached: its realm, or it (D301); tenant 0 is
+    /// "default"'s.
     pub(super) fn tenant(&self, tenant: u32) -> bool {
-        self.whole() || self.realm(self.realms.realm_of(tenant))
+        self.whole() || self.realm(self.realms.realm_of(tenant)) || self.tenants.contains(&tenant)
+    }
+
+    /// Whether a container of `tenant` naming `project` is reached: its
+    /// tenant (its project's, D300), or its project (D301).
+    pub(super) fn container(&self, tenant: u32, project: u32) -> bool {
+        self.whole()
+            || self.tenant(self.tenancy.tenant_of(tenant, project))
+            || self
+                .projects
+                .contains(&self.tenancy.project_of(tenant, project))
+    }
+
+    /// Whether the call is limited to tenants or projects (not only realms).
+    pub(super) fn below_realms(&self) -> bool {
+        !self.tenants.is_empty() || !self.projects.is_empty()
     }
 
     /// Whether operation `op` is seen (D283): the cluster's sees them all;
@@ -115,9 +137,19 @@ impl Scope {
     ) -> Result<(), ConnectError> {
         match &self.ids {
             None => Ok(()),
-            Some(ids) if ids[..] == [0] => Ok(()),
+            Some(ids) if ids[..] == [0] && !self.below_realms() => Ok(()),
             Some(ids) => {
-                let names: Vec<String> = ids.iter().map(|&i| self.realms.name(i)).collect();
+                let mut names: Vec<String> = ids.iter().map(|&i| self.realms.name(i)).collect();
+                names.extend(
+                    self.tenants
+                        .iter()
+                        .map(|&t| format!("tenant {}", self.tenancy.tenant_label(t))),
+                );
+                names.extend(
+                    self.projects
+                        .iter()
+                        .map(|&p| format!("project {}", self.tenancy.project_label(p))),
+                );
                 let e = with_reason(
                     ConnectError::invalid_argument(format!(
                         "name {what}: this call acts in realm {}",
@@ -187,6 +219,7 @@ impl Api {
             for pool in [b.index_pool, b.data_pool] {
                 out.push(InPool {
                     tenant: b.tenant,
+                    project: b.project,
                     pool,
                     what: format!("bucket {}/{} (pool {})", b.tenant, b.name, name(pool)),
                 });
@@ -205,6 +238,7 @@ impl Api {
                 if tenant.is_none_or(|t| t == v.tenant) {
                     out.push(InPool {
                         tenant: v.tenant,
+                        project: v.project,
                         pool: v.pool,
                         what: format!("volume {:032x} (pool {})", v.id, name(v.pool)),
                     });
@@ -245,19 +279,59 @@ impl Api {
         }
     }
 
+    /// Every tenant and project, to name each row a list answers: a
+    /// limited call's, read once; read for the cluster's too, and none when
+    /// they can't be read, rather than no list.
+    pub(super) async fn tenancy_names(&self, scope: &Scope) -> Tenancy {
+        if scope.whole() {
+            self.tenancy().await.unwrap_or_default()
+        } else {
+            scope.tenancy.clone()
+        }
+    }
+
     /// What a call that [`Api::authorize_in`] limited to `reach` may see
-    /// and change (D262). Realms are read only for a limited call.
+    /// and change (D262, D301). Realms, tenants and projects are read only
+    /// for a limited call.
     pub(super) async fn scope(&self, reach: Option<Vec<String>>) -> Result<Scope, ConnectError> {
+        use hyperstor_api::Within;
         Ok(match reach {
             None => Scope::default(),
             Some(names) => {
                 let realms = self.realms().await?;
-                Scope {
-                    ids: Some(names.iter().filter_map(|n| realms.id(n)).collect()),
-                    realms,
+                let tenancy = self.tenancy().await?;
+                let mut s = Scope {
+                    ids: Some(Vec::new()),
+                    ..Default::default()
+                };
+                for w in names.iter().filter_map(|n| Within::parse(n)) {
+                    match w {
+                        Within::Realm(n) => {
+                            if let (Some(id), Some(ids)) = (realms.id(&n), s.ids.as_mut()) {
+                                ids.push(id);
+                            }
+                        }
+                        Within::Tenant(n) => {
+                            s.tenants.extend(tenancy.tenant_named(&n).map(|t| t.id));
+                        }
+                        Within::Project(t, n) => s.projects.extend(
+                            tenancy
+                                .tenant_named(&t)
+                                .and_then(|t| tenancy.project_named(t.id, &n))
+                                .map(|p| p.id),
+                        ),
+                    }
                 }
+                s.realms = realms;
+                s.tenancy = tenancy;
+                s
             }
         })
+    }
+
+    /// Every tenant and project, from this member's copy.
+    pub(super) async fn tenancy(&self) -> Result<Tenancy, ConnectError> {
+        self.realm_rows("tenant", crate::tenancy::load).await
     }
 
     /// Volume `id` if `scope` reaches it: its tenant's realm is one of
@@ -276,7 +350,7 @@ impl Api {
             return Ok(());
         }
         match self.volume_any(id).await? {
-            v if scope.tenant(v.tenant) => Ok(()),
+            v if scope.container(v.tenant, v.project) => Ok(()),
             _ => {
                 let e = with_reason(
                     ConnectError::not_found(format!("no volume {id:032x}")),
@@ -313,7 +387,9 @@ impl Api {
                 })
                 .map_err(|_| ConnectError::unavailable("map service stopped"))?;
             for v in super::volume_result(rx.recv().await)? {
-                if v.snapshots.iter().any(|s| s.group == group) && !scope.tenant(v.tenant) {
+                if v.snapshots.iter().any(|s| s.group == group)
+                    && !scope.container(v.tenant, v.project)
+                {
                     let e = with_reason(
                         ConnectError::not_found(format!("no group snapshot {group:032x}")),
                         "not_found",
@@ -630,6 +706,7 @@ mod tests {
         let scope = |ids: Option<Vec<u32>>| Scope {
             ids,
             realms: realms.clone(),
+            ..Default::default()
         };
         let op = |tenant: Option<u32>, by: &str| Op {
             id: "o".into(),
