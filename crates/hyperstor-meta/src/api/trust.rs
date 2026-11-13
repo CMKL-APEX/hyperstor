@@ -19,6 +19,10 @@
 //!   done is kept, shown and retried at the next pull.
 //! - **Reports** count each admitted tenant's volumes, their provisioned
 //!   size, buckets and their bytes, and S3 keys (glidex D85).
+//! - **Logins** (D307–D309) are mgmt's to check; this service hands it
+//!   what it checks them against ([`TrustService::get_login_state`]) and
+//!   who a directory's person is here, with the grants the feed's links
+//!   give ([`crate::trust::person_of`]).
 
 use super::{Api, Need, with_reason};
 use crate::tenancy::{self, NewTenant, Tenancy};
@@ -45,6 +49,9 @@ fn invalid(msg: impl Into<String>) -> ConnectError {
 /// D64).
 const OFFER_DAYS: u64 = glidex_trust::OFFER_DAYS;
 const OFFER_MAX_DAYS: u64 = glidex_trust::OFFER_MAX_DAYS;
+
+/// The longest `max_staleness` a directory may be given: a week.
+const MAX_STALENESS_MINUTES: u32 = 7 * 24 * 60;
 
 /// A run of the feed takes this many passes at most: each pass plans
 /// against the records the last one left.
@@ -105,6 +112,7 @@ fn offer_pb(o: &OfferRec, now: u64) -> pb::TrustOffer {
         created_by: o.created_by.clone(),
         expires_unix: o.expires_unix,
         state: o.shown_state(now).to_string(),
+        ui: o.ui.clone(),
         ..Default::default()
     }
 }
@@ -502,9 +510,17 @@ impl Api {
             .map_err(fail)?;
             self.sync_realms().await.map_err(fail)?;
         }
+        // Logins come back to the address this offer names for people
+        // (the last redeemed offer's), else to the directories' own.
+        let ui_callback = trust::callback_for(if offer.ui.is_empty() {
+            &offer.url
+        } else {
+            &offer.ui
+        });
         let d = DirRec {
             dir: gt_cluster::redeemed_directory(existing.map(|e| e.dir), b, &checked, now),
             realm,
+            ui_callback: ui_callback.clone(),
         };
         self.realm_rows("directory", move |db| trust::put_directory(db, &d))
             .await
@@ -512,7 +528,7 @@ impl Api {
         Ok(RedeemAnswer {
             cluster_id,
             cluster_key: glidex_trust::key::jwks(&[&key]),
-            ui_callback: None,
+            ui_callback: Some(ui_callback),
         })
     }
 }
@@ -545,6 +561,12 @@ impl TrustService for Api {
                 return Err(invalid(format!(
                     "{:?}: mgmt's address for directories is https://host[:port]",
                     req.url
+                )));
+            }
+            if !req.ui.is_empty() && !valid_url(req.ui) {
+                return Err(invalid(format!(
+                    "{:?}: mgmt's address for people's browsers is https://host[:port]",
+                    req.ui
                 )));
             }
             let Some(pin) = normalize_pin(req.pin) else {
@@ -635,6 +657,7 @@ impl TrustService for Api {
                 created_by: who.clone(),
                 expires_unix: now + days * 86400,
                 state: trust::OPEN.into(),
+                ui: req.ui.trim_end_matches('/').to_string(),
             };
             let row = o.clone();
             self.realm_rows("offer", move |db| trust::create_offer(db, &row))
@@ -748,6 +771,11 @@ impl TrustService for Api {
                 checked_unix: f.state.checked_at,
                 blocked: f.blocked,
                 created_unix: d.dir.created_at,
+                ui_callback: d.ui_callback.clone(),
+                max_staleness_minutes: d
+                    .dir
+                    .max_staleness_minutes
+                    .map_or(0, |m| u32::try_from(m).unwrap_or(u32::MAX)),
                 ..Default::default()
             })
             .collect();
@@ -979,6 +1007,7 @@ impl TrustService for Api {
                     targets.push(pb::FeedTarget {
                         directory: serde_json::to_vec(&d.dir).expect("json"),
                         revision: f.state.revision,
+                        ui_callback: d.ui_callback.clone(),
                         ..Default::default()
                     });
                 }
@@ -1163,6 +1192,149 @@ impl TrustService for Api {
             .await;
         Self::audited(&who, "EndToldDirectory", &target, r)?;
         Ok(pb::EndNoticedResponse::default().into())
+    }
+
+    async fn set_directory_staleness(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDirectoryStalenessRequest>,
+    ) -> ServiceResult<pb::SetDirectoryStalenessResponse> {
+        let target = format!("staleness of {}: {} min", req.directory, req.minutes);
+        let who = self.authorize(&ctx, "SetDirectoryStaleness", &target, true)?;
+        let r = async {
+            if req.minutes > MAX_STALENESS_MINUTES {
+                return Err(invalid(format!(
+                    "max_staleness is 1 to {MAX_STALENESS_MINUTES} minutes (0: the default)"
+                )));
+            }
+            let dirs = self.realm_rows("directory", trust::directories).await?;
+            let issuer = glidex_trust::normalize_issuer(req.directory).unwrap_or_default();
+            let Some(d) = dirs
+                .iter()
+                .find(|d| d.dir.id == req.directory || d.dir.issuer == issuer)
+            else {
+                return Err(with_reason(
+                    ConnectError::not_found(format!("no trusted directory {}", req.directory)),
+                    "not_found",
+                ));
+            };
+            let (id, m) = (d.dir.id.clone(), u64::from(req.minutes));
+            self.realm_rows("directory", move |db| {
+                trust::set_staleness(db, &id, (m > 0).then_some(m)).map(|_| ())
+            })
+            .await
+        }
+        .await;
+        Self::audited(&who, "SetDirectoryStaleness", &target, r)?;
+        Ok(pb::SetDirectoryStalenessResponse::default().into())
+    }
+
+    async fn get_login_state(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::GetLoginStateRequest>,
+    ) -> ServiceResult<pb::GetLoginStateResponse> {
+        self.authorize_as(&ctx, "GetLoginState", "logins", Need::Mgmt)?;
+        let cluster_id = self.cluster_id()?;
+        let (dirs, feeds) = self
+            .realm_rows("directory", |db| {
+                let dirs = trust::directories(db)?;
+                let feeds = dirs
+                    .iter()
+                    .map(|d| trust::feed(db, &d.dir.id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((dirs, feeds))
+            })
+            .await?;
+        let realms = self.realms().await?;
+        let directories = dirs
+            .iter()
+            .zip(feeds)
+            .map(|(d, f)| pb::LoginDirectory {
+                directory: serde_json::to_vec(&d.dir).expect("json"),
+                realm: realms.name(d.realm),
+                checked_unix: f.state.checked_at,
+                applied_unix: f.state.applied_at,
+                ended_sids: f.ended,
+                ui_callback: d.ui_callback.clone(),
+                ..Default::default()
+            })
+            .collect();
+        Ok(pb::GetLoginStateResponse {
+            cluster_id,
+            directories,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn resolve_person(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::ResolvePersonRequest>,
+    ) -> ServiceResult<pb::ResolvePersonResponse> {
+        use glidex_trust::feed::{Entity, TokenKind};
+        self.authorize_as(&ctx, "ResolvePerson", "people", Need::Mgmt)?;
+        let cluster_id = self.cluster_id()?;
+        let (dir, subject, hash) = (
+            req.directory.to_string(),
+            req.subject.to_string(),
+            req.token_hash.to_string(),
+        );
+        if hash.is_empty() == (dir.is_empty() || subject.is_empty()) {
+            return Err(invalid("a directory and a subject, or a token's hash"));
+        }
+        let found = self
+            .realm_rows("directory", move |db| {
+                let dirs = trust::directories(db)?;
+                let operator = trust::operator(db)?;
+                if !hash.is_empty() {
+                    for d in dirs {
+                        if let Some(tok) = trust::api_token(db, &d.dir.id, &hash)? {
+                            let people = trust::people(db, &d.dir.id)?;
+                            return Ok(Some((d, Some(tok), people, operator)));
+                        }
+                    }
+                    return Ok(None);
+                }
+                let Some(d) = dirs.into_iter().find(|d| d.dir.id == dir) else {
+                    return Ok(None);
+                };
+                let people = trust::people(db, &d.dir.id)?;
+                Ok(Some((d, None, people, operator)))
+            })
+            .await?;
+        let Some((d, token, people, operator)) = found else {
+            return Ok(pb::ResolvePersonResponse::default().into());
+        };
+        let (who, service_account) = match &token {
+            None => (Entity::User(req.subject.to_string()), false),
+            Some(t) => match &t.kind {
+                TokenKind::Personal { owner } => (Entity::User(owner.clone()), false),
+                TokenKind::ServiceAccount { .. } => (Entity::Token(t.id.clone()), true),
+            },
+        };
+        let t = self.tenancy().await?;
+        let p = trust::person_of(&d.dir.issuer, &people, &t, operator, &who);
+        let subject = match &who {
+            Entity::User(u) | Entity::Token(u) => u.clone(),
+            _ => String::new(),
+        };
+        Ok(pb::ResolvePersonResponse {
+            found: p.found,
+            disabled: p.disabled,
+            display_name: p.display_name,
+            grants: p.grants,
+            operator: p.operator,
+            directory: d.dir.id.clone(),
+            subject,
+            token_id: token.as_ref().map(|t| t.id.clone()).unwrap_or_default(),
+            token_expires: token.as_ref().map_or(0, |t| t.expires_at),
+            token_good: token.as_ref().is_some_and(|t| t.good_on(&cluster_id)),
+            service_account,
+            ..Default::default()
+        }
+        .into())
     }
 }
 

@@ -163,6 +163,16 @@ export interface Methods {
   pam: boolean;
   oidc: boolean;
   claim_open: boolean;
+  /** Trusted glidex directories people sign in through (D307). */
+  directories?: { id: string; issuer: string; realm: string }[];
+}
+
+/** The sign-in choices besides a password: the identity provider, and
+ * each trusted directory (its provider id `dir:<id>`). */
+export function ssoProviders(m: Methods): { id?: string; label: string }[] {
+  const out: { id?: string; label: string }[] = m.oidc ? [{ label: "your identity provider" }] : [];
+  for (const d of m.directories ?? []) out.push({ id: `dir:${d.id}`, label: d.realm });
+  return out;
 }
 
 /** The build of the mgmt serving the UI (its `build.rs`). */
@@ -259,10 +269,15 @@ export const auth: AuthApi<Me, Methods> = {
     claimCode = "";
     return r;
   },
-  startSso: (_provider, returnTo, reauth) => {
+  startSso: (provider, returnTo, reauth) => {
     const body: Record<string, unknown> = { return_to: returnTo, reauth };
-    if (claimCode) body.claim = claimCode;
-    call<{ redirect: string }>("POST", "/auth/oidc/start", body, true)
+    let path = "/auth/oidc/start";
+    if (provider?.startsWith("dir:")) {
+      // A glidex directory (D307): its own login, passkeys and MFA.
+      body.directory = provider.slice(4);
+      path = "/auth/directory/start";
+    } else if (claimCode) body.claim = claimCode;
+    call<{ redirect: string }>("POST", path, body, true)
       .then((r) => window.location.assign(r.redirect))
       .catch((e) => alert(e instanceof Error ? e.message : String(e)));
   },

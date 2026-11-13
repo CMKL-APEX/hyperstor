@@ -162,10 +162,16 @@
 //!   ID`; `project move --project ID --to TENANT [--force] [--wait SECS]`
 //!   moves a project to another tenant as an operation (§24.9.1, D303);
 //! - `admission offer --tenant SLUG --directory ISSUER --url URL [--pin
-//!   SHA256] [--name N] [--realm R] [--days N]`, `admission list`,
-//!   `admission revoke --id OFFER`, `admission directories`, `admission
-//!   end --directory ISSUER --tenant SLUG`, `cluster set-operator --tenant
-//!   ID`: trust in glidex directories (19-administration.md §23.12, D306);
+//!   SHA256] [--ui URL] [--name N] [--realm R] [--days N]`, `admission
+//!   list`, `admission revoke --id OFFER`, `admission directories`,
+//!   `admission end --directory ISSUER --tenant SLUG`, `admission
+//!   staleness --directory ISSUER --minutes N`, `cluster set-operator
+//!   --tenant ID`: trust in glidex directories (19-administration.md
+//!   §23.12, D306, D309);
+//! - `auth login --directory ISSUER [--directory-pin SHA256]`, with
+//!   `--mgmt URL --token-file F`: a person of a trusted directory signs in
+//!   by its device grant; the file keeps the access token and the refresh
+//!   token that renews it, and `--mgmt` reads it (D307);
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -190,8 +196,10 @@
 //! With `--mgmt URL` (or `$HYPERSTOR_MGMT`) it goes through
 //! `hyperstor-mgmt` instead, as a person: with their API token from
 //! `--token-file F` or `$HYPERSTOR_TOKEN` (`hst_…`, made in the UI or at
-//! `/auth/tokens`; never an argument), and their roles decide what it
-//! may do (§23.9.2). `http://` is for loopback only (an SSH tunnel);
+//! `/auth/tokens`; a glidex API token, `gxt_…`; a directory's access
+//! token for this cluster; or the login `auth login --directory` kept,
+//! renewed when about to expire; never an argument), and their roles
+//! decide what it may do (§23.9.2, D307). `http://` is for loopback only (an SSH tunnel);
 //! over `https://` it trusts the host's CAs and `--mgmt-ca FILE`'s, or
 //! without it the cluster's root where `hyperstorctl.conf` names one
 //! (mgmt's certificate is the cluster CA's by default, D108).
@@ -218,9 +226,11 @@ use hyperstor_api::{
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
+
+mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|cluster set-operator [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--days N]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -432,6 +442,13 @@ struct Args {
     url: Option<String>,
     pin: Option<String>,
     days: Option<u32>,
+    /// `admission offer`: mgmt's address for people's browsers, where
+    /// directories send logins back (D307).
+    ui: Option<String>,
+    /// `admission staleness`: a directory's max_staleness (D309).
+    minutes: Option<u32>,
+    /// `auth login`: the directory's certificate, pinned.
+    directory_pin: Option<String>,
     /// `realm tenant|pool|host`, `s3 placement set|delete`: a realm, or
     /// for `realm pool` and `realm host` realms, comma-separated, or `any`
     /// (D248, D249, D251).
@@ -552,6 +569,9 @@ fn main() {
         url: None,
         pin: None,
         days: None,
+        ui: None,
+        minutes: None,
+        directory_pin: None,
         description: None,
         data_pool: None,
         index_pool: None,
@@ -591,6 +611,11 @@ fn main() {
             "--url" => a.url = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--pin" => a.pin = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--days" => a.days = Some(num(it.next())),
+            "--ui" => a.ui = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--minutes" => a.minutes = Some(num(it.next())),
+            "--directory-pin" => {
+                a.directory_pin = Some(it.next().cloned().unwrap_or_else(|| usage()))
+            }
             "--project" => a.project = Some(num(it.next())),
             "--to" => a.to = Some(num(it.next())),
             "--realm" => a.realm = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -776,7 +801,7 @@ fn main() {
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
             | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network" | "tenant"
-            | "project" | "admission" | "cluster"
+            | "project" | "admission" | "cluster" | "auth"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -810,9 +835,10 @@ fn main() {
                     "tenant" => matches!(sub, Some("create" | "list" | "rename" | "delete")),
                     "admission" => matches!(
                         sub,
-                        Some("offer" | "list" | "revoke" | "directories" | "end")
+                        Some("offer" | "list" | "revoke" | "directories" | "end" | "staleness")
                     ),
                     "cluster" => matches!(sub, Some("set-operator")),
+                    "auth" => matches!(sub, Some("login")),
                     "project" => {
                         matches!(sub, Some("create" | "list" | "rename" | "delete" | "move"))
                     }
@@ -861,10 +887,16 @@ fn main() {
     } else if a.tenant_text.is_some() && a.tenant.is_none() {
         usage();
     }
+    // A directory alone: its max_staleness, or a login through it (D307,
+    // D309).
+    let one_directory = matches!(cmd.as_str(), "admission staleness" | "auth login");
     if (admission && (a.tenant_text.is_none() || a.directory.is_none()))
         || (cmd == "admission offer") != a.url.is_some()
-        || (cmd != "admission offer" && (a.pin.is_some() || a.days.is_some()))
-        || (!admission && a.directory.is_some())
+        || (cmd != "admission offer" && (a.pin.is_some() || a.days.is_some() || a.ui.is_some()))
+        || (!admission && !one_directory && a.directory.is_some())
+        || (one_directory && a.directory.is_none())
+        || (cmd == "admission staleness") != a.minutes.is_some()
+        || (cmd != "auth login" && a.directory_pin.is_some())
         || (cmd != "admission offer" && cmd.starts_with("admission") && !a.name.is_empty())
     {
         usage();
@@ -1234,6 +1266,14 @@ fn main() {
     {
         usage();
     }
+    if cmd == "auth login" {
+        // Before any token is read: this makes one (D307).
+        let (Some(url), Some(file)) = (mgmt.as_deref(), token_file.as_deref()) else {
+            hint("auth login needs --mgmt URL and --token-file F".into());
+            usage()
+        };
+        std::process::exit(auth_login(url, mgmt_ca.as_deref(), file, &a));
+    }
     let mgmt = mgmt.map(|url| {
         mgmt_target(
             &url,
@@ -1371,12 +1411,36 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>, realm: Option<&s
             fail("--mgmt needs an API token: $HYPERSTOR_TOKEN or --token-file".into())
         }),
     };
-    let token = token.trim();
-    if !token.starts_with("hst_") {
-        fail("the API token isn't one (hst_…)".into());
-    }
+    let not_one =
+        || "the token isn't one (hst_…, gxt_…, a directory's access token, or auth login's)";
+    let token = match credential(&token) {
+        None => fail(not_one().into()),
+        Some(Credential::Mgmt(t) | Credential::Glidex(t) | Credential::Access(t)) => t,
+        // A login kept by `auth login`: renewed a minute before it expires.
+        Some(Credential::Directory(t)) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            if t.expires_at > now + 60 {
+                t.access_token
+            } else {
+                let renewed = login::refresh(&t).unwrap_or_else(|e| {
+                    fail(format!(
+                        "{e}: sign in again (hyperstorctl auth login --directory {})",
+                        t.directory
+                    ))
+                });
+                if let Some(f) = file
+                    && let Err(e) = login::save(f, &renewed)
+                {
+                    eprintln!("hyperstorctl: keeping the renewed login: {e}");
+                }
+                renewed.access_token
+            }
+        }
+    };
     let mut bearer = http::HeaderValue::from_str(&format!("Bearer {token}"))
-        .unwrap_or_else(|_| fail("the API token isn't one (hst_…)".into()));
+        .unwrap_or_else(|_| fail(not_one().into()));
     bearer.set_sensitive(true);
     let tls = https.then(|| {
         // On a host of the cluster, its root too: mgmt's certificate is
@@ -1405,6 +1469,64 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>, realm: Option<&s
         tls,
         realm,
     }
+}
+
+/// `auth login --directory ISSUER`: the directory's device grant for
+/// this cluster (as mgmt at `url` names it), kept in `file` (D307). The
+/// exit status.
+fn auth_login(url: &str, ca: Option<&str>, file: &str, a: &Args) -> i32 {
+    let directory = a.directory.clone().expect("checked with the arguments");
+    let Some(issuer) = normalize_issuer(&directory) else {
+        eprintln!("hyperstorctl: {directory:?} isn't a directory's issuer (https://host/d/NAME)");
+        return 2;
+    };
+    let url = url.trim_end_matches('/');
+    let tls = if url.starts_with("https://") {
+        let ca = match ca.map(std::fs::read_to_string).transpose() {
+            Ok(c) => c.or_else(|| {
+                conf("tls").and_then(|d| {
+                    std::fs::read_to_string(std::path::Path::new(&d).join("root.crt")).ok()
+                })
+            }),
+            Err(e) => {
+                eprintln!("hyperstorctl: --mgmt-ca: {e}");
+                return 2;
+            }
+        };
+        match hyperstor_pki::web_client_config(ca.as_deref()) {
+            Ok(c) => Some(std::sync::Arc::new(c)),
+            Err(e) => {
+                eprintln!("hyperstorctl: {e}");
+                return 2;
+            }
+        }
+    } else {
+        None
+    };
+    let run = || -> Result<(), String> {
+        let id = login::cluster_id(url, tls)?;
+        let t = login::device_login(&issuer, a.directory_pin.as_deref(), &id)?;
+        login::save(file, &t)
+    };
+    match run() {
+        Ok(()) => {
+            println!("signed in through {issuer}; the login is kept in {file}");
+            0
+        }
+        Err(e) => {
+            eprintln!("hyperstorctl: {e}");
+            1
+        }
+    }
+}
+
+/// `s` as a directory's issuer: `https://host[:port]/path`, without a
+/// trailing `/`.
+fn normalize_issuer(s: &str) -> Option<String> {
+    let s = s.trim().trim_end_matches('/');
+    let u: http::Uri = s.parse().ok()?;
+    (u.scheme_str() == Some("https") && u.host().is_some() && u.query().is_none())
+        .then(|| s.to_string())
 }
 
 enum Next {
@@ -3323,6 +3445,7 @@ where
                     url,
                     pin,
                     days: a.days.unwrap_or_default(),
+                    ui: a.ui.clone().unwrap_or_default(),
                     ..Default::default()
                 })
                 .await?
@@ -3378,6 +3501,25 @@ where
             println!(
                 "trust in tenant {slug} of {directory} ended; its tenant here stays, unlinked, and the directory is told"
             );
+        }
+        "admission staleness" => {
+            let m = a.minutes.expect("checked with the arguments");
+            client
+                .set_directory_staleness(pb::SetDirectoryStalenessRequest {
+                    directory: directory.clone(),
+                    minutes: m,
+                    ..Default::default()
+                })
+                .await?;
+            if m == 0 {
+                println!(
+                    "{directory}'s people are refused once its feed is older than the cluster's default"
+                );
+            } else {
+                println!(
+                    "{directory}'s people are refused once its feed is older than {m} minutes"
+                );
+            }
         }
         "cluster set-operator" => {
             let t = a.tenant.expect("checked with the arguments");

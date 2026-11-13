@@ -995,6 +995,20 @@ service TrustService {
 
   // hyperstor-mgmt's alone: an end the directory has been told of.
   rpc EndNoticed(EndNoticedRequest) returns (EndNoticedResponse);
+
+  // How long a directory's credentials stay good after its feed last
+  // answered (D309, glidex D13); 0: the cluster's default. Write.
+  rpc SetDirectoryStaleness(SetDirectoryStalenessRequest) returns (SetDirectoryStalenessResponse);
+
+  // hyperstor-mgmt's alone: what logins through directories are checked
+  // against (D307): each trusted directory's record, keys, realm, how
+  // fresh its feed is, and the login chains it ended.
+  rpc GetLoginState(GetLoginStateRequest) returns (GetLoginStateResponse);
+
+  // hyperstor-mgmt's alone: a directory's person, or the owner of a gxt_
+  // token, as the replica has them, with the grants its links give
+  // (D308).
+  rpc ResolvePerson(ResolvePersonRequest) returns (ResolvePersonResponse);
 }
 
 message TrustOffer {
@@ -1015,6 +1029,9 @@ message TrustOffer {
   uint64 expires_unix = 10 [json_name = "expires_unix"];
   // "open", "redeemed", "revoked" or "expired".
   string state = 11;
+  // Where people's browsers reach hyperstor-mgmt: the directory sends
+  // their logins back there.
+  string ui = 12;
 }
 
 message CreateOfferRequest {
@@ -1029,6 +1046,9 @@ message CreateOfferRequest {
   string pin = 6;
   // 1 to 30; 0: 7.
   uint32 days = 7;
+  // Where people's browsers reach hyperstor-mgmt, https://host[:port];
+  // default: url.
+  string ui = 8;
 }
 
 message CreateOfferResponse {
@@ -1073,6 +1093,11 @@ message TrustedDirectory {
   uint64 checked_unix = 8 [json_name = "checked_unix"];
   repeated string blocked = 9;
   uint64 created_unix = 10 [json_name = "created_unix"];
+  // Where it sends people's logins back.
+  string ui_callback = 11 [json_name = "ui_callback"];
+  // How long its credentials stay good after its feed last answered, in
+  // minutes; 0: the cluster's default.
+  uint32 max_staleness_minutes = 12 [json_name = "max_staleness_minutes"];
 }
 
 message ListTrustedDirectoriesRequest {}
@@ -1133,6 +1158,8 @@ message FeedTarget {
   // A glidex TrustedDirectory record (JSON), and the feed's revision.
   bytes directory = 1;
   string revision = 2;
+  // Where it sends people's logins back (glidex D73), for the reports.
+  string ui_callback = 3 [json_name = "ui_callback"];
 }
 
 message EndNotice {
@@ -1176,3 +1203,65 @@ message EndNoticedRequest {
 }
 
 message EndNoticedResponse {}
+
+message SetDirectoryStalenessRequest {
+  // The directory's issuer or id.
+  string directory = 1;
+  // 1 to 10080 (a week); 0: the cluster's default.
+  uint32 minutes = 2;
+}
+
+message SetDirectoryStalenessResponse {}
+
+message LoginDirectory {
+  // A glidex TrustedDirectory record (JSON): its issuer, keys and
+  // max_staleness.
+  bytes directory = 1;
+  // The realm it maps to.
+  string realm = 2;
+  // When its feed last answered and last changed.
+  uint64 checked_unix = 3 [json_name = "checked_unix"];
+  uint64 applied_unix = 4 [json_name = "applied_unix"];
+  // The login chains it ended (its feed's ended_sids).
+  repeated string ended_sids = 5 [json_name = "ended_sids"];
+  // Where it sends people's logins back.
+  string ui_callback = 6 [json_name = "ui_callback"];
+}
+
+message GetLoginStateRequest {}
+
+message GetLoginStateResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  repeated LoginDirectory directories = 2;
+}
+
+message ResolvePersonRequest {
+  // A directory's id and its user's id; or, with neither, the SHA-256
+  // (hex) of a gxt_ token's secret, looked for in every directory's
+  // replica.
+  string directory = 1;
+  string subject = 2;
+  string token_hash = 3 [json_name = "token_hash"];
+}
+
+message ResolvePersonResponse {
+  // In the replica, and disabled there.
+  bool found = 1;
+  bool disabled = 2;
+  string display_name = 3 [json_name = "display_name"];
+  // What its links give: role@tenant:T and role@project:T/P (D308).
+  repeated string grants = 4;
+  // A member of the operator tenant, directly or through a team: its
+  // cluster-wide roles here count (D308).
+  bool operator = 5;
+  // The directory and user it is: as asked, or a token's.
+  string directory = 6;
+  string subject = 7;
+  // For a token: its id, when it expires, whether it is good on this
+  // cluster, and whether it is a project's service account's (subject is
+  // then the token's id).
+  string token_id = 8 [json_name = "token_id"];
+  uint64 token_expires = 9 [json_name = "token_expires"];
+  bool token_good = 10 [json_name = "token_good"];
+  bool service_account = 11 [json_name = "service_account"];
+}

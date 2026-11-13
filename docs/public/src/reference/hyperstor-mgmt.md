@@ -178,11 +178,13 @@ never goes in `FILE` itself.
 | Path | Answers |
 |---|---|
 | `/` | The dashboard (or `--ui`'s `index.html`) |
-| `GET /auth/methods` | `{"pam": bool, "oidc": bool, "claim_open": bool}`; no login needed |
+| `GET /auth/methods` | `{"pam": bool, "oidc": bool, "claim_open": bool, "directories": [{"id", "issuer", "realm"}], "cluster_id"}`; no login needed |
 | `POST /auth/login` | `{"user", "password", "claim"?}` → `{"user", "roles", "csrf"}` and the session cookie (`__Host-hs_session` over HTTPS, `hs_session` over HTTP) |
-| `GET /auth/whoami` | `{"user", "roles", "method", "csrf"}` |
+| `GET /auth/whoami` | `{"user", "roles", "method", "csrf", "directory"}` (`directory`: the issuer of a directory's person) |
 | `POST /auth/oidc/start` | `{"return_to"?, "claim"?, "reauth"?}` → `{"redirect"}`: where to send the browser to log in with the provider (`reauth`: a fresh login, for step-up) |
 | `GET /auth/oidc/callback` | Where the provider sends the browser back; then on to `return_to` with a session |
+| `POST /auth/directory/start` | `{"directory", "return_to"?, "reauth"?}` → `{"redirect"}`: where to send the browser to sign in at a trusted glidex directory (its issuer or id) |
+| `GET /auth/directory/callback` | Where the directory sends the browser back; then on to `return_to` with a session |
 | `POST /auth/logout` | Ends the session |
 | `GET`, `POST /auth/tokens`, `DELETE /auth/tokens/ID` | Your API tokens: list, make (`{"name", "days"?}`; the token is shown once), revoke |
 | `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators). Roles are `role`, `role@realm`, `role@tenant:NAME` or `role@project:TENANT/NAME`; a security administrator in realms sees and sets only those realms' grants, and the rest stay |
@@ -193,12 +195,17 @@ never goes in `FILE` itself.
 | `/health` | `ok` |
 
 Scripts send `Authorization: Bearer hst_…` with an API token instead of
-the cookie, or use [`hyperstorctl --mgmt`](hyperstorctl.md). Refusals
+the cookie, or use [`hyperstorctl --mgmt`](hyperstorctl.md); a trusted
+directory's person sends a glidex API token (`gxt_…`) for this cluster,
+or the directory's access token for it. Refusals
 are Connect errors, as the cluster API's: `{"code", "message",
 "details"}` with the reason as an `ErrorInfo` detail, and also as
 `"reason"`: `unauthenticated` (401), `reauth_required` (401: log in
 again), `permission_denied` (403), `csrf` (403), `bad_origin` (403),
-`login_failed` (401), `rate_limited` (429). After 10 failed logins
+`login_failed` (401), `rate_limited` (429), `directory_stale` (503: the
+person's directory hasn't been heard from for longer than its
+`max_staleness`), `not_operator` and `from_directory` (403: roles a
+directory's person can't be given here). After 10 failed logins
 from one address in 5 minutes, logins from it get `rate_limited`, with
 `Retry-After`, until the window passes; other addresses aren't affected.
 
