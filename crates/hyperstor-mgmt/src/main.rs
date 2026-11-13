@@ -63,6 +63,7 @@ const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,A
 
 mod audit_ship;
 mod conn;
+mod directory;
 mod front;
 mod limits;
 mod members;
@@ -126,6 +127,8 @@ struct Login {
     failures: limits::Attempts,
     /// Logins begun with the identity provider per client address.
     starts: limits::Attempts,
+    /// People of trusted glidex directories (D307).
+    dirs: Arc<directory::Directories>,
 }
 
 struct State {
@@ -314,6 +317,7 @@ fn main() {
                 limits::OIDC_WINDOW,
                 limits::ADDRESSES,
             ),
+            dirs: Arc::new(directory::Directories::new(members.clone())),
         });
         let state = Arc::new(State {
             members,
@@ -765,9 +769,41 @@ async fn read_up_to(
 async fn credentialed(login: Option<&Login>, https: bool, headers: &http::HeaderMap) -> bool {
     let Some(l) = login else { return false };
     match (bearer_of(headers), cookie_of(headers, https)) {
-        (Some(t), _) => l.people.token(&t).await.is_ok(),
-        (None, Some(c)) => l.people.session(&c).await.is_ok(),
+        (Some(t), _) => bearer_principal(l, &t).await.is_ok(),
+        (None, Some(c)) => session_principal(l, &c).await.is_ok(),
         (None, None) => false,
+    }
+}
+
+/// The person a bearer token is: mgmt's own API token (`hst_`), a glidex
+/// API token (`gxt_`) or a directory's access token (D307).
+async fn bearer_principal(l: &Login, t: &str) -> Result<people::Principal, people::Error> {
+    if t.starts_with(people::TOKEN_PREFIX) {
+        l.people.token(t).await
+    } else if t.starts_with(glidex_trust::tokens::API_TOKEN_PREFIX) {
+        l.dirs.api_token(&l.people, t).await
+    } else {
+        l.dirs.access_token(&l.people, t).await
+    }
+}
+
+/// The person a session cookie is; a login through a directory checked
+/// against it as well (D307–D309), and ended here once it ended there.
+async fn session_principal(l: &Login, cookie: &str) -> Result<people::Principal, people::Error> {
+    let p = l.people.session(cookie).await?;
+    let Some(d) = p.directory.clone() else {
+        return Ok(p);
+    };
+    match l
+        .dirs
+        .principal(&l.people, &d, &p.method, p.age_secs, p.csrf.clone())
+        .await
+    {
+        Err(people::Error::Unauthenticated) => {
+            let _ = l.people.end_session(cookie).await;
+            Err(people::Error::Unauthenticated)
+        }
+        r => r,
     }
 }
 
@@ -1028,6 +1064,7 @@ fn people_error(e: people::Error) -> Resp {
         people::Error::Exists => error(409, "already_exists", "already exists"),
         people::Error::Unavailable(m) => error(503, "unavailable", &m),
         people::Error::Busy => too_many(Duration::from_secs(60), &people::Error::Busy.to_string()),
+        people::Error::Stale(m) => error(503, "directory_stale", &m),
     }
 }
 
@@ -1380,6 +1417,249 @@ async fn oidc_callback(state: &State, l: &Login, req: Req, peer: SocketAddr) -> 
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+struct DirectoryStartReq {
+    /// The directory's trusted id or issuer.
+    directory: String,
+    #[serde(default)]
+    return_to: Option<String>,
+    /// Ask the directory for a fresh login (step-up).
+    #[serde(default)]
+    reauth: bool,
+}
+
+/// `POST /auth/directory/start {directory, return_to?, reauth?}`: where
+/// to send the browser to sign in at a trusted directory (D307), as
+/// `{"redirect": URL}`, and the cookie binding the login to it. Kept in
+/// the map service, as an identity provider's (I310), so that any mgmt
+/// finishes it.
+async fn directory_start(state: &State, l: &Login, req: Req) -> Resp {
+    let (_, body) = req.into_parts();
+    let Ok(r) = serde_json::from_slice::<DirectoryStartReq>(&body) else {
+        return error(
+            400,
+            "invalid_argument",
+            "expected {directory, return_to, reauth}",
+        );
+    };
+    let st = match l.dirs.state().await {
+        Ok(s) => s,
+        Err(e) => return people_error(e),
+    };
+    let Some(d) = st.dir(&r.directory) else {
+        return error(
+            404,
+            "not_found",
+            &format!("no trusted directory {}", r.directory),
+        );
+    };
+    if d.callback.is_empty() {
+        return error(
+            409,
+            "no_callback",
+            "the directory has no address to send logins back to: offer it again (--ui)",
+        );
+    }
+    if !l.dirs.fresh(d) {
+        return people_error(people::Error::Stale(format!(
+            "{} isn't answering: sign in another way",
+            d.d.issuer
+        )));
+    }
+    let p = glidex_auth::oidc::Pending {
+        state: glidex_trust::random_token(24),
+        nonce: glidex_trust::random_token(16),
+        verifier: glidex_trust::random_token(32),
+        return_to: directory::local_path(r.return_to.as_deref()),
+        browser: glidex_trust::random_token(24),
+        created: glidex_trust::now(),
+        after: directory::After {
+            directory: d.d.id.clone(),
+        },
+    };
+    let mut url = match glidex_trust::client::authorize_url(
+        &d.d,
+        &st.cluster_id,
+        &d.callback,
+        &p.state,
+        &p.nonce,
+        &p.verifier,
+    ) {
+        Ok(u) => u,
+        Err(e) => return error(503, "unavailable", &e),
+    };
+    if r.reauth {
+        // A fresh login there, whatever its session: a passkey answers it
+        // as a password does (glidex passkeys P5).
+        url.push_str("&prompt=login&max_age=0");
+    }
+    if let Err(e) = l.people.keep_login(&p).await {
+        return people_error(e);
+    }
+    let mut resp = json_resp(200, serde_json::json!({ "redirect": url }));
+    let mut c = format!(
+        "{}={}; HttpOnly; SameSite=Lax; Path={}; Max-Age={}",
+        directory::BROWSER_COOKIE,
+        p.browser,
+        directory::CALLBACK,
+        glidex_auth::oidc::STATE_SECS
+    );
+    if state.https {
+        c.push_str("; Secure");
+    }
+    resp.headers_mut()
+        .insert(http::header::SET_COOKIE, c.parse().expect("cookie"));
+    resp
+}
+
+/// `GET /auth/directory/callback?code&state`: the directory sends the
+/// browser back. The code exchanged with the cluster's client assertion
+/// (glidex D69), the ID token checked against the directory's keys, the
+/// person against its replica; a session bound to the login's chain, and
+/// on to where the login began.
+async fn directory_callback(state: &State, l: &Login, req: Req, peer: SocketAddr) -> Resp {
+    let q: std::collections::HashMap<String, String> = req
+        .uri()
+        .query()
+        .unwrap_or("")
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_string(), percent_decode(v)))
+        .collect();
+    let failed = |m: &str| {
+        audit(
+            &format!("directory login from {}", peer.ip()),
+            "Login",
+            "mgmt",
+            &format!("refused: {m}"),
+        );
+        respond(
+            403,
+            "text/plain; charset=utf-8",
+            format!("The login failed: {m}\nBack to the start: /\n"),
+        )
+    };
+    if let Some(e) = q.get("error") {
+        return failed(&format!("the directory said {e}"));
+    }
+    let (Some(code), Some(st)) = (q.get("code"), q.get("state")) else {
+        return failed("no code or state");
+    };
+    let browser = req
+        .headers()
+        .get_all(http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .find_map(|c| {
+            c.trim()
+                .strip_prefix(&format!("{}=", directory::BROWSER_COOKIE))
+                .map(String::from)
+        });
+    let pending = match l
+        .people
+        .take_login::<directory::After>(st, browser.as_deref())
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => return failed(&e.to_string()),
+    };
+    let now = glidex_trust::now();
+    if pending.created + glidex_auth::oidc::STATE_SECS <= now {
+        return failed("the login took too long");
+    }
+    let login_state = match l.dirs.state().await {
+        Ok(s) => s,
+        Err(e) => return failed(&e.to_string()),
+    };
+    let Some(d) = login_state.dir(&pending.after.directory) else {
+        return failed("the directory isn't trusted any more");
+    };
+    let key = match l.dirs.key().await {
+        Ok(k) => k,
+        Err(e) => return failed(&e.to_string()),
+    };
+    let answer = glidex_trust::client::exchange_code(
+        &key,
+        &login_state.cluster_id,
+        &d.d,
+        code,
+        &d.callback,
+        &pending.verifier,
+        now,
+    )
+    .await;
+    let id_token = match answer {
+        Ok((200, v)) => v["id_token"].as_str().unwrap_or_default().to_string(),
+        Ok((s, v)) => {
+            return failed(&format!(
+                "the directory refused the code ({s}: {})",
+                v["error"].as_str().unwrap_or("?")
+            ));
+        }
+        Err(e) => return failed(&format!("the directory: {e}")),
+    };
+    let Some(claims) = glidex_trust::tokens::verify_id_token(
+        &id_token,
+        &d.d,
+        &glidex_trust::client::client_id(&login_state.cluster_id),
+        &pending.nonce,
+    ) else {
+        return failed("the directory's ID token doesn't check");
+    };
+    let (Some(sub), Some(sid)) = (claims["sub"].as_str(), claims["sid"].as_str()) else {
+        return failed("the ID token names no person or chain");
+    };
+    let login = people::DirLogin {
+        id: d.d.id.clone(),
+        subject: sub.to_string(),
+        sid: sid.to_string(),
+    };
+    let auth_time = claims["auth_time"].as_u64().unwrap_or(now);
+    let method = if glidex_trust::tokens::mfa_of(&claims) {
+        "directory-mfa"
+    } else {
+        directory::METHOD
+    };
+    let p = match l.dirs.principal(&l.people, &login, method, 0, None).await {
+        Ok(p) => p,
+        Err(e) => return failed(&e.to_string()),
+    };
+    let who = format!("user:{} from {}", p.user, peer.ip());
+    let s = match l
+        .people
+        .new_session_from(&p.user, method, Some(&login), auth_time)
+        .await
+    {
+        Ok(s) => s,
+        Err(e) => return failed(&e.to_string()),
+    };
+    audit(
+        &who,
+        "Login",
+        "mgmt",
+        &format!("ok, {method} {}", d.d.issuer),
+    );
+    let mut resp = http::Response::builder()
+        .status(303)
+        .header(http::header::LOCATION, pending.return_to)
+        .header("Cache-Control", "no-store")
+        .header(http::header::SET_COOKIE, set_cookie(state, &s.id, None))
+        .header(
+            http::header::SET_COOKIE,
+            format!(
+                "{}=; Path={}; Max-Age=0",
+                directory::BROWSER_COOKIE,
+                directory::CALLBACK
+            ),
+        )
+        .body(Full::new(Bytes::new()))
+        .expect("response");
+    resp.headers_mut()
+        .insert("Referrer-Policy", "no-referrer".parse().expect("header"));
+    resp
+}
+
 /// `%XX` and `+` of a query value.
 fn percent_decode(v: &str) -> String {
     let b = v.as_bytes();
@@ -1440,12 +1720,40 @@ async fn with_login(
         (_, "/health") => return respond(200, "text/plain", "ok\n"),
         (&http::Method::GET, "/auth/methods") => {
             let open = l.people.claimed().await.map(|c| !c).unwrap_or(false);
+            // The directories people may sign in through (D307): those
+            // that registered where to send them back.
+            let (cluster_id, directories) = match l.dirs.state().await {
+                Ok(st) => (
+                    st.cluster_id.clone(),
+                    st.dirs
+                        .iter()
+                        .filter(|d| !d.callback.is_empty())
+                        .map(|d| {
+                            serde_json::json!({
+                                "id": d.d.id, "issuer": d.d.issuer, "realm": d.realm,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                Err(_) => (String::new(), Vec::new()),
+            };
             return json_resp(
                 200,
                 serde_json::json!({
                     "pam": l.authd.is_some(), "oidc": l.oidc.is_some(), "claim_open": open,
+                    "directories": directories, "cluster_id": cluster_id,
                 }),
             );
+        }
+        (&http::Method::POST, "/auth/directory/start") => {
+            if let Some(wait) = l.starts.wait(peer.ip(), Instant::now()) {
+                return too_many(wait, "too many logins begun; try again later");
+            }
+            l.starts.note(peer.ip(), Instant::now());
+            return directory_start(state, l, req).await;
+        }
+        (&http::Method::GET, directory::CALLBACK) => {
+            return directory_callback(state, l, req, peer).await;
         }
         (&http::Method::POST, "/auth/login") => {
             let (_, body) = req.into_parts();
@@ -1507,8 +1815,8 @@ async fn with_login(
     }
     // Everything else needs a person: a session cookie or a token.
     let p = match (&bearer, &cookie) {
-        (Some(t), _) => l.people.token(t).await,
-        (None, Some(c)) => l.people.session(c).await,
+        (Some(t), _) => bearer_principal(l, t).await,
+        (None, Some(c)) => session_principal(l, c).await,
         (None, None) => Err(people::Error::Unauthenticated),
     };
     let p = match p {
@@ -1535,16 +1843,34 @@ async fn with_login(
     let who = format!("user:{}", p.user);
     let query = req.uri().query().unwrap_or("").to_string();
     match (&method, path) {
-        (&http::Method::GET, "/auth/whoami") => json_resp(
-            200,
-            serde_json::json!({
-                "user": p.user, "roles": p.roles, "method": p.method, "csrf": p.csrf,
-                "build": build(),
-            }),
-        ),
+        (&http::Method::GET, "/auth/whoami") => {
+            let directory = match &p.directory {
+                Some(d) => l
+                    .dirs
+                    .state()
+                    .await
+                    .ok()
+                    .and_then(|st| st.dir(&d.id).map(|x| x.d.issuer.clone())),
+                None => None,
+            };
+            json_resp(
+                200,
+                serde_json::json!({
+                    "user": p.user, "roles": p.roles, "method": p.method, "csrf": p.csrf,
+                    "directory": directory, "build": build(),
+                }),
+            )
+        }
         (&http::Method::POST, "/auth/logout") => {
             if let Some(c) = &cookie {
                 let _ = l.people.end_session(c).await;
+                // A login through a directory: its chain ends there too
+                // (glidex D72).
+                if let Some(d) = &p.directory
+                    && !d.sid.is_empty()
+                {
+                    l.dirs.tell_logout(d.id.clone(), d.sid.clone());
+                }
             }
             audit(&who, "Logout", "mgmt", "ok");
             let mut resp = json_resp(200, serde_json::json!({}));
@@ -1643,6 +1969,38 @@ async fn with_login(
             }
             if let Err(r) = realms_exist(state, &roles).await {
                 return r;
+            }
+            // A directory's person: roles cluster-wide or in realms only,
+            // and only while a member of the operator tenant (D308).
+            match l.people.user(&name).await {
+                Ok(Some(u)) if !u.directory.is_empty() => {
+                    if let Some(g) = roles.iter().find(|g| !directory::grantable(g)) {
+                        audit(&who, "People.SetRoles", &target, "refused");
+                        return error(
+                            403,
+                            "from_directory",
+                            &format!(
+                                "{g}: {name}'s roles in tenants and projects come from their directory"
+                            ),
+                        );
+                    }
+                    let operator = match l.dirs.resolve(&u.directory, &u.subject, "").await {
+                        Ok(r) => r.operator,
+                        Err(e) => return people_error(e),
+                    };
+                    if !operator && !roles.is_empty() {
+                        audit(&who, "People.SetRoles", &target, "refused");
+                        return error(
+                            403,
+                            "not_operator",
+                            &format!(
+                                "{name} isn't a member of the operator tenant: only its members are given roles here"
+                            ),
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => return people_error(e),
             }
             if realms.is_some() {
                 match l.people.user(&name).await {

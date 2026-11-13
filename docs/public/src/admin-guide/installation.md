@@ -402,7 +402,7 @@ projects of that realm.
 ```bash
 # An offer to tenant acme of a directory; mgmt as the directory reaches it.
 hyperstorctl admission offer --tenant acme --directory https://id.acme.example/d/acme \
-    --url https://storage.example.org:8852
+    --url https://storage.example.org:8852 --ui https://storage.example.org
 # Prints gxo_...: the tenant's administrator redeems it at the directory:
 #   gxctl tenant opt-in --offer gxo_...
 hyperstorctl admission list
@@ -440,7 +440,48 @@ hyperstorctl cluster set-operator --tenant 12
   size, buckets, their bytes and S3 keys to the directory, which shows
   them on the tenant's page.
 - Ending the trust, from either side, keeps the tenant and its projects,
-  unlinked. Logins through a directory come next.
+  unlinked.
+
+### People from glidex directories
+
+Once a directory is trusted, its people sign in to mgmt through it, with
+its passkeys, identity providers and second factors, and their roles
+come from its feed.
+
+- **In a browser,** mgmt's login page offers "Sign in with" the
+  directory's realm. The directory sends the browser back to `--ui` of
+  the last offer it redeemed (default: `--url`), the address people
+  reach mgmt by, which may be a proxy's. Step-up asks the directory for a
+  fresh login; logging out ends the login at the directory too.
+- **Their account** here is their id at the directory and its realm,
+  `<id>@<realm>`, made at their first login.
+- **Their roles** come from the directory's links: a tenant's
+  `tenant-admin` is `storage-admin` and `security-admin` in the tenant,
+  its `tenant-auditor` `viewer`; a project's `owner` and `editor` are
+  `storage-admin` in the project, `operator` `operator`, `viewer`
+  `viewer`. Change them at the directory. A security administrator here
+  may give members of the operator tenant (`cluster set-operator`) roles
+  cluster-wide or in realms; they count while the person stays a member.
+- **On the command line,** `hyperstorctl --mgmt URL --token-file F auth
+  login --directory ISSUER` signs in by the directory's device grant
+  (`--directory-pin SHA256` when the directory has its own certificate)
+  and keeps the login in `F`, which later `--mgmt` commands read and
+  renew. A glidex API token for this cluster (`gxt_…`), or an access
+  token from `gxctl auth token --cluster ID`, works as `--token-file` or
+  `$HYPERSTOR_TOKEN` too.
+- **Disabled or removed** at the directory, or a login it ended: refused
+  here once its feed says so (30 s), and mgmt's 10 s cache.
+- **Cut off:** when a directory's feed hasn't answered for an hour
+  (`admission staleness --minutes N` for another limit), its people are
+  refused, as a revocation may be missing; local logins keep working, as
+  a way in while the directory is away.
+
+```bash
+hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login \
+    auth login --directory https://id.acme.example/d/acme
+hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login status
+hyperstorctl admission staleness --directory https://id.acme.example/d/acme --minutes 30
+```
 
 ## Running as services by hand
 

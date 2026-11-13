@@ -5,8 +5,8 @@
 //!
 //! | Row | Holds |
 //! |---|---|
-//! | `user/<name>` | roles, created, disabled |
-//! | `sess/<sha-256 of the id>` | user, created, last seen, logged in at, CSRF value |
+//! | `user/<name>` | roles, created, disabled; for a directory's person, the directory and their id there |
+//! | `sess/<sha-256 of the id>` | user, created, last seen, logged in at, CSRF value; for a login through a directory, its chain |
 //! | `tok/<sha-256 of the token>` | id, name, user, created, expires |
 //! | `claim` | the first-boot claim code's SHA-256 and expiry |
 //! | `login/<sha-256 of the state>` | an identity provider's login begun and not finished, sealed |
@@ -47,6 +47,12 @@ pub struct User {
     pub created: u64,
     #[serde(default)]
     pub disabled: bool,
+    /// A glidex directory's person (D307): the directory's trusted id,
+    /// and their id there; empty for a local account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub directory: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subject: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +64,14 @@ struct Session {
     authenticated_at: u64,
     csrf: String,
     method: String,
+    /// A login through a directory (D307): its trusted id, the person's id
+    /// there, and the login's chain (`sid`), which the directory may end.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    directory: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    subject: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    sid: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,6 +101,21 @@ pub struct Principal {
     pub age_secs: i64,
     /// A session's CSRF value; none for a token.
     pub csrf: Option<String>,
+    /// Who they are at a glidex directory, for a login or token from one:
+    /// their roles there come from its feed ([`crate::directory`]).
+    pub directory: Option<DirLogin>,
+}
+
+/// A person of a glidex directory, as a session or token names them.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DirLogin {
+    /// The directory's trusted id (`trusted-…`).
+    pub id: String,
+    /// Their user id there (a service account's token id, for its
+    /// token).
+    pub subject: String,
+    /// The login's chain; empty for an API token.
+    pub sid: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -101,6 +130,9 @@ pub enum Error {
     Unavailable(String),
     /// Too many logins begun and not finished: try again later.
     Busy,
+    /// A directory's feed is older than its `max_staleness` (D309): its
+    /// people are refused until it answers again.
+    Stale(String),
 }
 
 impl std::fmt::Display for Error {
@@ -111,6 +143,7 @@ impl std::fmt::Display for Error {
             Error::NotFound => write!(f, "not found"),
             Error::Exists => write!(f, "already exists"),
             Error::Busy => write!(f, "too many logins in progress; try again later"),
+            Error::Stale(m) => write!(f, "{m}"),
         }
     }
 }
@@ -294,11 +327,11 @@ fn encode<T: Serialize>(v: &T) -> Vec<u8> {
     serde_json::to_vec(v).expect("json")
 }
 
-/// Whether `name` has a user name's shape: 1-64 of letters, digits and
-/// `._-@`.
+/// Whether `name` has a user name's shape: 1-128 of letters, digits and
+/// `._-@` (a directory's person is `<their id>@<realm>`, I388).
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= 64
+        && name.len() <= 128
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"._-@".contains(&b))
@@ -396,6 +429,8 @@ impl People {
             roles: Vec::new(),
             created: now(),
             disabled: false,
+            directory: String::new(),
+            subject: String::new(),
         };
         match self
             .rows
@@ -455,6 +490,46 @@ impl People {
         self.logged_in_user(&link.user).await
     }
 
+    /// The account here of person `subject` of directory `dir` (D307):
+    /// `name`, made on first use with no roles, as a password login's is.
+    /// A local account of that name isn't theirs.
+    pub async fn directory_user(
+        &self,
+        name: &str,
+        dir: &str,
+        subject: &str,
+    ) -> Result<User, Error> {
+        check_name(name)?;
+        let mine = |u: &User| u.directory == dir && u.subject == subject;
+        if let Some(u) = self.user(name).await? {
+            return if mine(&u) {
+                Ok(u)
+            } else {
+                Err(Error::Invalid(format!("{name}: a local account's name")))
+            };
+        }
+        let u = User {
+            name: name.to_string(),
+            roles: Vec::new(),
+            created: now(),
+            disabled: false,
+            directory: dir.to_string(),
+            subject: subject.to_string(),
+        };
+        match self
+            .rows
+            .put(&format!("user/{name}"), encode(&u), true)
+            .await
+        {
+            Ok(()) => Ok(u),
+            Err(Error::Exists) => match self.user(name).await? {
+                Some(u) if mine(&u) => Ok(u),
+                _ => Err(Error::Invalid(format!("{name}: a local account's name"))),
+            },
+            Err(e) => Err(e),
+        }
+    }
+
     /// Sets `name`'s roles (security administrators, step-up): each a
     /// role, cluster-wide, or `role@realm` (D263).
     pub async fn set_roles(&self, name: &str, roles: &[String]) -> Result<User, Error> {
@@ -505,15 +580,31 @@ impl People {
 
     /// A session for `user`, just authenticated by `method`.
     pub async fn new_session(&self, user: &str, method: &str) -> Result<NewSession, Error> {
+        self.new_session_from(user, method, None, now()).await
+    }
+
+    /// A session for `user`, authenticated by `method` at
+    /// `authenticated_at`, through directory login `dir` if any (D307).
+    pub async fn new_session_from(
+        &self,
+        user: &str,
+        method: &str,
+        dir: Option<&DirLogin>,
+        authenticated_at: u64,
+    ) -> Result<NewSession, Error> {
         let s = rules::new_session();
         let t = now();
+        let d = dir.cloned().unwrap_or_default();
         let rec = Session {
             user: user.to_string(),
             created: t,
             last_seen: t,
-            authenticated_at: t,
+            authenticated_at: authenticated_at.min(t),
             csrf: s.csrf.clone(),
             method: method.to_string(),
+            directory: d.id,
+            subject: d.subject,
+            sid: d.sid,
         };
         let key = format!("sess/{}", s.hash);
         self.rows.put(&key, encode(&rec), true).await?;
@@ -555,12 +646,18 @@ impl People {
             // A lost update only shortens the idle time; not worth failing.
             let _ = self.rows.put(&key, encode(&s), false).await;
         }
+        let directory = (!s.directory.is_empty()).then(|| DirLogin {
+            id: s.directory.clone(),
+            subject: s.subject.clone(),
+            sid: s.sid.clone(),
+        });
         let p = Principal {
             user: u.name,
             roles: u.roles,
             method: s.method,
             age_secs: rules::age_secs(s.authenticated_at, t),
             csrf: Some(s.csrf),
+            directory,
         };
         lock(&self.cache).insert(key, (p.clone(), Instant::now()));
         Ok(p)
@@ -670,6 +767,7 @@ impl People {
             // Never fresh: step-up needs a person (glidex security.md §7).
             age_secs: NEVER_FRESH,
             csrf: None,
+            directory: None,
         };
         lock(&self.cache).insert(key, (p.clone(), Instant::now()));
         Ok(p)

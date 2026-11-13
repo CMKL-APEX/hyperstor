@@ -19,7 +19,9 @@
 //! - `trust/operator`: the operator tenant (glidex §12.1), a tenant id.
 //!
 //! [`plan`] is what the feed asks of the tenants and projects here: pure,
-//! so the API's run of it and the model test share it.
+//! so the API's run of it and the model test share it. [`person_of`] is
+//! who a directory's person is here, from the replica (D307, D308): pure
+//! too, for the same reasons.
 
 use crate::store::{self, Db, Origin, Table};
 use crate::tenancy::{ProjectState, Tenancy};
@@ -78,6 +80,10 @@ pub struct OfferRec {
     pub expires_unix: u64,
     /// [`OPEN`], [`REDEEMED`] or [`REVOKED`].
     pub state: String,
+    /// Where people's browsers reach mgmt (`https://host[:port]`): the
+    /// directory sends their logins back there; empty: `url`.
+    #[serde(default)]
+    pub ui: String,
 }
 
 impl OfferRec {
@@ -102,6 +108,18 @@ pub struct DirRec {
     pub dir: TrustedDirectory,
     /// The realm it maps to (D299); never 0, "default".
     pub realm: u32,
+    /// Where it sends people's logins back (glidex D69, D73): mgmt's
+    /// [`LOGIN_CALLBACK`] at the last redeemed offer's `ui`.
+    #[serde(default)]
+    pub ui_callback: String,
+}
+
+/// mgmt's path that directories send people's browser logins back to.
+pub const LOGIN_CALLBACK: &str = "/auth/directory/callback";
+
+/// The callback a directory sends logins back to, for mgmt at `ui`.
+pub fn callback_for(ui: &str) -> String {
+    format!("{}{LOGIN_CALLBACK}", ui.trim_end_matches('/'))
 }
 
 /// What was last applied from a directory's feed.
@@ -111,6 +129,11 @@ pub struct FeedRec {
     /// What the last run couldn't do, each retried at the next.
     #[serde(default)]
     pub blocked: Vec<String>,
+    /// The login chains the directory ended (its last feed's
+    /// `ended_sids`, glidex D68): mgmt ends the sessions it made from
+    /// them.
+    #[serde(default)]
+    pub ended: Vec<String>,
 }
 
 /// An end decided here, for the directory to be told of.
@@ -388,6 +411,7 @@ pub fn apply_feed(
             f.state.rows = new.into_iter().collect();
             f.state.revision = snap.revision.clone();
             f.state.applied_at = now;
+            f.ended = snap.ended_sids.clone();
             // The keys the feed brings are the directory's from now on
             // (glidex D63).
             if snap.jwks.get("keys").is_some_and(|k| k.is_array()) {
@@ -484,6 +508,21 @@ pub fn ending_told(db: &Db, id: &str, tenant: &str) -> Result<(), Error> {
         t.remove(format!("{ENDING}{id}/{tenant}").as_str())
             .map_err(StoreError::from)?;
         Ok(())
+    })
+}
+
+/// Sets directory `id`'s `max_staleness` (D309, glidex D13), in minutes;
+/// `None`: the cluster's default. `false` if it isn't trusted. Only the
+/// leader.
+pub fn set_staleness(db: &Db, id: &str, minutes: Option<u64>) -> Result<bool, Error> {
+    let dir_row = format!("{DIR}{id}");
+    write(db, |t| {
+        let Some(mut d) = get_in::<DirRec>(&**t, &dir_row)? else {
+            return Ok(false);
+        };
+        d.dir.max_staleness_minutes = minutes;
+        put(t, &dir_row, &json(&d))?;
+        Ok(true)
     })
 }
 
@@ -816,3 +855,166 @@ pub(crate) fn all_rows(db: &Db) -> Vec<String> {
 
 #[cfg(test)]
 mod tests;
+
+/// The rows of a directory's replica that say who a person is and what
+/// they may do (glidex D3, D12): its users, teams, tenants' members and
+/// policy links.
+#[derive(Debug, Clone, Default)]
+pub struct People {
+    pub users: Vec<glidex_trust::feed::User>,
+    pub teams: Vec<glidex_trust::feed::Team>,
+    pub members: Vec<glidex_trust::feed::Member>,
+    pub links: Vec<glidex_trust::feed::Link>,
+}
+
+/// The rows of directory `id`'s replica that [`person_of`] reads.
+pub fn people(db: &Db, id: &str) -> Result<People, Error> {
+    fn of<T: DeserializeOwned>(db: &Db, id: &str, table: &str) -> Result<Vec<T>, Error> {
+        Ok(replica(db, id, table)?
+            .into_iter()
+            .filter_map(|r| serde_json::from_value(r.value).ok())
+            .collect())
+    }
+    Ok(People {
+        users: of(db, id, "users")?,
+        teams: of(db, id, "teams")?,
+        members: of(db, id, "tenant_members")?,
+        links: of(db, id, "policy_links")?,
+    })
+}
+
+/// A gxt_ token of directory `id`'s replica, by its hash
+/// ([`glidex_trust::tokens::api_token_hash`]).
+pub fn api_token(
+    db: &Db,
+    id: &str,
+    hash: &str,
+) -> Result<Option<glidex_trust::feed::ApiToken>, Error> {
+    let row = format!("{ROW}{id}/api_tokens/{hash}");
+    read(
+        db,
+        |t| Ok(get_in::<serde_json::Value>(t, &row)?.and_then(|v| serde_json::from_value(v).ok())),
+        None,
+    )
+}
+
+/// Who a directory's person is here (D307, D308), from its replica.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Person {
+    /// In the replica (a user row, or a token's), and disabled there.
+    pub found: bool,
+    pub disabled: bool,
+    pub display_name: String,
+    /// What its links give, sorted: `role@tenant:T`, `role@project:T/P`.
+    pub grants: Vec<String>,
+    /// A member of the operator tenant, directly or through a team.
+    pub operator: bool,
+}
+
+/// The roles a glidex link's template gives here (D308): a tenant's
+/// `tenant-admin` stores and secures, its `tenant-auditor` reads; a
+/// project's `owner` and `editor` store, its `operator` operates, its
+/// `viewer` reads. Any other template, nothing. glidex names templates
+/// `role.<name>` (its Cedar schema's actions); the bare name reads the
+/// same.
+pub fn roles_of(template: &str, on_tenant: bool) -> &'static [&'static str] {
+    let template = template.strip_prefix("role.").unwrap_or(template);
+    match (on_tenant, template) {
+        (true, "tenant-admin") => &["storage-admin", "security-admin"],
+        (true, "tenant-auditor") => &["viewer"],
+        (false, "owner" | "editor") => &["storage-admin"],
+        (false, "operator") => &["operator"],
+        (false, "viewer") => &["viewer"],
+        _ => &[],
+    }
+}
+
+/// Who `who` (a user, or a service account's token) of the directory with
+/// issuer `issuer` is here, from its replica rows `p`, the records `now`
+/// and the operator tenant `operator` (0: none). A user is found in the
+/// `users` rows; a token always (the caller found its row). Its grants
+/// come from the links that name it, or a team it is in, on a tenant or
+/// project of this directory linked here; a link to anything not linked
+/// here gives nothing.
+pub fn person_of(
+    issuer: &str,
+    p: &People,
+    now: &Tenancy,
+    operator: u32,
+    who: &glidex_trust::feed::Entity,
+) -> Person {
+    use glidex_trust::feed::Entity;
+    let mut out = Person::default();
+    match who {
+        Entity::User(id) => {
+            if let Some(u) = p.users.iter().find(|u| &u.id == id) {
+                out.found = true;
+                out.disabled = u.disabled;
+                out.display_name = u.display_name.clone();
+            }
+        }
+        Entity::Token(id) => {
+            out.found = true;
+            out.display_name = format!("token {id}");
+        }
+        _ => return out,
+    }
+    if !out.found {
+        return out;
+    }
+    // The person, and the teams they are in.
+    let mut is: Vec<&Entity> = vec![who];
+    let teams: Vec<Entity> = match who {
+        Entity::User(id) => p
+            .teams
+            .iter()
+            .filter(|t| t.members.iter().any(|m| &m.user_id == id))
+            .map(|t| Entity::Team(t.id.clone()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    is.extend(teams.iter());
+    let tenant_here = |gid: &str| {
+        now.tenants
+            .iter()
+            .find(|t| t.directory == issuer && t.glidex_id == gid)
+    };
+    let mut grants = BTreeSet::new();
+    for l in p.links.iter().filter(|l| is.contains(&&l.principal)) {
+        match &l.resource {
+            Entity::Tenant(gid) => {
+                if let Some(t) = tenant_here(gid) {
+                    for r in roles_of(&l.template, true) {
+                        grants.insert(format!("{r}@tenant:{}", t.name));
+                    }
+                }
+            }
+            Entity::Project(gid) => {
+                let Some(pr) = now
+                    .projects
+                    .iter()
+                    .find(|x| !gid.is_empty() && &x.glidex_id == gid)
+                else {
+                    continue;
+                };
+                // Its tenant must be this directory's.
+                let Some(t) = now.tenant(pr.tenant).filter(|t| t.directory == issuer) else {
+                    continue;
+                };
+                for r in roles_of(&l.template, false) {
+                    grants.insert(format!("{r}@project:{}/{}", t.name, pr.name));
+                }
+            }
+            _ => {}
+        }
+    }
+    out.grants = grants.into_iter().collect();
+    // The operator tenant: one of this directory's, the person in it.
+    if let Some(op) = now.tenant(operator).filter(|t| t.directory == issuer) {
+        out.operator = p
+            .members
+            .iter()
+            .any(|m| m.tenant_id == op.glidex_id && is.contains(&&m.principal));
+    }
+    out
+}

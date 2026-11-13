@@ -1068,6 +1068,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("TrustService.EndTrust", "admission end"),
     ("TrustService.SetOperator", "cluster set-operator"),
+    ("TrustService.SetDirectoryStaleness", "admission staleness"),
     // hyperstor-mgmt's own calls for directories (D306): no command.
     ("TrustService.GetTrustKey", "hyperstor-mgmt"),
     ("TrustService.RelayRedeem", "hyperstor-mgmt"),
@@ -1076,6 +1077,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TrustService.ApplyFeed", "hyperstor-mgmt"),
     ("TrustService.GetTrustReport", "hyperstor-mgmt"),
     ("TrustService.EndNoticed", "hyperstor-mgmt"),
+    ("TrustService.GetLoginState", "hyperstor-mgmt"),
+    ("TrustService.ResolvePerson", "hyperstor-mgmt"),
     ("TrashService.ListTrash", "trash list"),
     ("TrashService.RestoreFromTrash", "trash restore"),
     ("TrashService.PurgeFromTrash", "trash purge"),
@@ -1439,6 +1442,20 @@ pub fn directories_text(r: &pb::ListTrustedDirectoriesResponse, now: u64) -> Str
             let op = if t.operator { ", the operator" } else { "" };
             let _ = writeln!(o, "  {} ({}): {here}{op}", t.slug, t.id);
         }
+        let stale = if d.max_staleness_minutes == 0 {
+            "the cluster's default".to_string()
+        } else {
+            format!("{} min", d.max_staleness_minutes)
+        };
+        let back = if d.ui_callback.is_empty() {
+            "none: offer it again with --ui"
+        } else {
+            &d.ui_callback
+        };
+        let _ = writeln!(
+            o,
+            "  people: logins sent back to {back}; refused once the feed is older than {stale}"
+        );
         for b in &d.blocked {
             let _ = writeln!(o, "  not done yet: {b}");
         }
@@ -1747,6 +1764,129 @@ pub fn to_yaml(v: &serde_json::Value) -> String {
     let mut out = String::new();
     go(v, 0, &mut out);
     out
+}
+
+/// A person's login at a glidex directory for the command line (D307):
+/// what `auth login --directory` keeps in `--token-file`, which `--mgmt`
+/// renews when its access token is about to expire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirToken {
+    /// The directory's issuer, where its device and token endpoints are.
+    pub directory: String,
+    /// Its certificate's SHA-256, when pinned rather than checked against
+    /// the host's CAs.
+    pub pin: Option<String>,
+    /// The cluster the access token is for.
+    pub cluster_id: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    /// When the access token expires (seconds since the epoch).
+    pub expires_at: u64,
+}
+
+impl DirToken {
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "directory": self.directory, "pin": self.pin, "cluster_id": self.cluster_id,
+            "access_token": self.access_token, "refresh_token": self.refresh_token,
+            "expires_at": self.expires_at,
+        })
+        .to_string()
+    }
+
+    pub fn parse(s: &str) -> Option<DirToken> {
+        let v: serde_json::Value = serde_json::from_str(s).ok()?;
+        Some(DirToken {
+            directory: v["directory"].as_str()?.to_string(),
+            pin: v["pin"].as_str().map(String::from),
+            cluster_id: v["cluster_id"].as_str()?.to_string(),
+            access_token: v["access_token"].as_str()?.to_string(),
+            refresh_token: v["refresh_token"].as_str().unwrap_or_default().to_string(),
+            expires_at: v["expires_at"].as_u64().unwrap_or(0),
+        })
+    }
+}
+
+/// What a token file or `$HYPERSTOR_TOKEN` holds (§23.9.1, D307).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// mgmt's own API token, `hst_…`.
+    Mgmt(String),
+    /// A glidex API token, `gxt_…`, that lists this cluster.
+    Glidex(String),
+    /// A directory's access token for this cluster (a JWT), as `gxctl
+    /// auth token --cluster ID` prints it.
+    Access(String),
+    /// A login kept by `auth login --directory`.
+    Directory(DirToken),
+}
+
+/// `s` as a credential, or `None` if it is none.
+pub fn credential(s: &str) -> Option<Credential> {
+    let s = s.trim();
+    if s.starts_with('{') {
+        return DirToken::parse(s).map(Credential::Directory);
+    }
+    let token_chars = |t: &str| {
+        !t.is_empty()
+            && t.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+    };
+    if !token_chars(s) {
+        return None;
+    }
+    if s.starts_with("hst_") {
+        Some(Credential::Mgmt(s.into()))
+    } else if s.starts_with("gxt_") {
+        Some(Credential::Glidex(s.into()))
+    } else if s.split('.').count() == 3 && s.split('.').all(|p| !p.is_empty()) {
+        Some(Credential::Access(s.into()))
+    } else {
+        None
+    }
+}
+
+/// An HTTP/1.1 response: its status, and its body as JSON (`null` when it
+/// isn't), the body read whole or in chunks.
+pub fn parse_http(raw: &[u8]) -> Result<(u16, serde_json::Value), String> {
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("no HTTP response")?;
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let mut body = raw[split + 4..].to_vec();
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse().ok())
+        .ok_or("no HTTP status")?;
+    let chunked = head.lines().any(|l| {
+        l.split_once(':').is_some_and(|(k, v)| {
+            k.trim().eq_ignore_ascii_case("transfer-encoding")
+                && v.trim().eq_ignore_ascii_case("chunked")
+        })
+    });
+    if chunked {
+        let mut out = Vec::new();
+        let mut rest = &body[..];
+        while let Some(eol) = rest.windows(2).position(|w| w == b"\r\n") {
+            let size = std::str::from_utf8(&rest[..eol])
+                .ok()
+                .and_then(|l| usize::from_str_radix(l.split(';').next()?.trim(), 16).ok())
+                .ok_or("a broken chunk")?;
+            rest = &rest[eol + 2..];
+            if size == 0 || rest.len() < size {
+                break;
+            }
+            out.extend_from_slice(&rest[..size]);
+            rest = rest.get(size + 2..).unwrap_or_default();
+        }
+        body = out;
+    }
+    Ok((
+        status,
+        serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
+    ))
 }
 
 #[cfg(test)]
@@ -2273,5 +2413,51 @@ mod tests {
         let lines: Vec<&str> = g.lines().collect();
         assert!(lines[2].contains("the fullest PG, 4096 bytes"), "{g}");
         assert_eq!(lines[3], "     0  ?049");
+    }
+
+    #[test]
+    fn token_files_hold_one_kind_of_credential() {
+        assert_eq!(
+            credential(" hst_abc\n"),
+            Some(Credential::Mgmt("hst_abc".into()))
+        );
+        assert_eq!(
+            credential("gxt_abc"),
+            Some(Credential::Glidex("gxt_abc".into()))
+        );
+        assert_eq!(
+            credential("eyJh.eyJz.c2ln"),
+            Some(Credential::Access("eyJh.eyJz.c2ln".into()))
+        );
+        assert_eq!(credential("nothing"), None);
+        assert_eq!(credential("a b.c.d"), None);
+        let t = DirToken {
+            directory: "https://id.acme.example/d/acme".into(),
+            pin: None,
+            cluster_id: "c1".into(),
+            access_token: "a.b.c".into(),
+            refresh_token: "r".into(),
+            expires_at: 5,
+        };
+        assert_eq!(credential(&t.to_json()), Some(Credential::Directory(t)));
+    }
+
+    #[test]
+    fn http_answers_read_whole_or_chunked() {
+        let whole = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n{\"a\":1}";
+        assert_eq!(
+            parse_http(whole).unwrap(),
+            (200, serde_json::json!({"a": 1}))
+        );
+        let chunked = b"HTTP/1.1 400 Bad\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"a\"\r\n3\r\n:2}\r\n0\r\n\r\n";
+        assert_eq!(
+            parse_http(chunked).unwrap(),
+            (400, serde_json::json!({"a": 2}))
+        );
+        assert_eq!(
+            parse_http(b"HTTP/1.1 204 No\r\n\r\n").unwrap().1,
+            serde_json::Value::Null
+        );
+        assert!(parse_http(b"junk").is_err());
     }
 }

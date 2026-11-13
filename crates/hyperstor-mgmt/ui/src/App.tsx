@@ -11,6 +11,7 @@ import {
   savedRealm,
   setActingRealm,
   setClaimCode,
+  ssoProviders,
   type Me,
   type Methods,
 } from "./api";
@@ -28,8 +29,6 @@ import Security from "./pages/Security";
 import Trash from "./pages/Trash";
 import ObjectStorage from "./pages/ObjectStorage";
 import Audit from "./pages/Audit";
-
-const SSO = [{ label: "your identity provider" }];
 
 function Login({ methods, onLoggedIn }: { methods: Methods; onLoggedIn: () => void }) {
   const [claim, setClaim] = useState("");
@@ -51,8 +50,8 @@ function Login({ methods, onLoggedIn }: { methods: Methods; onLoggedIn: () => vo
         </label>
       )}
       {methods.pam && <PamForm submitLabel="Log in" onDone={onLoggedIn} />}
-      {methods.oidc && <SsoButtons providers={SSO} />}
-      {!methods.pam && !methods.oidc && (
+      {ssoProviders(methods).length > 0 && <SsoButtons providers={ssoProviders(methods)} />}
+      {!methods.pam && ssoProviders(methods).length === 0 && (
         <p className="text-sm text-slate-600">This hyperstor-mgmt has no login method (--authd or --oidc).</p>
       )}
     </div>
@@ -189,7 +188,7 @@ export default function App() {
       auth={auth}
       login={(methods, onLoggedIn) => <Login methods={methods} onLoggedIn={onLoggedIn} />}
       reauth={({ methods, me, onDone, onCancel }) => (
-        <ReauthDialog username={me.name} pam={methods.pam} sso={methods.oidc ? SSO : null} onDone={onDone} onCancel={onCancel} />
+        <ReauthDialog username={me.name} pam={methods.pam} sso={ssoProviders(methods).length > 0 ? ssoProviders(methods) : null} onDone={onDone} onCancel={onCancel} />
       )}
       loading={<p className="p-6 text-slate-500">Loading...</p>}
       unreachable="Can't reach hyperstor-mgmt"

@@ -259,7 +259,9 @@ pub async fn run(members: Arc<Members>) {
             let Ok(report) = serde_json::from_slice::<serde_json::Value>(&report.report) else {
                 continue;
             };
-            match client::push_report(k, &work.cluster_id, &d, &report, None, now).await {
+            // With where logins come back (glidex D73), as it is now.
+            let callback = (!t.ui_callback.is_empty()).then_some(t.ui_callback.as_str());
+            match client::push_report(k, &work.cluster_id, &d, &report, callback, now).await {
                 Ok(()) => {
                     reported.insert(d.id.clone(), Instant::now());
                 }

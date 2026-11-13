@@ -49,6 +49,7 @@ fn dir_rec(tenants: &[(&str, &str)], realm: u32) -> DirRec {
             max_staleness_minutes: None,
         },
         realm,
+        ui_callback: String::new(),
     }
 }
 
@@ -68,6 +69,7 @@ fn offers_are_spent_once_and_revoked_only_while_open() {
         created_by: "hyperstor://c/admin/a".into(),
         expires_unix: 100,
         state: OPEN.into(),
+        ui: String::new(),
     };
     create_offer(&db, &o).unwrap();
     assert!(create_offer(&db, &o).is_err());
@@ -576,6 +578,364 @@ fn feeds_converge_on_the_records_through_failovers() {
                 .project(*id)
                 .unwrap_or_else(|| panic!("seed {seed}: {id}"));
             assert_eq!((p.tenant, &p.name), (*tenant, name), "seed {seed}");
+        }
+    }
+}
+
+#[test]
+fn a_person_s_grants_come_from_their_links_and_teams() {
+    use glidex_trust::feed::Entity;
+    let (_d, db) = db();
+    let (acme, _) = tenancy::create_tenant(
+        &db,
+        &NewTenant {
+            name: "acme".into(),
+            directory: ISSUER.into(),
+            glidex_id: "t1".into(),
+            ..Default::default()
+        },
+        &[],
+    )
+    .unwrap();
+    let (local, _) = tenancy::create_tenant(
+        &db,
+        &NewTenant {
+            name: "local".into(),
+            ..Default::default()
+        },
+        &[],
+    )
+    .unwrap();
+    tenancy::create_project(&db, acme, "web", "p1", 1, "t").unwrap();
+    // A project of another tenant that a glidex id names: not this
+    // directory's, so its links give nothing.
+    tenancy::create_project(&db, local, "odd", "p9", 1, "t").unwrap();
+    let t = tenancy::load(&db).unwrap();
+    let p = People {
+        users: serde_json::from_value(serde_json::json!([
+            { "id": "u1", "display_name": "Ann" },
+            { "id": "u2", "disabled": true },
+        ]))
+        .unwrap(),
+        teams: serde_json::from_value(serde_json::json!([
+            { "id": "g1", "members": [{ "user_id": "u1" }] },
+        ]))
+        .unwrap(),
+        members: serde_json::from_value(serde_json::json!([
+            { "tenant_id": "t1", "principal": { "type": "Team", "id": "g1" } },
+        ]))
+        .unwrap(),
+        links: serde_json::from_value(serde_json::json!([
+            { "id": "l1", "template": "role.tenant-admin", "principal": { "type": "Team", "id": "g1" }, "resource": { "type": "Tenant", "id": "t1" } },
+            { "id": "l2", "template": "operator", "principal": { "type": "User", "id": "u1" }, "resource": { "type": "Project", "id": "p1" } },
+            { "id": "l3", "template": "owner", "principal": { "type": "User", "id": "u1" }, "resource": { "type": "Project", "id": "p9" } },
+            { "id": "l4", "template": "who-knows", "principal": { "type": "User", "id": "u1" }, "resource": { "type": "Tenant", "id": "t1" } },
+            { "id": "l5", "template": "viewer", "principal": { "type": "Token", "id": "k1" }, "resource": { "type": "Project", "id": "p1" } },
+            { "id": "l6", "template": "tenant-auditor", "principal": { "type": "User", "id": "u2" }, "resource": { "type": "Tenant", "id": "t9" } },
+        ]))
+        .unwrap(),
+    };
+    let u1 = person_of(ISSUER, &p, &t, acme, &Entity::User("u1".into()));
+    assert_eq!(
+        u1,
+        Person {
+            found: true,
+            disabled: false,
+            display_name: "Ann".into(),
+            grants: vec![
+                "operator@project:acme/web".into(),
+                "security-admin@tenant:acme".into(),
+                "storage-admin@tenant:acme".into(),
+            ],
+            operator: true,
+        }
+    );
+    // The operator tenant isn't this directory's: no one is its member.
+    assert!(!person_of(ISSUER, &p, &t, local, &Entity::User("u1".into())).operator);
+    let u2 = person_of(ISSUER, &p, &t, acme, &Entity::User("u2".into()));
+    assert!(u2.found && u2.disabled && u2.grants.is_empty() && !u2.operator);
+    assert!(!person_of(ISSUER, &p, &t, acme, &Entity::User("u3".into())).found);
+    let k1 = person_of(ISSUER, &p, &t, acme, &Entity::Token("k1".into()));
+    assert_eq!(k1.grants, vec!["viewer@project:acme/web".to_string()]);
+    // Another directory's issuer: none of these tenants are its.
+    let other = person_of(
+        "https://id.other.example/d/o",
+        &p,
+        &t,
+        acme,
+        &Entity::User("u1".into()),
+    );
+    assert!(other.grants.is_empty() && !other.operator);
+}
+
+/// What the directory says of its people, in the model: users (disabled
+/// or not), teams' members, the operator tenant's members, links, the
+/// chains it ended and its API tokens.
+#[derive(Clone, Default)]
+struct Said {
+    users: BTreeMap<&'static str, bool>,
+    teams: BTreeMap<&'static str, BTreeSet<&'static str>>,
+    members: BTreeSet<&'static str>,
+    links: BTreeSet<(&'static str, &'static str, &'static str)>,
+    ended: BTreeSet<String>,
+    tokens: BTreeMap<&'static str, &'static str>,
+}
+
+impl Said {
+    fn snapshot(&self) -> glidex_trust::Snapshot {
+        let ent = |e: &str| {
+            let (kind, id) = e.split_once(':').unwrap();
+            serde_json::json!({ "type": kind, "id": id })
+        };
+        let mut rows = vec![
+            row(
+                "tenants",
+                "t1",
+                serde_json::json!({ "id": "t1", "slug": "acme" }),
+            ),
+            row(
+                "projects",
+                "p1",
+                serde_json::json!({ "id": "p1", "name": "web", "tenant_id": "t1" }),
+            ),
+        ];
+        for (u, disabled) in &self.users {
+            rows.push(row(
+                "users",
+                u,
+                serde_json::json!({ "id": u, "disabled": disabled }),
+            ));
+        }
+        for (g, members) in &self.teams {
+            let m: Vec<_> = members
+                .iter()
+                .map(|u| serde_json::json!({ "user_id": u }))
+                .collect();
+            rows.push(row(
+                "teams",
+                g,
+                serde_json::json!({ "id": g, "members": m }),
+            ));
+        }
+        for m in &self.members {
+            rows.push(row(
+                "tenant_members",
+                &format!("t1/{m}"),
+                serde_json::json!({ "tenant_id": "t1", "principal": ent(m) }),
+            ));
+        }
+        for (i, (who, template, on)) in self.links.iter().enumerate() {
+            rows.push(row(
+                "policy_links",
+                &format!("l{i}"),
+                serde_json::json!({ "id": format!("l{i}"), "template": template,
+                                    "principal": ent(who), "resource": ent(on) }),
+            ));
+        }
+        for (secret, owner) in &self.tokens {
+            let kind = match owner.split_once(':') {
+                Some(("User", u)) => serde_json::json!({ "kind": "personal", "owner": u }),
+                _ => serde_json::json!({ "kind": "service_account", "project": "p1" }),
+            };
+            let mut v = serde_json::json!({ "id": secret, "expires_at": 9, "clusters": ["c1"] });
+            v.as_object_mut()
+                .unwrap()
+                .extend(kind.as_object().unwrap().clone());
+            rows.push(row(
+                "api_tokens",
+                &glidex_trust::tokens::api_token_hash(secret),
+                v,
+            ));
+        }
+        let jwks = serde_json::json!({ "keys": [] });
+        let ended: Vec<String> = self.ended.iter().cloned().collect();
+        glidex_trust::Snapshot {
+            revision: glidex_trust::revision_of(&jwks, &rows, &ended),
+            jwks,
+            rows,
+            ended_sids: ended,
+        }
+    }
+
+    /// What `who` should be here, worked out apart from `person_of`.
+    fn expect(&self, who: &str, operator_here: bool) -> Person {
+        let (kind, id) = who.split_once(':').unwrap();
+        let mut p = Person::default();
+        if kind == "User" {
+            match self.users.get(id) {
+                Some(d) => (p.found, p.disabled) = (true, *d),
+                None => return p,
+            }
+        } else {
+            p.found = true;
+            p.display_name = format!("token {id}");
+        }
+        let mut is = vec![who.to_string()];
+        if kind == "User" {
+            for (g, m) in &self.teams {
+                if m.contains(id) {
+                    is.push(format!("Team:{g}"));
+                }
+            }
+        }
+        let mut grants = BTreeSet::new();
+        for (w, template, on) in &self.links {
+            if !is.iter().any(|x| x == w) {
+                continue;
+            }
+            let roles: &[&str] = match (*on, *template) {
+                ("Tenant:t1", "tenant-admin") => &["storage-admin", "security-admin"],
+                ("Tenant:t1", "tenant-auditor") => &["viewer"],
+                ("Project:p1", "owner" | "editor") => &["storage-admin"],
+                ("Project:p1", "operator") => &["operator"],
+                ("Project:p1", "viewer") => &["viewer"],
+                _ => &[],
+            };
+            for r in roles {
+                grants.insert(if on.starts_with("Tenant") {
+                    format!("{r}@tenant:acme")
+                } else {
+                    format!("{r}@project:acme/web")
+                });
+            }
+        }
+        p.grants = grants.into_iter().collect();
+        p.operator = operator_here && self.members.iter().any(|m| is.iter().any(|x| x == m));
+        p
+    }
+}
+
+#[test]
+fn people_resolve_as_the_last_feed_said_through_failovers() {
+    use glidex_trust::feed::Entity;
+    const USERS: [&str; 4] = ["u1", "u2", "u3", "u4"];
+    const TEAMS: [&str; 2] = ["g1", "g2"];
+    const WHO: [&str; 7] = [
+        "User:u1", "User:u2", "User:u3", "User:u4", "Team:g1", "Team:g2", "Token:k1",
+    ];
+    const TEMPLATES: [&str; 7] = [
+        "tenant-admin",
+        "tenant-auditor",
+        "owner",
+        "editor",
+        "operator",
+        "viewer",
+        "who-knows",
+    ];
+    const ON: [&str; 3] = ["Tenant:t1", "Project:p1", "Tenant:t9"];
+    const SECRETS: [&str; 3] = ["gxt_a", "gxt_b", "gxt_c"];
+    for seed in 1..=300u64 {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("map.redb");
+        let mut db = Arc::new(Db::create(&path).unwrap());
+        let d = dir_rec(&[("t1", "acme")], 1);
+        let id = d.dir.id.clone();
+        put_directory(&db, &d).unwrap();
+        let (acme, _) = tenancy::create_tenant(
+            &db,
+            &NewTenant {
+                name: "acme".into(),
+                directory: ISSUER.into(),
+                glidex_id: "t1".into(),
+                ..Default::default()
+            },
+            &[],
+        )
+        .unwrap();
+        tenancy::create_project(&db, acme, "web", "p1", 1, "t").unwrap();
+        let mut said = Said::default();
+        // What the replica holds: the last feed applied.
+        let mut applied = Said::default();
+        let mut operator = 0;
+        for round in 0..15u64 {
+            for _ in 0..1 + rng.below(4) {
+                match rng.below(8) {
+                    0 => {
+                        said.users.insert(rng.pick(&USERS), rng.chance(25));
+                    }
+                    1 => {
+                        said.users.remove(rng.pick(&USERS));
+                    }
+                    2 => {
+                        let g = *rng.pick(&TEAMS);
+                        let u = *rng.pick(&USERS);
+                        let m = said.teams.entry(g).or_default();
+                        if !m.insert(u) {
+                            m.remove(u);
+                        }
+                    }
+                    3 => {
+                        let w = *rng.pick(&WHO);
+                        if !said.members.insert(w) {
+                            said.members.remove(w);
+                        }
+                    }
+                    4 | 5 => {
+                        let l = (*rng.pick(&WHO), *rng.pick(&TEMPLATES), *rng.pick(&ON));
+                        if !said.links.insert(l) {
+                            said.links.remove(&l);
+                        }
+                    }
+                    6 => {
+                        said.ended.insert(format!("s{}", rng.below(5)));
+                    }
+                    _ => {
+                        let s = *rng.pick(&SECRETS);
+                        if said.tokens.remove(s).is_none() {
+                            said.tokens
+                                .insert(s, rng.pick(&["User:u1", "User:u3", "Token:k1"]));
+                        }
+                    }
+                }
+            }
+            if rng.chance(20) {
+                operator = if operator == 0 { acme } else { 0 };
+                set_operator(&db, operator).unwrap();
+            }
+            // The feed pulled and applied, or not this round (the puller
+            // failed over first); the store reopened, as a new leader
+            // reads it.
+            if rng.chance(75) {
+                apply_feed(&db, &id, Some(&said.snapshot()), round).unwrap();
+                applied = said.clone();
+            } else {
+                apply_feed(&db, &id, None, round).unwrap();
+            }
+            if rng.chance(30) {
+                drop(db);
+                db = Arc::new(Db::create(&path).unwrap());
+            }
+            let t = tenancy::load(&db).unwrap();
+            let op = super::operator(&db).unwrap();
+            assert_eq!(op, operator, "seed {seed}");
+            let p = people(&db, &id).unwrap();
+            for who in WHO.iter().filter(|w| !w.starts_with("Team")) {
+                let e = match who.split_once(':').unwrap() {
+                    ("User", u) => Entity::User(u.into()),
+                    (_, k) => Entity::Token(k.into()),
+                };
+                let got = person_of(ISSUER, &p, &t, op, &e);
+                assert_eq!(
+                    got,
+                    applied.expect(who, op == acme),
+                    "seed {seed}, round {round}, {who}"
+                );
+            }
+            let f = feed(&db, &id).unwrap();
+            assert_eq!(
+                f.ended,
+                applied.ended.iter().cloned().collect::<Vec<_>>(),
+                "seed {seed}"
+            );
+            for s in SECRETS {
+                let tok = api_token(&db, &id, &glidex_trust::tokens::api_token_hash(s)).unwrap();
+                assert_eq!(
+                    tok.is_some(),
+                    applied.tokens.contains_key(s),
+                    "seed {seed}, {s}"
+                );
+            }
         }
     }
 }

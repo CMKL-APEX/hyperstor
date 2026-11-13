@@ -299,6 +299,9 @@ namespace Hyperstor {
   action "TrustService.SetOperator" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "TrustService.SetDirectoryStaleness" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   // Which gateway takes a tenant's keys (D250).
   action "RealmService.SetTenantRealm" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }

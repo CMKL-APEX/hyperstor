@@ -297,4 +297,5 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | mgmt trusts glidex directories: offers, redeem and ends, the feed replica and the tenants and projects it makes, reports with storage counts | Done |
-| Logins through a directory, grants from the feed, partitions | Planned |
+| Logins through a directory (browser, access and API tokens, hyperstorctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness | Done |
+| The account picker, tenant and project pickers (D310), and the driver's projects bound to realms (D311) | Planned |

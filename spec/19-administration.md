@@ -533,8 +533,16 @@ projects gone from the feed kept unlinked (I382); names and clashes
 (I383); a directory's realm (I384). Settled: reports send used bytes
 from the space counters, 0 until they exist (D313, #364); a directory's
 pin of mgmt's certificate follows renewals through the reports, and an
-offer names mgmt's direct address, not a proxy's (D312, glidex#501). Not yet:
-logins, grants from the feed, the UIs and the driver. With realms as
+offer names mgmt's direct address, not a proxy's (D312, glidex#501). Built
+too: logins through a directory in a browser and by `hyperstorctl auth
+login`, its access and API tokens, roles from its links and, for the
+operator tenant's members, from here, and partitions past `max_staleness`
+(I387, #360 stage 5), with these choices open for review: a person's
+account here (I388), local and directory accounts apart (I389), links to
+roles (I390), an access token's age (I391), the CLI's device grant (I392),
+`max_staleness` (I393), and where logins come back (I394). Not yet: the
+account picker and the tenant and project pickers, the email field, and
+the driver. With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
 directories the way a glidex cluster does (glidex 19-tenancy.md §7,
