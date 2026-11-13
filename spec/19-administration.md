@@ -345,9 +345,11 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   Grafana dashboards ship as JSON for longer history.
 - **Under glidex**, mgmt runs as well (D305, amending D50): people sign
   in at their glidex directory, with its passkeys or IdP, and their
-  grants come from its feed (§23.12). glidex's UI links each hyperstor
-  datastore here and shows usage per project; tenants see their volumes
-  as glidex disks (16-glidex.md §17, §20).
+  grants come from its feed (§23.12). glidex's UI shows a tenant's
+  volumes, buckets, keys and usage inline through mgmt's API, and links
+  each hyperstor datastore here for the cluster's administration
+  (D310); tenants see their volumes as glidex disks too (16-glidex.md
+  §17, §20).
 
 ### 23.8 Identities and certificates
 
@@ -517,12 +519,12 @@ evidence.
 | AD1 | `hyperstor-install` with `check`, join tokens, `--all-in-one` | AD0 |
 | AD2 | `hyperstor-mgmt` read-only: health, map, metrics, watch fan-out; UI pages without actions | AD0; `glidex-auth` extracted (a glidex change) |
 | AD3 | UI and CLI writes, Cedar roles, step-up, trash, audit, operations | AD2 |
-| AD4 | glidex: links from each hyperstor datastore to its mgmt and usage per project on the tenant's page (D310; was a Storage section and `storage-admin` role in glidex's UI) | AD5 |
+| AD4 | glidex: a tenant's volumes, buckets, keys and usage per project inline in glidex's UI through mgmt's API, and links from each hyperstor datastore to its mgmt (D310; was a Storage section and `storage-admin` role in glidex's UI) | AD5 |
 | AD5 | People from glidex directories (§23.12): `glidex-trust` extracted, offers, redeem and the feed, logins through a directory, grants from the feed, `hyperstorctl` logins, the account picker, reports | AD3, HS15's records (20-tenants.md §24.9) |
 
 ### 23.12 People from glidex directories (D305–D311)
 
-Drafted 2026-11-12, open for review; not built. With realms as
+Settled 2026-11-12 (05-decision-log.md points 267–273); not built. With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
 directories the way a glidex cluster does (glidex 19-tenancy.md §7,
@@ -608,16 +610,27 @@ the operator's) it refuses them, since a revocation may be missing.
 Local logins and other directories' people keep working; storage never
 depends on it.
 
-**One UI (D310).** mgmt's UI already uses glidex's components (D97). It
-gains glidex's account picker (one account per directory in one browser,
-glidex D71) and a tenant and project picker beside the realm picker;
-people, teams, projects and their roles link to the directory's own
-pages, since those are written there. glidex's UI links each hyperstor
-datastore to its mgmt (one sign-on makes it one step) and shows the
-reports' usage per project on the tenant's page. AD4's Storage section
-in glidex becomes those links and that usage; administering storage
-stays in mgmt's UI. Why: one UI for hyperstor, whoever uses it, instead
-of a second copy of its pages in glidex.
+**One sign-on, two UIs (D310).** mgmt's UI already uses glidex's
+components (D97). It gains glidex's account picker (one account per
+directory in one browser, glidex D71) and a tenant and project picker
+beside the realm picker; people, teams, projects and their roles link to
+the directory's own pages, since those are written there.
+
+glidex's UI shows a tenant's storage inline as well: its volumes,
+buckets and S3 keys, and usage per project, through mgmt's API, on the
+tenant's and each project's pages (AD4). The browser asks the directory
+for an access token addressed to the hyperstor cluster (glidex D69: the
+directory gives one to members of tenants opted in to it) and calls
+mgmt with it as a bearer token; mgmt allows those calls from the glidex
+UI origins it has learned (each trusted glidex cluster's datastore
+record, D311), and answers them under the person's grants as for any
+other caller. Bearer tokens, not mgmt's cookie, so no cookie crosses
+sites and no CSRF value is needed. Administering the cluster (pools,
+devices, nodes, members) stays in mgmt's UI, linked from each datastore.
+Why: tenants work where their VMs are, in glidex, and operators where
+the hardware is; both read the same API under the same grants, so the
+two UIs can't disagree on what a person may see. The shared pages are
+components of the glidex UI kit, written once.
 
 **glidex's datastore driver (D311).** A glidex cluster still acts as its
 own `mgmt` identity (glidex storage.md S20), now naming each disk's
@@ -627,7 +640,8 @@ project outside them. Why: one glidex cluster can't make volumes in
 another directory's projects, whatever it names.
 
 **Changes in glidex** (glidex pull requests): the `glidex-trust` crate;
-reports with storage counts, shown on the tenant's page; links from a
+reports with storage counts; the tenant's storage pages, calling mgmt's
+API with an access token for the hyperstor cluster; links from a
 hyperstor datastore to its mgmt; `gxctl auth token --cluster` if it
 isn't there. Nothing changes in directories themselves: a hyperstor
 cluster is a cluster to them.

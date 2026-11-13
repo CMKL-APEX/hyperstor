@@ -38,7 +38,7 @@ covered by tests that run on every change.
 | AD2: Management service and read-only web UI | In progress |
 | AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
 | AD5: People from glidex directories | Planned |
-| AD4: Storage administration in glidex | Planned |
+| AD4: A tenant's storage in glidex's UI | Planned |
 
 ## HS0: Local storage engine and reactor
 
