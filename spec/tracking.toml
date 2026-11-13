@@ -1939,4 +1939,4 @@ status = "planned"
 
 [[milestone]]
 id = "AD4"
-title = "Storage administration in glidex"
+title = "A tenant's storage in glidex's UI"
