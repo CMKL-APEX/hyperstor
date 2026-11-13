@@ -174,6 +174,22 @@ fn combined_checksum(a: chunked::Algorithm, full: bool, parts: &[&PartRecord]) -
             }
             crc.to_be_bytes().to_vec()
         }
+        (Crc64Nvme, true) => {
+            let mut crc = 0u64;
+            for (v, size) in &sums {
+                let part = v
+                    .as_slice()
+                    .try_into()
+                    .map(u64::from_be_bytes)
+                    .map_err(|_| S3Error::Corrupt("a part's CRC64NVME".into()))?;
+                crc = hyperstor_codec::crc64nvme_combine(crc, part, *size);
+            }
+            crc.to_be_bytes().to_vec()
+        }
+        // The gateway makes every CRC64NVME upload FULL_OBJECT.
+        (Crc64Nvme, false) => {
+            return Err(S3Error::Corrupt("a COMPOSITE CRC64NVME upload".into()));
+        }
         (Crc32, true) => {
             let mut h = crc32fast::Hasher::new();
             for (v, size) in &sums {
@@ -1668,7 +1684,7 @@ mod tests {
     fn parts_combine_into_the_whole_objects_sums() {
         let pieces: [&[u8]; 3] = [b"hello, ", b"", b"multipart world"];
         let whole: Vec<u8> = pieces.concat();
-        for a in [Algorithm::Crc32, Algorithm::Crc32c] {
+        for a in [Algorithm::Crc32, Algorithm::Crc32c, Algorithm::Crc64Nvme] {
             let parts: Vec<_> = pieces.iter().map(|p| part(p, a)).collect();
             let refs: Vec<&PartRecord> = parts.iter().collect();
             let mut h = Hasher::new(a);

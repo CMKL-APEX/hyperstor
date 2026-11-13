@@ -575,7 +575,7 @@ mod tests {
             checksum: None,
         };
         assert_eq!(PartRecord::decode(&part.encode()), Ok(part.clone()));
-        part.checksum = Some((Algorithm::Crc32c, vec![1, 2, 3, 4]));
+        part.checksum = Some((Algorithm::Crc64Nvme, vec![1, 2, 3, 4, 5, 6, 7, 8]));
         assert_eq!(PartRecord::decode(&part.encode()), Ok(part));
         e.data = Data::Parts {
             chunk: 4,

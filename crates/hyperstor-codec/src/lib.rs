@@ -308,9 +308,106 @@ pub fn crc32c_append_with(lib: Crc32cImpl, crc: u32, data: &[u8]) -> u32 {
     }
 }
 
+/// CRC-64/NVME, S3's `x-amz-checksum-crc64nvme` (reflected polynomial
+/// 0x9A6C9329AC4BC9B5, initial value and final XOR all ones), by `crc-fast`,
+/// which picks its kernels for the CPU. Only the S3 gateway uses it.
+#[inline]
+pub fn crc64nvme(data: &[u8]) -> u64 {
+    crc_fast::checksum(crc_fast::CrcAlgorithm::Crc64Nvme, data)
+}
+
+/// Continues a CRC-64/NVME over more data.
+#[inline]
+pub fn crc64nvme_append(crc: u64, data: &[u8]) -> u64 {
+    // The digest holds the register before the final inversion.
+    let mut d = crc_fast::Digest::new_with_init_state(crc_fast::CrcAlgorithm::Crc64Nvme, !crc);
+    d.update(data);
+    d.finalize()
+}
+
+/// A CRC-64/NVME computed as bytes go by (a body's `x-amz-checksum-crc64nvme`).
+pub struct Crc64Nvme(crc_fast::Digest);
+
+impl Default for Crc64Nvme {
+    fn default() -> Self {
+        Crc64Nvme(crc_fast::Digest::new(crc_fast::CrcAlgorithm::Crc64Nvme))
+    }
+}
+
+impl Crc64Nvme {
+    pub fn update(&mut self, b: &[u8]) {
+        self.0.update(b);
+    }
+
+    pub fn finish(self) -> u64 {
+        self.0.finalize()
+    }
+}
+
+/// The CRC-64/NVME of `a` followed by `b`, from both CRCs and `b`'s length:
+/// a multipart upload's whole-object checksum from its parts'.
+#[inline]
+pub fn crc64nvme_combine(crc_a: u64, crc_b: u64, len_b: u64) -> u64 {
+    crc_fast::checksum_combine(crc_fast::CrcAlgorithm::Crc64Nvme, crc_a, crc_b, len_b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CRC-64/NVME one bit at a time.
+    fn crc64_bitwise(data: &[u8]) -> u64 {
+        let mut c = !0u64;
+        for &b in data {
+            c ^= b as u64;
+            for _ in 0..8 {
+                c = (c >> 1) ^ (0x9A6C_9329_AC4B_C9B5 & (c & 1).wrapping_neg());
+            }
+        }
+        !c
+    }
+
+    #[test]
+    fn crc64nvme_is_the_catalogue_crc_and_continues_and_combines() {
+        // The CRC catalogue's check value for CRC-64/NVME.
+        assert_eq!(crc64nvme(b"123456789"), 0xAE8B_1486_0A79_9888);
+        assert_eq!(crc64nvme(b""), 0);
+        let data: Vec<u8> = (0..70_000u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8)
+            .collect();
+        for len in [0, 1, 7, 8, 15, 16, 63, 64, 255, 4095, 4096, 4097, 70_000] {
+            for start in [0, 1, 5] {
+                let d = &data[start..(start + len).min(data.len())];
+                assert_eq!(crc64nvme(d), crc64_bitwise(d), "length {len} from {start}");
+            }
+        }
+        let whole = crc64nvme(&data);
+        for cut in [0, 1, 4096, 33_333, 70_000] {
+            let (a, b) = data.split_at(cut);
+            assert_eq!(crc64nvme_append(crc64nvme(a), b), whole, "append at {cut}");
+            assert_eq!(
+                crc64nvme_combine(crc64nvme(a), crc64nvme(b), b.len() as u64),
+                whole,
+                "combine at {cut}"
+            );
+        }
+        let mut c = 0;
+        for piece in data.chunks(1000) {
+            c = crc64nvme_append(c, piece);
+        }
+        assert_eq!(c, whole);
+        // Streamed, as a body arrives.
+        let mut h = Crc64Nvme::default();
+        h.update(b"123456789");
+        assert_eq!(h.finish(), 0xAE8B_1486_0A79_9888);
+        for step in [1, 7, 4096, 70_000] {
+            let mut h = Crc64Nvme::default();
+            for piece in data.chunks(step) {
+                h.update(piece);
+            }
+            assert_eq!(h.finish(), whole, "in pieces of {step}");
+        }
+    }
 
     #[test]
     fn round_trip() {

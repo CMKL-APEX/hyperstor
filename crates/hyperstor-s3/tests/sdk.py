@@ -285,6 +285,61 @@ assert get("mp/copied") == p1[: 5 * MIB] + b"tail"
 composite = hashlib.sha256(hashlib.sha256(p1[: 5 * MIB]).digest() + hashlib.sha256(b"tail").digest()).digest()
 h = s3.head_object(Bucket="sdk", Key="mp/copied", ChecksumMode="ENABLED")
 assert h["ChecksumSHA256"] == base64.b64encode(composite).decode() + "-2", h
+# CRC64NVME, which botocore computes only with awscrt (HS_S3_SDK_CRC64
+# makes it required): kept and given back, a wrong value refused, and a
+# multipart upload's, FULL_OBJECT only, combined from its parts'.
+try:
+    from awscrt import checksums as crt
+except ImportError:
+    crt = None
+if crt is None:
+    assert not os.environ.get("HS_S3_SDK_CRC64"), "HS_S3_SDK_CRC64 is set but there is no awscrt"
+    print("CRC64NVME skipped: no awscrt")
+else:
+    def crc64(data):
+        return base64.b64encode(crt.crc64nvme(data).to_bytes(8, "big")).decode()
+
+    s3.put_object(Bucket="sdk", Key="c/CRC64NVME", Body=big, ChecksumAlgorithm="CRC64NVME")
+    h = s3.head_object(Bucket="sdk", Key="c/CRC64NVME", ChecksumMode="ENABLED")
+    assert h["ChecksumCRC64NVME"] == crc64(big), h
+    assert h.get("ChecksumType", "FULL_OBJECT") == "FULL_OBJECT", h
+    # botocore checks the value it is given back against the body.
+    o = s3.get_object(Bucket="sdk", Key="c/CRC64NVME", ChecksumMode="ENABLED")
+    assert o["Body"].read() == big
+    assert o["ChecksumCRC64NVME"] == crc64(big), o
+    # In a header rather than after the body.
+    s3.put_object(Bucket="sdk", Key="c/CRC64NVME-h", Body=small, ChecksumCRC64NVME=crc64(small))
+    assert s3.head_object(Bucket="sdk", Key="c/CRC64NVME-h", ChecksumMode="ENABLED")["ChecksumCRC64NVME"] == crc64(small)
+    wrong = base64.b64encode(bytes(8)).decode()
+    c = code(lambda: s3.put_object(Bucket="sdk", Key="bad64", Body=small, ChecksumCRC64NVME=wrong))
+    assert c in ("BadDigest", "InvalidRequest"), c
+    assert code(lambda: s3.head_object(Bucket="sdk", Key="bad64")) == "404"
+    # Multipart: FULL_OBJECT without being asked, from the parts' CRCs.
+    q1, q2 = os.urandom(5 * MIB), os.urandom(3 * MIB + 11)
+    u = s3.create_multipart_upload(Bucket="sdk", Key="mp/crc64", ChecksumAlgorithm="CRC64NVME")
+    assert u.get("ChecksumType", "FULL_OBJECT") == "FULL_OBJECT", u
+    r1 = s3.upload_part(Bucket="sdk", Key="mp/crc64", UploadId=u["UploadId"], PartNumber=1, Body=q1,
+                        ChecksumAlgorithm="CRC64NVME")
+    r2 = s3.upload_part(Bucket="sdk", Key="mp/crc64", UploadId=u["UploadId"], PartNumber=2, Body=q2,
+                        ChecksumAlgorithm="CRC64NVME")
+    assert r1["ChecksumCRC64NVME"] == crc64(q1) and r2["ChecksumCRC64NVME"] == crc64(q2), (r1, r2)
+    r = s3.complete_multipart_upload(
+        Bucket="sdk", Key="mp/crc64", UploadId=u["UploadId"],
+        MultipartUpload={"Parts": [
+            {"PartNumber": 1, "ETag": r1["ETag"], "ChecksumCRC64NVME": r1["ChecksumCRC64NVME"]},
+            {"PartNumber": 2, "ETag": r2["ETag"], "ChecksumCRC64NVME": r2["ChecksumCRC64NVME"]},
+        ]})
+    h = s3.head_object(Bucket="sdk", Key="mp/crc64", ChecksumMode="ENABLED")
+    assert h["ChecksumCRC64NVME"] == crc64(q1 + q2), (h, crc64(q1 + q2))
+    assert h.get("ChecksumType", "FULL_OBJECT") == "FULL_OBJECT", h
+    o = s3.get_object(Bucket="sdk", Key="mp/crc64", ChecksumMode="ENABLED")
+    assert o["Body"].read() == q1 + q2
+    # COMPOSITE CRC64NVME doesn't exist in S3: refused.
+    c = code(lambda: s3.create_multipart_upload(Bucket="sdk", Key="mp/c64", ChecksumAlgorithm="CRC64NVME",
+                                                ChecksumType="COMPOSITE"))
+    assert c == "InvalidRequest", c
+    print("CRC64NVME OK")
+
 # boto3's own managed transfer, in parts of 5 MiB.
 from boto3.s3.transfer import TransferConfig
 import io

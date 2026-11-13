@@ -1408,8 +1408,19 @@ async fn create_upload(
     }
     let meta = meta_of(h)?;
     let algorithm = algorithm_header(h)?;
+    // CRC64NVME is of the whole object only, so FULL_OBJECT unless asked
+    // otherwise, as S3's; the other algorithms are COMPOSITE unless asked.
+    let crc64 = algorithm == Some(Algorithm::Crc64Nvme);
     let full_object = match header(h, "x-amz-checksum-type") {
-        None | Some("COMPOSITE") => false,
+        None => crc64,
+        Some("COMPOSITE") if crc64 => {
+            return Err(ApiError::new(
+                400,
+                "InvalidRequest",
+                "a CRC64NVME checksum is FULL_OBJECT",
+            ));
+        }
+        Some("COMPOSITE") => false,
         Some("FULL_OBJECT") => true,
         Some(_) => {
             return Err(ApiError::new(
@@ -1419,11 +1430,16 @@ async fn create_upload(
             ));
         }
     };
-    if full_object && !matches!(algorithm, Some(Algorithm::Crc32 | Algorithm::Crc32c)) {
+    if full_object
+        && !matches!(
+            algorithm,
+            Some(Algorithm::Crc32 | Algorithm::Crc32c | Algorithm::Crc64Nvme)
+        )
+    {
         return Err(ApiError::new(
             400,
             "InvalidRequest",
-            "a FULL_OBJECT checksum is a CRC32 or CRC32C",
+            "a FULL_OBJECT checksum is a CRC32, CRC32C or CRC64NVME",
         ));
     }
     let m = Multipart {
@@ -1496,6 +1512,7 @@ async fn complete_upload(
             Algorithm::Crc32c,
             Algorithm::Sha1,
             Algorithm::Sha256,
+            Algorithm::Crc64Nvme,
         ] {
             if let Some(v) = p.text_of(&format!("Checksum{}", a.name())) {
                 sums.push((n, a, v.trim().to_string()));
