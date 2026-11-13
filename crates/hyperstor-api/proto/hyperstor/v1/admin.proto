@@ -939,3 +939,240 @@ message MoveProjectRequest {
 message MoveProjectResponse {
   Operation operation = 1;
 }
+
+// Trust in glidex directories (19-administration.md §23.12, D306): offers
+// to a directory's tenants, the directories that redeemed one, and what
+// hyperstor-mgmt relays and pulls for them. A directory is trusted through
+// glidex's own handshake (glidex 19-tenancy.md §12, D63–D73): its feed of
+// tenants and projects makes the realm's records here (20-tenants.md
+// §24.9).
+service TrustService {
+  // Makes an offer to a directory's tenant: its token, shown once (only
+  // its secret's hash is kept), for the tenant's administrator to redeem
+  // at the directory. Write.
+  rpc CreateOffer(CreateOfferRequest) returns (CreateOfferResponse);
+
+  // The offers, open or not. Read.
+  rpc ListOffers(ListOffersRequest) returns (ListOffersResponse);
+
+  // Revokes an open offer. Write.
+  rpc RevokeOffer(RevokeOfferRequest) returns (RevokeOfferResponse);
+
+  // The directories trusted, their tenants and realm, and how their feed
+  // stands. Read.
+  rpc ListTrustedDirectories(ListTrustedDirectoriesRequest) returns (ListTrustedDirectoriesResponse);
+
+  // Ends the trust in one of a directory's tenants here; hyperstor-mgmt
+  // tells the directory. The tenant and its projects stay, unlinked.
+  // Write.
+  rpc EndTrust(EndTrustRequest) returns (EndTrustResponse);
+
+  // Names the operator tenant (glidex 19-tenancy.md §12.1), a tenant of a
+  // trusted directory; none clears it. Write.
+  rpc SetOperator(SetOperatorRequest) returns (SetOperatorResponse);
+
+  // hyperstor-mgmt's alone (its certificate): the cluster key it signs
+  // with towards directories, made on first use.
+  rpc GetTrustKey(GetTrustKeyRequest) returns (GetTrustKeyResponse);
+
+  // hyperstor-mgmt's alone: a directory's POST /trust/v1/redeem, relayed.
+  rpc RelayRedeem(RelayRedeemRequest) returns (RelayRedeemResponse);
+
+  // hyperstor-mgmt's alone: a directory's POST /trust/v1/end, relayed.
+  rpc RelayEnd(RelayEndRequest) returns (RelayEndResponse);
+
+  // hyperstor-mgmt's alone: the directories whose feeds to pull, and the
+  // ends to tell them.
+  rpc GetFeedWork(GetFeedWorkRequest) returns (GetFeedWorkResponse);
+
+  // hyperstor-mgmt's alone: a directory's feed as pulled, applied to the
+  // replica and the records.
+  rpc ApplyFeed(ApplyFeedRequest) returns (ApplyFeedResponse);
+
+  // hyperstor-mgmt's alone: the report to send a directory (D70, glidex
+  // D85).
+  rpc GetTrustReport(GetTrustReportRequest) returns (GetTrustReportResponse);
+
+  // hyperstor-mgmt's alone: an end the directory has been told of.
+  rpc EndNoticed(EndNoticedRequest) returns (EndNoticedResponse);
+}
+
+message TrustOffer {
+  string id = 1;
+  // The glidex tenant's slug, and its directory's issuer.
+  string tenant = 2;
+  string directory = 3;
+  // The name its tenant takes here, and the realm the directory's
+  // tenants go to (made at the redeem unless it exists).
+  string name = 4;
+  string realm = 5;
+  // Where the directory reaches hyperstor-mgmt, and its certificate's
+  // SHA-256.
+  string url = 6;
+  string pin = 7;
+  uint64 created_unix = 8 [json_name = "created_unix"];
+  string created_by = 9 [json_name = "created_by"];
+  uint64 expires_unix = 10 [json_name = "expires_unix"];
+  // "open", "redeemed", "revoked" or "expired".
+  string state = 11;
+}
+
+message CreateOfferRequest {
+  string tenant = 1;
+  string directory = 2;
+  // Default: the slug.
+  string name = 3;
+  // Default: the directory's realm if it has one, else a realm named
+  // after the directory.
+  string realm = 4;
+  string url = 5;
+  string pin = 6;
+  // 1 to 30; 0: 7.
+  uint32 days = 7;
+}
+
+message CreateOfferResponse {
+  TrustOffer offer = 1;
+  // The gxo_ token: shown once.
+  string token = 2;
+}
+
+message ListOffersRequest {}
+
+message ListOffersResponse {
+  repeated TrustOffer offers = 1;
+}
+
+message RevokeOfferRequest {
+  string id = 1;
+}
+
+message RevokeOfferResponse {}
+
+message TrustedTenant {
+  // Its id and slug at the directory.
+  string id = 1;
+  string slug = 2;
+  // Its tenant here, 0 if none.
+  uint32 tenant = 3;
+  string name = 4;
+  bool operator = 5;
+}
+
+message TrustedDirectory {
+  // trusted-<16 hex>.
+  string id = 1;
+  string issuer = 2;
+  string api = 3;
+  string realm = 4;
+  repeated TrustedTenant tenants = 5;
+  // The feed: its revision, when it last changed and when the directory
+  // last answered, and what couldn't be applied from it, each retried.
+  string revision = 6;
+  uint64 applied_unix = 7 [json_name = "applied_unix"];
+  uint64 checked_unix = 8 [json_name = "checked_unix"];
+  repeated string blocked = 9;
+  uint64 created_unix = 10 [json_name = "created_unix"];
+}
+
+message ListTrustedDirectoriesRequest {}
+
+message ListTrustedDirectoriesResponse {
+  repeated TrustedDirectory directories = 1;
+  // The operator tenant, 0 if none.
+  uint32 operator = 2;
+}
+
+message EndTrustRequest {
+  // The directory's issuer or id, and the glidex tenant's slug or id.
+  string directory = 1;
+  string tenant = 2;
+}
+
+message EndTrustResponse {}
+
+message SetOperatorRequest {
+  // 0: none.
+  uint32 tenant = 1;
+}
+
+message SetOperatorResponse {}
+
+message GetTrustKeyRequest {}
+
+message GetTrustKeyResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  string kid = 2;
+  // PKCS#8 DER: secret, held in memory only.
+  bytes pkcs8 = 3;
+}
+
+message RelayRedeemRequest {
+  // The peer assertion, and the body as the directory sent it.
+  string assertion = 1;
+  bytes body = 2;
+}
+
+message RelayRedeemResponse {
+  // The HTTP status and JSON body to answer the directory with.
+  uint32 status = 1;
+  bytes body = 2;
+}
+
+message RelayEndRequest {
+  string assertion = 1;
+  bytes body = 2;
+}
+
+message RelayEndResponse {
+  uint32 status = 1;
+  bytes body = 2;
+}
+
+message FeedTarget {
+  // A glidex TrustedDirectory record (JSON), and the feed's revision.
+  bytes directory = 1;
+  string revision = 2;
+}
+
+message EndNotice {
+  // A glidex TrustedDirectory record (JSON) as it was, and the glidex
+  // tenant's id.
+  bytes directory = 1;
+  string tenant = 2;
+}
+
+message GetFeedWorkRequest {}
+
+message GetFeedWorkResponse {
+  string cluster_id = 1 [json_name = "cluster_id"];
+  repeated FeedTarget targets = 2;
+  repeated EndNotice ends = 3;
+}
+
+message ApplyFeedRequest {
+  string directory = 1;
+  // A glidex Snapshot (JSON); empty: unchanged since `revision`.
+  bytes snapshot = 2;
+  string revision = 3;
+}
+
+message ApplyFeedResponse {
+  repeated string blocked = 1;
+}
+
+message GetTrustReportRequest {
+  string directory = 1;
+}
+
+message GetTrustReportResponse {
+  // A glidex ClusterReport of StorageTenantReport (JSON).
+  bytes report = 1;
+}
+
+message EndNoticedRequest {
+  string directory = 1;
+  string tenant = 2;
+}
+
+message EndNoticedResponse {}

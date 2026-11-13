@@ -22,7 +22,9 @@ jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 base64 = "0.23"
 # A fake tailscaled (glidex's), for mgmt's Tailscale certificates (D109).
 glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca", features = ["test-util"] }
-tokio = { version = "1", features = ["rt", "net"] }
+# A fake glidex directory, for mgmt's trust in directories (D306).
+glidex-trust = { git = "https://github.com/CMKL-APEX/glidex", rev = "aeae1abbaa5ede650db7e3ea397f29ca7259a1c0", features = ["fake"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net"] }
 # HTTPS to hyperstor-mgmt, verified against the cluster's root (D108).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 libc.workspace = true

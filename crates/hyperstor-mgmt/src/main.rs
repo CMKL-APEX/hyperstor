@@ -70,6 +70,7 @@ mod oidc;
 mod people;
 mod policy;
 mod proxy;
+mod trust;
 mod web;
 
 const PAGE: &str = include_str!("dashboard.html");
@@ -338,6 +339,10 @@ fn main() {
         }
         if state.login.is_some() {
             tokio::spawn(audit_ship::ship(state.members.clone()));
+            // Directories' feeds and reports (D306), over HTTPS only.
+            if state.https {
+                tokio::spawn(trust::run(state.members.clone()));
+            }
         }
         let acceptor = web.map(|w| tokio_rustls::TlsAcceptor::from(w.config));
         let limits = conn::Limits::for_this_process();
@@ -826,6 +831,16 @@ async fn handle(state: &State, req: Req, peer: SocketAddr) -> Resp {
         return respond(421, "text/plain", "misdirected request\n");
     }
     let path = req.uri().path().to_string();
+    // A directory's redeem or end (D306): its peer assertion is its
+    // credential, checked by the map service; HTTPS only, as the directory
+    // pins mgmt's certificate.
+    if trust::is_trust_path(&path) && state.https && state.login.is_some() {
+        if req.method() != http::Method::POST {
+            return respond(405, "text/plain", "POST\n");
+        }
+        let (status, body) = trust::relay(&state.members, &path, req.headers(), req.body()).await;
+        return respond(status, "application/json", body);
+    }
     let read = req.method() == http::Method::GET || req.method() == http::Method::HEAD;
     match &state.login {
         None => {

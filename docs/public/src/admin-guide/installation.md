@@ -391,6 +391,52 @@ hyperstorctl s3 key create --tenant 43 --project 7    # its new buckets go in pr
   buckets in the project puts them in its default project from then on.
   The move can't be cancelled; if a bucket can't move it is undone.
 
+### glidex directories
+
+A glidex directory's tenants can have their storage here, as they have
+glidex clusters: the cluster trusts the directory through glidex's own
+handshake, and the directory's feed of tenants and projects makes them
+here. A directory is a realm; its tenants and projects are tenants and
+projects of that realm.
+
+```bash
+# An offer to tenant acme of a directory; mgmt as the directory reaches it.
+hyperstorctl admission offer --tenant acme --directory https://id.acme.example/d/acme \
+    --url https://storage.example.org:8852
+# Prints gxo_...: the tenant's administrator redeems it at the directory:
+#   gxctl tenant opt-in --offer gxo_...
+hyperstorctl admission list
+hyperstorctl admission directories         # the directory, its realm, tenants and feed
+hyperstorctl admission end --directory https://id.acme.example/d/acme --tenant acme
+hyperstorctl cluster set-operator --tenant 12
+```
+
+- mgmt must serve HTTPS (`--web-tls`) at `--url`, reachable from the
+  directory: the directory redeems the offer there and pins the
+  certificate's SHA-256, which `admission offer` reads from the address
+  (or takes from `--pin`) and prints. Behind a proxy that serves its own
+  certificate, give the one the directory sees.
+- The offer is spent by its first redeem, and lasts 7 days (`--days`,
+  up to 30). Its token is printed once; only a hash of its secret is
+  kept.
+- At the redeem, the directory's realm is made (named after the
+  directory, or `--realm`), and the tenant in it (named after its slug,
+  or `--name`). A local tenant keeps its name: an offer whose name is
+  taken is refused.
+- From then on, the mgmt on the host of the map service's leader pulls
+  the directory's feed every 30 s. Projects made, renamed and deleted at
+  the directory are made, renamed and deleted here; one that moves to
+  another tenant of the directory moves here too (`project move`).
+  A project the directory deleted that still holds volumes or buckets
+  stays here, unlinked. Tenants and projects made here by hand are never
+  changed. What can't be done (a move refused) is listed by `admission
+  directories` and tried again at every pull.
+- Every 5 minutes mgmt reports each tenant's volumes, their provisioned
+  size, buckets, their bytes and S3 keys to the directory, which shows
+  them on the tenant's page.
+- Ending the trust, from either side, keeps the tenant and its projects,
+  unlinked. Logins through a directory come next.
+
 ## Running as services by hand
 
 Without the installer, a minimal unit for a storage node:

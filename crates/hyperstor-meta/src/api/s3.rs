@@ -78,7 +78,7 @@ impl Api {
     }
 
     /// The cluster key, which seals and opens S3's secrets.
-    fn cluster_key(&self) -> Result<Arc<hyperstor_pki::ClusterKey>, ConnectError> {
+    pub(super) fn cluster_key(&self) -> Result<Arc<hyperstor_pki::ClusterKey>, ConnectError> {
         self.admin
             .signing
             .as_ref()

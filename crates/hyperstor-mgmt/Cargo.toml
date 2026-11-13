@@ -30,6 +30,11 @@ cedar-policy = "4.13"
 # re-read when they change, the node's Tailscale certificates; pinned to a
 # revision of glidex, as glidex-auth.
 glidex-tls = { git = "https://github.com/CMKL-APEX/glidex", rev = "9b69618e53097a32f7c4d6e0f83878bde7116dca" }
+# The cluster side of trust in glidex directories (19-administration.md
+# §23.12, D306; glidex 19-tenancy.md D84): the cluster key, peer
+# assertions, the feed and reports. At a later revision than the others,
+# the first that has it.
+glidex-trust = { git = "https://github.com/CMKL-APEX/glidex", rev = "aeae1abbaa5ede650db7e3ea397f29ca7259a1c0" }
 # glidex-tls logs through tracing: to standard error, as mgmt's own lines.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 ring = "0.17"

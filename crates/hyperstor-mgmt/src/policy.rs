@@ -147,6 +147,14 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.CreateS3Key", Group::Secure, true),
     ("S3Service.ListS3Keys", Group::Secure, false),
     ("S3Service.RevokeS3Key", Group::Secure, false),
+    // Whom the cluster trusts (D306): an offer is a credential to a
+    // directory; ending trust and the operator tenant, a fresh login.
+    ("TrustService.CreateOffer", Group::Secure, true),
+    ("TrustService.ListOffers", Group::Secure, false),
+    ("TrustService.RevokeOffer", Group::Secure, false),
+    ("TrustService.ListTrustedDirectories", Group::Secure, false),
+    ("TrustService.EndTrust", Group::Secure, true),
+    ("TrustService.SetOperator", Group::Secure, true),
     // Which gateway takes a tenant's keys (D250): a fresh login.
     ("RealmService.SetTenantRealm", Group::Secure, true),
     // Which volumes a host may attach (D251).
@@ -174,6 +182,15 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.GetS3Gateway", Group::Machine, false),
     // The cluster key, for map service members alone (D162).
     ("CaService.GetClusterKey", Group::Machine, false),
+    // mgmt's own calls for directories (D306): their key, relays, feeds
+    // and reports.
+    ("TrustService.GetTrustKey", Group::Machine, false),
+    ("TrustService.RelayRedeem", Group::Machine, false),
+    ("TrustService.RelayEnd", Group::Machine, false),
+    ("TrustService.GetFeedWork", Group::Machine, false),
+    ("TrustService.ApplyFeed", Group::Machine, false),
+    ("TrustService.GetTrustReport", Group::Machine, false),
+    ("TrustService.EndNoticed", Group::Machine, false),
 ];
 
 /// What a grant in a realm reaches (D252, D264, D265): the calls about a

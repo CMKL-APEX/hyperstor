@@ -161,6 +161,11 @@
 //!   `create-volume`, `clone-volume` and `s3 key create` take `--project
 //!   ID`; `project move --project ID --to TENANT [--force] [--wait SECS]`
 //!   moves a project to another tenant as an operation (§24.9.1, D303);
+//! - `admission offer --tenant SLUG --directory ISSUER --url URL [--pin
+//!   SHA256] [--name N] [--realm R] [--days N]`, `admission list`,
+//!   `admission revoke --id OFFER`, `admission directories`, `admission
+//!   end --directory ISSUER --tenant SLUG`, `cluster set-operator --tenant
+//!   ID`: trust in glidex directories (19-administration.md §23.12, D306);
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -209,12 +214,13 @@ use hyperstor_api::{
     AuditServiceClient, CaServiceClient, ClusterServiceClient, MapServiceClient,
     MemberServiceClient, NodeServiceClient, OperationServiceClient, RealmServiceClient,
     S3ServiceClient, TenantServiceClient, TokenServiceClient, TrashServiceClient,
+    TrustServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|cluster set-operator [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--days N]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -415,6 +421,17 @@ struct Args {
     project: Option<u32>,
     /// `project move`: the tenant it goes to (D303).
     to: Option<u32>,
+    /// `--tenant` as given: `admission offer|end` name a glidex tenant by
+    /// its slug (D306).
+    tenant_text: Option<String>,
+    /// `admission offer|end`: a directory's issuer (or, to end, its id).
+    directory: Option<String>,
+    /// `admission offer`: mgmt's address for directories, its
+    /// certificate's SHA-256 (read from the address when not given), and
+    /// how many days the offer lasts.
+    url: Option<String>,
+    pin: Option<String>,
+    days: Option<u32>,
     /// `realm tenant|pool|host`, `s3 placement set|delete`: a realm, or
     /// for `realm pool` and `realm host` realms, comma-separated, or `any`
     /// (D248, D249, D251).
@@ -530,6 +547,11 @@ fn main() {
         realm: None,
         project: None,
         to: None,
+        tenant_text: None,
+        directory: None,
+        url: None,
+        pin: None,
+        days: None,
         description: None,
         data_pool: None,
         index_pool: None,
@@ -560,7 +582,15 @@ fn main() {
             },
             "--role" => a.role = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--ttl" => a.ttl = num(it.next()),
-            "--tenant" => a.tenant = Some(num(it.next())),
+            "--tenant" => {
+                let v = it.next().cloned().unwrap_or_else(|| usage());
+                a.tenant = v.parse().ok();
+                a.tenant_text = Some(v);
+            }
+            "--directory" => a.directory = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--url" => a.url = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--pin" => a.pin = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--days" => a.days = Some(num(it.next())),
             "--project" => a.project = Some(num(it.next())),
             "--to" => a.to = Some(num(it.next())),
             "--realm" => a.realm = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -746,7 +776,7 @@ fn main() {
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
             | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network" | "tenant"
-            | "project"
+            | "project" | "admission" | "cluster"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -778,6 +808,11 @@ fn main() {
                         )
                     }
                     "tenant" => matches!(sub, Some("create" | "list" | "rename" | "delete")),
+                    "admission" => matches!(
+                        sub,
+                        Some("offer" | "list" | "revoke" | "directories" | "end")
+                    ),
+                    "cluster" => matches!(sub, Some("set-operator")),
                     "project" => {
                         matches!(sub, Some("create" | "list" | "rename" | "delete" | "move"))
                     }
@@ -818,6 +853,22 @@ fn main() {
     hint(format!(
         "wrong or missing options for `{cmd}`; `hyperstorctl help {cmd}` lists them"
     ));
+    // Trust in directories (D306): `admission offer|end` name a glidex
+    // tenant by its slug; everything else a tenant by its number.
+    let admission = matches!(cmd.as_str(), "admission offer" | "admission end");
+    if admission {
+        a.tenant = None;
+    } else if a.tenant_text.is_some() && a.tenant.is_none() {
+        usage();
+    }
+    if (admission && (a.tenant_text.is_none() || a.directory.is_none()))
+        || (cmd == "admission offer") != a.url.is_some()
+        || (cmd != "admission offer" && (a.pin.is_some() || a.days.is_some()))
+        || (!admission && a.directory.is_some())
+        || (cmd != "admission offer" && cmd.starts_with("admission") && !a.name.is_empty())
+    {
+        usage();
+    }
     let timeout = timeout.or_else(|| {
         let v = std::env::var("HYPERSTOR_TIMEOUT").ok()?;
         Some(v.parse().unwrap_or_else(|_| {
@@ -963,7 +1014,12 @@ fn main() {
     let placement_set = cmd == "s3 placement set";
     let realm_given = matches!(
         cmd.as_str(),
-        "realm tenant" | "realm pool" | "realm host" | "s3 placement set" | "s3 placement delete"
+        "realm tenant"
+            | "realm pool"
+            | "realm host"
+            | "s3 placement set"
+            | "s3 placement delete"
+            | "admission offer"
     );
     // Buckets (D246): show and delete name one by --tenant and --name; list
     // may keep to one tenant.
@@ -971,7 +1027,12 @@ fn main() {
     let tenant_needed = bucket_one
         || matches!(
             cmd.as_str(),
-            "s3 key create" | "realm tenant" | "tenant rename" | "tenant delete" | "project create"
+            "s3 key create"
+                | "realm tenant"
+                | "tenant rename"
+                | "tenant delete"
+                | "project create"
+                | "cluster set-operator"
         );
     let tenant_ok = match a.tenant {
         // A volume's tenant is optional (D258); `tenant create` may adopt
@@ -1031,6 +1092,7 @@ fn main() {
         cmd.as_str(),
         "token revoke"
             | "s3 key revoke"
+            | "admission revoke"
             | "op get"
             | "op watch"
             | "op cancel"
@@ -1658,6 +1720,9 @@ where
         "token" => return tokens(TokenServiceClient::new(transport, config), cmd, a).await,
         "s3" => return s3(S3ServiceClient::new(transport, config), cmd, a).await,
         "realm" => return realms(RealmServiceClient::new(transport, config), cmd, a).await,
+        "admission" | "cluster" => {
+            return trust(TrustServiceClient::new(transport, config), cmd, a).await;
+        }
         "tenant" | "project" => {
             let ops = OperationServiceClient::new(transport.clone(), config.clone());
             return match tenants(TenantServiceClient::new(transport, config), cmd, a).await? {
@@ -3215,6 +3280,216 @@ where
         _ => usage(),
     }
     Ok(Next::Exit(0))
+}
+
+/// `admission offer|list|revoke|directories|end` and `cluster
+/// set-operator`: trust in glidex directories (19-administration.md
+/// §23.12, D306).
+async fn trust<T>(
+    client: TrustServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let slug = a.tenant_text.clone().unwrap_or_default();
+    let directory = a.directory.clone().unwrap_or_default();
+    match cmd {
+        "admission offer" => {
+            let url = a.url.clone().expect("checked with the arguments");
+            // The certificate the directory will pin: as given, else the
+            // one the address serves now (said, so it can be compared).
+            let pin = match &a.pin {
+                Some(p) => p.clone(),
+                None => match certificate_pin(&url) {
+                    Ok(p) => {
+                        eprintln!("hyperstorctl: {url} serves a certificate with SHA-256 {p}");
+                        p
+                    }
+                    Err(e) => {
+                        eprintln!("hyperstorctl: {url}: {e}; give its SHA-256 with --pin");
+                        return Ok(Next::Exit(1));
+                    }
+                },
+            };
+            let r = client
+                .create_offer(pb::CreateOfferRequest {
+                    tenant: slug.clone(),
+                    directory: directory.clone(),
+                    name: a.name.clone(),
+                    realm: a.realm.clone().unwrap_or_default(),
+                    url,
+                    pin,
+                    days: a.days.unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            let o = r.offer.as_option().cloned().unwrap_or_default();
+            show(a, &r, || {
+                format!(
+                    "offer {} made for tenant {slug} of {} (tenant {} here, realm {}), until {}\nIts token, shown once: the tenant's administrator redeems it at the directory\n(gxctl tenant opt-in --offer TOKEN):\n{}\n",
+                    o.id,
+                    o.directory,
+                    o.name,
+                    o.realm,
+                    utc(o.expires_unix),
+                    r.token
+                )
+            });
+        }
+        "admission list" => {
+            let r = client
+                .list_offers(pb::ListOffersRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || offers_text(&r));
+        }
+        "admission revoke" => {
+            let id = a.id.clone().expect("checked with the arguments");
+            client
+                .revoke_offer(pb::RevokeOfferRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!("offer {id} revoked");
+        }
+        "admission directories" => {
+            let r = client
+                .list_trusted_directories(pb::ListTrustedDirectoriesRequest::default())
+                .await?
+                .into_owned();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            show(a, &r, || directories_text(&r, now));
+        }
+        "admission end" => {
+            client
+                .end_trust(pb::EndTrustRequest {
+                    directory: directory.clone(),
+                    tenant: slug.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            println!(
+                "trust in tenant {slug} of {directory} ended; its tenant here stays, unlinked, and the directory is told"
+            );
+        }
+        "cluster set-operator" => {
+            let t = a.tenant.expect("checked with the arguments");
+            client
+                .set_operator(pb::SetOperatorRequest {
+                    tenant: t,
+                    ..Default::default()
+                })
+                .await?;
+            if t == 0 {
+                println!("no operator tenant");
+            } else {
+                println!("tenant {t} is the operator tenant");
+            }
+        }
+        _ => usage(),
+    }
+    Ok(Next::Exit(0))
+}
+
+/// The SHA-256 of the certificate `url` (`https://host[:port]`) serves:
+/// what a directory pins (glidex D63). Read without checking it, as the
+/// directory will trust exactly this one.
+fn certificate_pin(url: &str) -> Result<String, String> {
+    use std::io::Write as _;
+    let uri: http::Uri = url.parse().map_err(|e| format!("{e}"))?;
+    if uri.scheme_str() != Some("https") {
+        return Err("not an https:// address".into());
+    }
+    let host = uri
+        .host()
+        .ok_or("no host")?
+        .trim_matches(['[', ']'])
+        .to_string();
+    let port = uri.port_u16().unwrap_or(443);
+    let tcp = std::net::TcpStream::connect((host.as_str(), port)).map_err(|e| e.to_string())?;
+    tcp.set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .dangerous()
+    .with_custom_certificate_verifier(std::sync::Arc::new(AnyCertificate))
+    .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
+    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name)
+        .map_err(|e| e.to_string())?;
+    let mut s = rustls::StreamOwned::new(conn, tcp);
+    // The handshake, then the certificate it brought.
+    let _ = s.flush();
+    while s.conn.is_handshaking() {
+        s.conn.complete_io(&mut s.sock).map_err(|e| e.to_string())?;
+    }
+    let leaf = s
+        .conn
+        .peer_certificates()
+        .and_then(|c| c.first())
+        .ok_or("no certificate")?;
+    Ok(sha256_hex(leaf.as_ref()))
+}
+
+/// Lower-case hex SHA-256 of `b`.
+fn sha256_hex(b: &[u8]) -> String {
+    ring::digest::digest(&ring::digest::SHA256, b)
+        .as_ref()
+        .iter()
+        .map(|x| format!("{x:02x}"))
+        .collect()
+}
+
+/// Takes any certificate: only to read the one an address serves, which
+/// the operator then hands a directory to pin.
+#[derive(Debug)]
+struct AnyCertificate;
+
+impl rustls::client::danger::ServerCertVerifier for AnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 /// `realm create|list|delete|tenant|pool` (20-tenants.md §24.8, D248,

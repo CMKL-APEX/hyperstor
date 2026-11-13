@@ -44,6 +44,7 @@ mod realms;
 mod s3;
 mod tenants;
 mod trash;
+mod trust;
 pub use admin::{Signing, parse_token};
 
 struct Api {
@@ -55,6 +56,9 @@ struct Api {
     buckets: Buckets,
     /// Joins, renewals, tokens and operations (`admin`).
     admin: admin::State,
+    /// Directories' peer assertions seen while they could be replayed
+    /// (glidex D63): this member's, as the leader answers them.
+    replays: glidex_trust::Replays,
 }
 
 /// What a call needs of its caller.
@@ -4183,6 +4187,7 @@ pub fn spawn(
                     cluster,
                     buckets: Default::default(),
                     admin: admin::State::new(signing, root, api_address, runner),
+                    replays: Default::default(),
                 });
                 let router = ClusterServiceExt::register(api.clone(), connectrpc::Router::new());
                 let router = hyperstor_api::TrashServiceExt::register(api.clone(), router);
@@ -4190,6 +4195,7 @@ pub fn spawn(
                 let router = s3::register(api.clone(), router);
                 let router = realms::register(api.clone(), router);
                 let router = tenants::register(api.clone(), router);
+                let router = trust::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);
                 if let Some(u) = unix {
