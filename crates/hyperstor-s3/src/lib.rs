@@ -209,6 +209,17 @@ pub fn valid_bucket_name(name: &str) -> bool {
         && name.parse::<std::net::Ipv4Addr>().is_err()
 }
 
+/// What [`S3::move_bucket`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Moved {
+    /// Moved now.
+    Now,
+    /// Moved before (a resumed move).
+    Already,
+    /// Not there under either tenant: deleted meanwhile.
+    Gone,
+}
+
 /// A bucket: its table and its record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bucket {
@@ -394,6 +405,42 @@ impl S3 {
             .await;
         match made {
             Ok(t) => Bucket::of(t),
+            Err(KvError::TableExists(_)) => Err(S3Error::BucketExists(name.into())),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Moves bucket `name` from tenant `from` to tenant `to` (20-tenants.md
+    /// §24.9.1, D303): its table renamed under the new tenant and its
+    /// record naming it, in one atomic operation, with its table id, ranges
+    /// and objects kept. `table` is the bucket's table id when the move
+    /// began: a move resumed after it was done answers [`Moved::Already`],
+    /// and a bucket of that name made since under `from` is another
+    /// bucket, left alone. Its project stays. The old tenant's keys no
+    /// longer find it from their next request: no gateway caches a bucket.
+    pub async fn move_bucket(&self, from: u32, to: u32, name: &str, table: u64) -> Result<Moved> {
+        let new_name = bucket_table(to, name);
+        if let Some(t) = self.kv.table(&new_name).await? {
+            return if t.id == table {
+                Ok(Moved::Already)
+            } else {
+                Err(S3Error::BucketExists(name.into()))
+            };
+        }
+        let Some(old) = self.kv.table(&bucket_table(from, name)).await? else {
+            return Ok(Moved::Gone);
+        };
+        if old.id != table {
+            return Ok(Moved::Gone);
+        }
+        let mut info = BucketInfo::decode(&old.info)?;
+        info.tenant = to;
+        match self
+            .kv
+            .rename_table(&old.name, &new_name, &info.encode())
+            .await
+        {
+            Ok(_) => Ok(Moved::Now),
             Err(KvError::TableExists(_)) => Err(S3Error::BucketExists(name.into())),
             Err(e) => Err(e.into()),
         }

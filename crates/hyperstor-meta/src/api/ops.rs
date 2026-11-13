@@ -74,6 +74,8 @@ pub(super) struct Runner {
     /// This member's map address and cluster API, recorded with each
     /// lead so the others can name the leader's API.
     addresses: Option<(String, String)>,
+    /// The replicated store: tenants and projects, realms (D303's moves).
+    db: Option<Arc<crate::store::Db>>,
 }
 
 impl Runner {
@@ -82,6 +84,7 @@ impl Runner {
         ops: Arc<Ops>,
         settings: Option<Arc<crate::settings::Settings>>,
         addresses: Option<(String, String)>,
+        db: Option<Arc<crate::store::Db>>,
     ) -> Runner {
         Runner {
             tx,
@@ -90,6 +93,7 @@ impl Runner {
             settings,
             fenced: Arc::default(),
             addresses,
+            db,
         }
     }
 
@@ -352,6 +356,29 @@ impl Runner {
                     let r = me.delete_pool(&op, pool).await;
                     me.finish(&op, r, format!("pool {pool} deleted")).await;
                 }
+                Work::MoveProject { project, from, to } => {
+                    let steps = Moving { me: &me, op: &op };
+                    match crate::transfer::run(&steps, project, from, to).await {
+                        Ok(n) => {
+                            let done = format!(
+                                "project {project} moved from tenant {from} to tenant {to}, with {n} bucket(s)"
+                            );
+                            me.finish(&op, Some(Ok(())), done).await;
+                        }
+                        // Another member carries it on.
+                        Err(crate::transfer::Stop::Lost) => {}
+                        Err(crate::transfer::Stop::Failed(why)) => {
+                            let why =
+                                format!("undone, project {project} stays tenant {from}'s: {why}");
+                            me.finish(
+                                &op,
+                                Some(Err((crate::VolumeFault::InUse, why))),
+                                String::new(),
+                            )
+                            .await;
+                        }
+                    }
+                }
                 Work::Purge { volume, epoch } => {
                     let (reply, rx) = oneshot();
                     let sent = me.tx.send(Admin::Trash {
@@ -507,6 +534,7 @@ impl Runner {
             Work::DeletePool { .. } => "DeletePool",
             Work::RemoveDevice { .. } => "RemoveDevice",
             Work::Scrub { .. } => "StartScrub",
+            Work::MoveProject { .. } => "MoveProject",
             _ => "PurgeFromTrash",
         };
         audit(
@@ -932,5 +960,187 @@ pub(super) fn purge_target(volume: u128, epoch: Option<u64>) -> String {
     match epoch {
         Some(e) => format!("volume {volume:032x} snapshot {e}"),
         None => format!("volume {volume:032x}"),
+    }
+}
+
+/// A project move's steps (D303) as this member does them: buckets through
+/// the map service's client of the cluster, records in the replicated
+/// store. An error while this member doesn't lead is a failover: the next
+/// leader resumes the operation.
+struct Moving<'a> {
+    me: &'a Runner,
+    op: &'a Op,
+}
+
+impl Moving<'_> {
+    /// Bucket operation `mk()`: a failure while this member doesn't lead is
+    /// a failover; a name taken is final; others are tried again for a
+    /// while (a storage path that is busy), then final.
+    async fn bucket_retry(
+        &self,
+        mk: impl Fn() -> crate::BucketOp,
+    ) -> Result<crate::BucketDone, crate::transfer::Stop> {
+        use crate::transfer::Stop;
+        let mut last = String::new();
+        for _ in 0..30 {
+            if !self.me.leads().await {
+                return Err(Stop::Lost);
+            }
+            match self.bucket_op(mk()).await {
+                Ok(v) => return Ok(v),
+                Err((crate::VolumeFault::Exists, e)) => return Err(Stop::Failed(e)),
+                Err((_, e)) => last = e,
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        Err(Stop::Failed(last))
+    }
+
+    async fn db_write(
+        &self,
+        f: impl FnOnce(&crate::store::Db) -> Result<(), TokenError> + Send + 'static,
+    ) -> Result<(), crate::transfer::Stop> {
+        use crate::transfer::Stop;
+        let Some(db) = self.me.db.clone() else {
+            return Err(Stop::Failed("this map service keeps no store".into()));
+        };
+        match tokio::task::spawn_blocking(move || f(&db)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(TokenError::NotLeader)) => Err(Stop::Lost),
+            Ok(Err(e)) if !self.me.leads().await => {
+                eprintln!("hyperstor-meta: a project move stops here: {e:?}");
+                Err(Stop::Lost)
+            }
+            Ok(Err(e)) => Err(Stop::Failed(format!("{e:?}"))),
+            Err(e) => Err(Stop::Failed(e.to_string())),
+        }
+    }
+
+    /// The map's view of realms and moved projects, from the store (D259,
+    /// D303): storage nodes then check host bindings by the new tenant.
+    async fn sync_map(&self) {
+        let Some(db) = self.me.db.clone() else { return };
+        let Ok(Ok((realms, tenancy))) = tokio::task::spawn_blocking(move || {
+            Ok::<_, TokenError>((crate::realms::load(&db)?, crate::tenancy::load(&db)?))
+        })
+        .await
+        else {
+            return;
+        };
+        let (reply, rx) = oneshot();
+        if self
+            .me
+            .tx
+            .send(Admin::SyncRealms {
+                realms,
+                projects: tenancy.map_view(true),
+                reply,
+            })
+            .is_ok()
+        {
+            let _ = rx.recv().await;
+        }
+    }
+
+    async fn bucket_op(
+        &self,
+        op: crate::BucketOp,
+    ) -> Result<crate::BucketDone, (crate::VolumeFault, String)> {
+        let (reply, rx) = oneshot();
+        self.me.tx.send(Admin::Buckets { op, reply }).map_err(|_| {
+            (
+                crate::VolumeFault::Unavailable,
+                "map service stopped".to_string(),
+            )
+        })?;
+        rx.recv().await.unwrap_or_else(|| {
+            Err((
+                crate::VolumeFault::Unavailable,
+                "map service stopped".into(),
+            ))
+        })
+    }
+}
+
+impl crate::transfer::Steps for Moving<'_> {
+    async fn buckets(
+        &self,
+        tenant: u32,
+        project: u32,
+    ) -> Result<Vec<(String, u64)>, crate::transfer::Stop> {
+        let crate::BucketDone::List(rows) = self
+            .bucket_retry(|| crate::BucketOp::List {
+                tenant: Some(tenant),
+            })
+            .await?
+        else {
+            return Err(crate::transfer::Stop::Failed("not a list".into()));
+        };
+        Ok(rows
+            .into_iter()
+            .filter(|b| b.project == project)
+            .map(|b| (b.name, b.table))
+            .collect())
+    }
+
+    async fn move_bucket(
+        &self,
+        from: u32,
+        to: u32,
+        name: &str,
+        table: u64,
+    ) -> Result<(), crate::transfer::Stop> {
+        let target = format!("bucket {from}/{name}");
+        let r = self
+            .bucket_retry(|| crate::BucketOp::Move {
+                from,
+                to,
+                name: name.to_string(),
+                table,
+            })
+            .await;
+        // Each bucket audited, under the call that started the move.
+        let outcome = match &r {
+            Ok(crate::BucketDone::Moved(hyperstor_s3::Moved::Now)) => {
+                format!("ok, now {to}/{name}")
+            }
+            Ok(crate::BucketDone::Moved(hyperstor_s3::Moved::Already)) => {
+                format!("ok, {to}/{name} already")
+            }
+            Ok(_) => "ok, gone meanwhile".to_string(),
+            Err(crate::transfer::Stop::Failed(e)) => format!("failed: {e}"),
+            Err(crate::transfer::Stop::Lost) => return Err(crate::transfer::Stop::Lost),
+        };
+        audit(&self.op.created_by, "MoveProject", &target, &outcome);
+        r?;
+        let id = self.op.id.clone();
+        let _ = self
+            .me
+            .store(move |s| {
+                s.update(&id, |o| {
+                    if o.running() && o.done + 1 < o.total {
+                        o.done += 1;
+                    }
+                })
+            })
+            .await;
+        Ok(())
+    }
+
+    async fn finish(&self, project: u32, to: u32) -> Result<(), crate::transfer::Stop> {
+        self.db_write(move |db| crate::tenancy::finish_move(db, project, to))
+            .await?;
+        self.sync_map().await;
+        Ok(())
+    }
+
+    async fn undo(&self, project: u32) -> Result<(), crate::transfer::Stop> {
+        self.db_write(move |db| crate::tenancy::undo_move(db, project))
+            .await
+    }
+
+    async fn running(&self) -> bool {
+        // Not cancelled (D303): a move ends moved, or undone.
+        true
     }
 }

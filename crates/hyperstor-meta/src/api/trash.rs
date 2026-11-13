@@ -84,12 +84,13 @@ impl TrashService for Api {
             return Err(ConnectError::internal("unexpected result"));
         };
         let names = self.realm_names(&scope).await;
+        let tenancy = self.tenancy_names(&scope).await;
         Ok(pb::ListTrashResponse {
             items: items
                 .iter()
                 .filter(|t| scope.container(t.tenant(), t.project()))
                 .map(|t| pb::TrashItem {
-                    realm: names.realm_name(t.tenant()),
+                    realm: names.realm_name(tenancy.tenant_of(t.tenant(), t.project())),
                     ..item_pb(self, t)
                 })
                 .collect(),

@@ -378,6 +378,11 @@ pub struct ClusterMap {
     /// Tenants not in the realm `default` (D248), while any host is
     /// bound: what storage nodes need to find a volume's realm.
     pub tenant_realms: BTreeMap<u32, u32>,
+    /// Projects moved to another tenant since they were made (20-tenants.md
+    /// §24.9.1, D303), and their tenant now, while any host is bound: a
+    /// volume's header names its project and the tenant it was made in, so
+    /// a moved project's volumes take their tenant from here.
+    pub project_tenants: BTreeMap<u32, u32>,
     /// Devices an operator asked to convert to v0.0.8's shard format
     /// (D274, `hyperstorctl device upgrade`): each node converts its own
     /// the next time it opens them, and the map service drops a device
@@ -617,14 +622,28 @@ impl ClusterMap {
         &mut self,
         hosts: BTreeMap<String, Vec<u32>>,
         tenants: BTreeMap<u32, u32>,
+        projects: BTreeMap<u32, u32>,
     ) -> bool {
-        if self.host_realms == hosts && self.tenant_realms == tenants {
+        if self.host_realms == hosts
+            && self.tenant_realms == tenants
+            && self.project_tenants == projects
+        {
             return false;
         }
         self.host_realms = hosts;
         self.tenant_realms = tenants;
+        self.project_tenants = projects;
         self.epoch += 1;
         true
+    }
+
+    /// The tenant of a volume whose header names `tenant` and `project`:
+    /// a moved project's tenant now (D303), else the header's.
+    pub fn volume_tenant(&self, tenant: u32, project: u32) -> u32 {
+        self.project_tenants
+            .get(&project)
+            .copied()
+            .unwrap_or(tenant)
     }
 
     /// Whether host `host` may attach a volume of `tenant` (D251, D259):
@@ -1871,8 +1890,12 @@ impl ClusterMap {
         // roles, leases and weights (D209, D237); 18: claims and lending
         // settings (D205, D209, D239); 19: hosts bound to realms and
         // tenants' realms (D259); 20: devices to convert to v0.0.8's shard
-        // format (D274), asked only once every node reads it.
-        let format = if !self.upgrades.is_empty() {
+        // format (D274), asked only once every node reads it; 21: moved
+        // projects' tenants (D303), only while a host is bound and a
+        // project has moved.
+        let format = if !self.project_tenants.is_empty() {
+            21
+        } else if !self.upgrades.is_empty() {
             20
         } else if !self.host_realms.is_empty() || !self.tenant_realms.is_empty() {
             19
@@ -2167,13 +2190,19 @@ impl ClusterMap {
                 e.u32(*d);
             });
         }
+        if format >= 21 {
+            let p: Vec<(&u32, &u32)> = self.project_tenants.iter().collect();
+            e.seq(&p, |e, (p, t)| {
+                e.u32(**p).u32(**t);
+            });
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=20).contains(&v) {
+        if !(1..=21).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2484,6 +2513,12 @@ impl ClusterMap {
         }
         if v >= 20 {
             m.upgrades = d.seq(4, |d| d.u32())?.into_iter().collect();
+        }
+        if v >= 21 {
+            m.project_tenants = d
+                .seq(8, |d| Ok((d.u32()?, d.u32()?)))?
+                .into_iter()
+                .collect();
         }
         d.finish()?;
         Ok(m)
@@ -3984,6 +4019,15 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert!(!m.host_may_attach("h2", 5));
         // Unbound hosts, and hosts that give no name, attach any.
         assert!(m.host_may_attach("h3", 5) && m.host_may_attach("", 6));
+        // A moved project's volumes take its tenant now (D303), in
+        // format 21; others keep their header's.
+        assert_eq!((m.volume_tenant(5, 9), m.volume_tenant(5, 0)), (5, 5));
+        m.project_tenants.insert(9, 6);
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 21);
+        assert_eq!(ClusterMap::decode(&b).unwrap(), m);
+        assert_eq!(m.volume_tenant(5, 9), 6);
+        assert!(!m.host_may_attach("h1", m.volume_tenant(5, 9)));
     }
 
     /// D274: devices to convert travel in format 20, only while one is

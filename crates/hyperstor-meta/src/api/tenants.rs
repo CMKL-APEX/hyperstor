@@ -9,6 +9,7 @@
 use super::realms::Scope;
 use super::{Api, with_reason};
 use crate::tenancy::{self, NewTenant, Project, ProjectState, Tenancy, Tenant};
+use crate::{BucketDone, BucketOp};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{TenantService, TenantServiceExt};
@@ -126,8 +127,215 @@ impl Api {
     }
 }
 
+/// The new tenant's caps hold the project's space (D303): a hook, as caps
+/// per tenant and pool aren't kept yet (HS15's quotas); `force` (a
+/// cluster administrator's) will pass them.
+fn caps_hold(
+    _tenancy: &Tenancy,
+    _to: u32,
+    _project: u32,
+    _force: bool,
+) -> Result<(), ConnectError> {
+    Ok(())
+}
+
+impl Api {
+    /// The project's volumes that a client holds now, with their holder's
+    /// label, for the host check of a move across realms (D251, D303).
+    async fn attached_in(
+        &self,
+        tenancy: &Tenancy,
+        project: u32,
+    ) -> Result<Vec<String>, ConnectError> {
+        let (map, ..) = self.published().await?;
+        let mut out = Vec::new();
+        for pool in map.pools.keys().filter(|&&p| p != hyperstor_map::META_POOL) {
+            let (reply, rx) = hyperstor_reactor::chan::oneshot();
+            self.tx
+                .send(crate::Admin::ListVolumes {
+                    pool: *pool,
+                    trash: false,
+                    reply,
+                })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            for v in super::volume_result(rx.recv().await)? {
+                let t = tenancy.tenant_of(v.tenant, v.project);
+                if tenancy.project_of(t, v.project) == project && v.holder.is_some() {
+                    out.push(format!(
+                        "volume {:032x} ({})",
+                        v.id,
+                        v.holder_label.clone().unwrap_or_else(|| "held".into())
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl TenantService for Api {
+    async fn move_project(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::MoveProjectRequest>,
+    ) -> ServiceResult<pb::MoveProjectResponse> {
+        let target = format!("project {} to tenant {}", req.project, req.to);
+        let (who, reach) = self.authorize_in(&ctx, "MoveProject", &target, true)?;
+        let scope = self.scope(reach).await?;
+        let t = self.tenancy().await?;
+        let refuse = |reason: &str, e: ConnectError| {
+            let e = with_reason(e, reason);
+            super::refused(&who, "MoveProject", &target, &e);
+            e
+        };
+        let Some(p) = t.project(req.project) else {
+            return Err(refuse(
+                "not_found",
+                ConnectError::not_found(format!("no project {}", req.project)),
+            ));
+        };
+        let from = p.tenant;
+        // Reached: both tenants, in one realm, for someone with roles in
+        // them; across realms, the cluster's administrators alone.
+        Self::tenant_reached(&scope, &t, from, &who, "MoveProject", &target)?;
+        if t.tenant(req.to).is_none() {
+            return Err(refuse(
+                "not_found",
+                ConnectError::not_found(format!("no tenant {}", req.to)),
+            ));
+        }
+        let realms = self.realms().await?;
+        let (realm_from, realm_to) = (realms.realm_of(from), realms.realm_of(req.to));
+        if !scope.whole() && (!scope.tenant(req.to) || realm_from != realm_to) {
+            return Err(scope.outside(
+                &who,
+                "MoveProject",
+                &target,
+                &if realm_from != realm_to {
+                    format!(
+                        "a move from realm {} to realm {}",
+                        realms.name(realm_from),
+                        realms.name(realm_to)
+                    )
+                } else {
+                    format!("tenant {}", req.to)
+                },
+            ));
+        }
+        if req.force && !scope.whole() {
+            return Err(refuse(
+                "permission_denied",
+                ConnectError::permission_denied("--force is a cluster administrator's"),
+            ));
+        }
+        // The new realm may use every pool its volumes and buckets are in
+        // (D249).
+        let held = self.held(None).await?;
+        if let Some(h) = held
+            .iter()
+            .find(|h| h.project == req.project && !realms.may_use(realm_to, h.pool))
+        {
+            return Err(refuse(
+                "pool_not_in_realm",
+                ConnectError::failed_precondition(format!(
+                    "{} is in a pool realm {} may not use",
+                    h.what,
+                    realms.name(realm_to)
+                )),
+            ));
+        }
+        // Across realms, no host bound to realms may lose a volume it
+        // holds at its next attach (D251): while any host is bound, the
+        // project's volumes are detached first.
+        if realm_from != realm_to {
+            let (map, ..) = self.published().await?;
+            if !map.host_realms.is_empty()
+                && let Some(v) = self.attached_in(&t, req.project).await?.first()
+            {
+                return Err(refuse(
+                    "in_use",
+                    ConnectError::failed_precondition(format!(
+                        "{v} is attached, and hosts are bound to realms: detach it first, as its host may not attach it in realm {}",
+                        realms.name(realm_to)
+                    )),
+                ));
+            }
+        }
+        // No name of its buckets taken in the new tenant (D243).
+        let BucketDone::List(theirs) = self
+            .bucket_op(BucketOp::List {
+                tenant: Some(req.to),
+            })
+            .await?
+        else {
+            return Err(ConnectError::internal("not a list"));
+        };
+        let BucketDone::List(ours) = self
+            .bucket_op(BucketOp::List { tenant: Some(from) })
+            .await?
+        else {
+            return Err(ConnectError::internal("not a list"));
+        };
+        let ours: Vec<_> = ours
+            .into_iter()
+            .filter(|b| b.project == req.project)
+            .collect();
+        if let Some(b) = ours
+            .iter()
+            .find(|b| theirs.iter().any(|x| x.name == b.name))
+        {
+            return Err(refuse(
+                "bucket_exists",
+                ConnectError::failed_precondition(format!(
+                    "tenant {} has a bucket named {} already: rename one first",
+                    t.tenant_label(req.to),
+                    b.name
+                )),
+            ));
+        }
+        caps_hold(&t, req.to, req.project, req.force)?;
+        // Moving: nothing new in it, its tenant's keys put new buckets in
+        // the tenant's default project; then the operation.
+        let (project, to) = (req.project, req.to);
+        let started = self
+            .realm_rows("such project", move |db| {
+                tenancy::start_move(db, project, to)
+            })
+            .await;
+        Self::audited(&who, "MoveProject", &target, started.map(|_| ()))?;
+        let op = self
+            .start_op(
+                &who,
+                "MoveProject",
+                crate::operations::Work::MoveProject { project, from, to },
+                target.clone(),
+                format!(
+                    "moving project {} and {} bucket(s) to tenant {}",
+                    t.project_label(project),
+                    ours.len(),
+                    t.tenant_label(to)
+                ),
+                Some(from),
+            )
+            .await;
+        let op = match op {
+            Ok(op) => op,
+            Err(e) => {
+                // Not started: active again where it was.
+                let _ = self
+                    .realm_rows("such project", move |db| tenancy::undo_move(db, project))
+                    .await;
+                return Err(e);
+            }
+        };
+        Ok(pb::MoveProjectResponse {
+            operation: buffa::MessageField::some(op),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn create_tenant(
         &self,
         ctx: RequestContext,

@@ -171,6 +171,9 @@ namespace Hyperstor {
   action "TenantService.DeleteProject" in [Action::"store", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "TenantService.MoveProject" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "ClusterService.SetScrubSettings" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

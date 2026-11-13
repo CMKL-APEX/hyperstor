@@ -163,8 +163,8 @@ impl Api {
                 counted: b.counts.is_some(),
                 objects: b.counts.map_or(0, |c| c.0),
                 bytes: b.counts.map_or(0, |c| c.1),
-                project: tenancy.project_of(b.tenant, b.project),
-                project_name: tenancy.project_label(tenancy.project_of(b.tenant, b.project)),
+                project: tenancy.bucket_project(b.tenant, b.project),
+                project_name: tenancy.project_label(tenancy.bucket_project(b.tenant, b.project)),
                 name: b.name,
                 ..Default::default()
             })
@@ -196,7 +196,7 @@ impl Api {
             return Ok(rows);
         }
         if let Ok(BucketDone::List(rows)) = self.bucket_op(get()).await
-            && rows.iter().all(|b| scope.container(b.tenant, b.project))
+            && rows.iter().all(|b| scope.bucket_in(b.tenant, b.project))
             && !rows.is_empty()
         {
             return Ok(rows);
@@ -230,7 +230,7 @@ impl S3Service for Api {
         let BucketDone::List(mut rows) = self.bucket_op(BucketOp::List { tenant }).await? else {
             return Err(ConnectError::internal("not a list"));
         };
-        rows.retain(|b| scope.container(b.tenant, b.project));
+        rows.retain(|b| scope.bucket_in(b.tenant, b.project));
         Ok(pb::ListS3BucketsResponse {
             buckets: self.buckets_pb(rows).await?,
             ..Default::default()

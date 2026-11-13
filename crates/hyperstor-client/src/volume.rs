@@ -129,6 +129,18 @@ pub fn header_tenant(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> u3
     decode(0, &l).map_or(0, |v| v.tenant)
 }
 
+/// The project a header names (D300); 0 for none, or one that doesn't
+/// decode. Storage nodes find a moved project's tenant by it (D303).
+pub fn header_project(attrs: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>) -> u32 {
+    let l = Looked {
+        size: 0,
+        attrs: attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        kv: Vec::new(),
+        kv_bytes: None,
+    };
+    decode(0, &l).map_or(0, |v| v.project)
+}
+
 /// The name of volume `id`'s header object.
 pub fn header_key(id: u128) -> Vec<u8> {
     format!("h/{id:032x}").into_bytes()

@@ -37,7 +37,7 @@ use shard_cell::ReadKind;
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, Frame, counter_of, read_request, writer};
 use hyperstor_client::volume::{
     DELEGATES_ATTR, Holder, LEASE_ATTR, decode_delegates, decode_holder, encode_delegates,
-    encode_holder, header_deleting, header_tenant, header_version,
+    encode_holder, header_deleting, header_project, header_tenant, header_version,
 };
 use hyperstor_client::{Client, ClientError, branch_name};
 use hyperstor_engine::{
@@ -3591,7 +3591,8 @@ impl ShardState {
             // A host bound to realms attaches only their volumes (D251,
             // D259), on the name it gave (D261).
             let map = me.map();
-            let tenant = header_tenant(attrs);
+            // A moved project's volumes are its tenant's now (D303).
+            let tenant = map.volume_tenant(header_tenant(attrs), header_project(attrs));
             if !map.host_may_attach(&host, tenant) {
                 let realm = map.tenant_realms.get(&tenant).copied().unwrap_or(0);
                 return Err(err(

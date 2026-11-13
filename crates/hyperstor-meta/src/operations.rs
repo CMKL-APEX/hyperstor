@@ -88,6 +88,10 @@ pub enum Work {
         volume: u128,
         epoch: Option<u64>,
     },
+    /// A project moved from tenant `from` to tenant `to` (20-tenants.md
+    /// §24.9.1, D303): its buckets renamed, then its record. Not
+    /// cancelled: it ends moved, or undone if it can't.
+    MoveProject { project: u32, from: u32, to: u32 },
 }
 
 /// Volume ids as 32 hex digits: serde can't buffer a `u128` in a tagged
@@ -116,6 +120,7 @@ impl Work {
             Work::Scrub { .. } => "scrub",
             Work::DeletePool { .. } => "delete-pool",
             Work::RemoveDevice { .. } => "remove-device",
+            Work::MoveProject { .. } => "move-project",
         }
     }
 }

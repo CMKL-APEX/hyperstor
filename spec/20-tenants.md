@@ -239,8 +239,8 @@ Proposed 2026-11-12 (05-decision-log.md points 261–266): the model and
 its mapping to glidex are the owner's choices; the transfer of a
 project (D303) and per-volume ownership (D300) are drafted for review.
 The records, projects on volumes, clones, buckets and keys, and roles
-on a tenant or a project are built (I378, #360 stage 1); the transfer
-(§24.9.1), quotas and the glidex side are not. It amends D61's mapping (a glidex project was to be a
+on a tenant or a project are built (I378, #360 stage 1), and so is the
+transfer (§24.9.1, I379, stage 2); quotas and the glidex side are not. It amends D61's mapping (a glidex project was to be a
 hyperstor tenant) so that the same word means the same thing on both
 sides.
 
@@ -356,6 +356,11 @@ is the authority for the records above:
   `--tenant` from glidex's machine identity can't ensure.
 
 #### 24.9.1 Moving a project to another tenant (D303)
+
+Built (I379), with these choices open for review: across realms while
+hosts are bound, the project's volumes must be detached first; the caps
+check is a hook until caps exist; the old tenant's keys are pointed at
+its default project when the move starts; and a move can't be cancelled.
 
 A project may move to another tenant, of the same realm or another
 (an organization splitting, a lab moving to the university's own
