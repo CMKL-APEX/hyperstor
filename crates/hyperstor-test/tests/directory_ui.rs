@@ -626,7 +626,8 @@ fn glidex_s_server_reads_a_tenant_s_storage_for_a_person() {
     // Ann's is ended when the list is next read.
     let bob = c.login("bob", None).unwrap();
     let (accounts, head) = held(&format!("{}; {list_cookie}", bob.cookie));
-    assert_eq!(accounts.len(), 1, "{accounts:?}");
+    let users: Vec<_> = accounts.iter().map(|a| a["user"].clone()).collect();
+    assert_eq!(accounts.len(), 1, "users: {users:?}");
     assert_eq!(accounts[0]["user"], "bob");
     assert_eq!(cookie(&head, "hs_accounts").unwrap(), "hs_accounts=");
     let (code, _, _) = c.web(
