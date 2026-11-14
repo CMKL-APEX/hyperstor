@@ -11,9 +11,7 @@
 //!   name it gives (D261); a host without a row is unbound.
 //! - `crealm/<client>`: the realms a management client is bound to (D311,
 //!   I397), by the name in its `mgmt` certificate (glidex's datastore
-//!   driver, D122), and the web origins of its UI that may call mgmt
-//!   with a person's directory token (D310, I398); a client without a
-//!   row is unbound.
+//!   driver, D122); a client without a row is unbound.
 //!
 //! "default" is realm 0 and has no row. What one row needs of the others
 //! (a realm deleted only when nothing names it, a pool taken from a realm
@@ -93,90 +91,11 @@ pub struct Realms {
     pub clients: BTreeMap<String, Client>,
 }
 
-/// A management client's binding (D311, I397, I398).
+/// A management client's binding (D311, I397).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Client {
     /// The realms it acts in; never empty in a stored row.
     pub realms: Vec<u32>,
-    /// Its UI's web origins (`https://host[:port]`), which may call mgmt
-    /// across origins with a person's directory token (D310).
-    pub origins: Vec<String>,
-}
-
-impl Client {
-    fn encode(&self) -> Vec<u8> {
-        let mut e = Enc::new();
-        e.seq(&self.realms, |e, r| {
-            e.u32(*r);
-        });
-        e.seq(&self.origins, |e, o| {
-            e.str(o);
-        });
-        e.into_vec()
-    }
-
-    fn decode(b: &[u8]) -> Result<Client, DecodeError> {
-        let mut d = Dec::new(b);
-        let c = Client {
-            realms: d.seq(4, |d| d.u32())?,
-            origins: d.seq(1, |d| d.str().map(String::from))?,
-        };
-        d.finish()?;
-        Ok(c)
-    }
-}
-
-/// The web origin of a directory's issuer (`https://host[:port]/d/NAME`
-/// is at `https://host[:port]`), where its UI is (D310).
-pub fn issuer_origin(issuer: &str) -> Option<String> {
-    let rest = issuer.strip_prefix("https://")?;
-    origin(&format!(
-        "https://{}",
-        rest.split_once('/').map_or(rest, |(a, _)| a)
-    ))
-}
-
-/// `o` as a web origin a client's UI may be at: `https://host[:port]`,
-/// lower case, with no path, query or user; `None` if it isn't one. Only
-/// HTTPS: a directory token must not cross a network in the clear.
-pub fn origin(o: &str) -> Option<String> {
-    let rest = o.trim().strip_prefix("https://")?;
-    let rest = rest.strip_suffix('/').unwrap_or(rest);
-    if rest.is_empty()
-        || rest.len() > 253
-        || rest
-            .bytes()
-            .any(|b| !(b.is_ascii_alphanumeric() || b".-:[]".contains(&b)))
-    {
-        return None;
-    }
-    // `[v6]` or `[v6]:port`; else `name` or `name:port`.
-    let (host, port) = if let Some(v6) = rest.strip_prefix('[') {
-        let (addr, after) = v6.split_once(']')?;
-        if addr.is_empty() || addr.contains(['[', ']']) {
-            return None;
-        }
-        match after {
-            "" => (&rest[..addr.len() + 2], None),
-            p => (&rest[..addr.len() + 2], Some(p.strip_prefix(':')?)),
-        }
-    } else {
-        match rest.split_once(':') {
-            Some((h, p)) => (h, Some(p)),
-            None => (rest, None),
-        }
-    };
-    if host.is_empty()
-        || (!host.starts_with('[') && host.contains(['[', ']', ':']))
-        || port.is_some_and(|p| p.parse::<u16>().map_or(true, |p| p == 0))
-    {
-        return None;
-    }
-    let host = host.to_ascii_lowercase();
-    Some(match port {
-        Some("443") | None => format!("https://{host}"),
-        Some(p) => format!("https://{host}:{p}"),
-    })
 }
 
 impl Realms {
@@ -294,10 +213,8 @@ fn read(t: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Realms, E
     }
     for (client, v) in scan(t, CLIENT)? {
         let row = format!("{CLIENT}{client}");
-        out.clients.insert(
-            client,
-            Client::decode(&v).map_err(|e| bad(&row, e.to_string()))?,
-        );
+        let realms = ids(&v).map_err(|e| bad(&row, e.to_string()))?;
+        out.clients.insert(client, Client { realms });
     }
     Ok(out)
 }
@@ -422,9 +339,8 @@ pub fn valid_client(client: &str) -> bool {
 }
 
 /// Binds management client `client` to `realms` (D311), which must exist
-/// ("default" is 0), with its UI's `origins` (already checked with
-/// [`origin`]); no realms unbinds it, and then it may name no origins.
-pub fn set_client(db: &Db, client: &str, realms: &[u32], origins: &[String]) -> Result<(), Error> {
+/// ("default" is 0); none unbinds it.
+pub fn set_client(db: &Db, client: &str, realms: &[u32]) -> Result<(), Error> {
     write(db, |t, now| {
         for &r in realms {
             if r != 0 && !now.realms.iter().any(|x| x.id == r) {
@@ -433,23 +349,16 @@ pub fn set_client(db: &Db, client: &str, realms: &[u32], origins: &[String]) -> 
         }
         let row = format!("{CLIENT}{client}");
         if realms.is_empty() {
-            if !origins.is_empty() {
-                return Err(refused(
-                    "invalid_argument",
-                    "a client's origins come with its realms".into(),
-                ));
-            }
             t.remove(row.as_str()).map_err(StoreError::from)?;
         } else {
-            let mut c = Client {
-                realms: realms.to_vec(),
-                origins: origins.to_vec(),
-            };
-            c.realms.sort_unstable();
-            c.realms.dedup();
-            c.origins.sort();
-            c.origins.dedup();
-            t.insert(row.as_str(), c.encode().as_slice())
+            let mut l = realms.to_vec();
+            l.sort_unstable();
+            l.dedup();
+            let mut e = Enc::new();
+            e.seq(&l, |e, r| {
+                e.u32(*r);
+            });
+            t.insert(row.as_str(), e.into_vec().as_slice())
                 .map_err(StoreError::from)?;
         }
         Ok(())
@@ -761,51 +670,10 @@ mod tests {
         }
     }
 
-    /// D310, D311: a client's origins are HTTPS origins, normalized; a
-    /// directory's UI is at its issuer's origin; clients are named as
-    /// `mgmt` tokens are, never as hyperstor-mgmt itself.
+    /// D311: clients are named as `mgmt` tokens are, never as
+    /// hyperstor-mgmt itself.
     #[test]
-    fn clients_and_origins_are_checked() {
-        for (o, want) in [
-            (
-                "https://Glidex.Example.org",
-                Some("https://glidex.example.org"),
-            ),
-            (
-                "https://glidex.example.org/",
-                Some("https://glidex.example.org"),
-            ),
-            (
-                "https://glidex.example.org:443",
-                Some("https://glidex.example.org"),
-            ),
-            (
-                "https://glidex.example.org:8443",
-                Some("https://glidex.example.org:8443"),
-            ),
-            ("https://127.0.0.1:8443", Some("https://127.0.0.1:8443")),
-            ("https://[::1]:8443", Some("https://[::1]:8443")),
-            ("https://[::1]", Some("https://[::1]")),
-            ("http://glidex.example.org", None),
-            ("https://glidex.example.org/ui", None),
-            ("https://user@glidex.example.org", None),
-            ("https://glidex.example.org:0", None),
-            ("https://glidex.example.org:99999", None),
-            ("https://a:b:c", None),
-            ("https://", None),
-            ("glidex.example.org", None),
-        ] {
-            assert_eq!(origin(o).as_deref(), want, "{o}");
-        }
-        assert_eq!(
-            issuer_origin("https://id.example.org:8443/d/acme").as_deref(),
-            Some("https://id.example.org:8443")
-        );
-        assert_eq!(
-            issuer_origin("https://id.example.org").as_deref(),
-            Some("https://id.example.org")
-        );
-        assert_eq!(issuer_origin("http://id.example.org/d/a"), None);
+    fn clients_are_named_as_mgmt_tokens() {
         assert!(valid_client("glidex") && valid_client("gx-2"));
         for bad in ["", "dashboard", "web", "Glidex", "a/b", &"a".repeat(33)] {
             assert!(!valid_client(bad), "{bad}");
@@ -830,15 +698,14 @@ mod tests {
         }
         const NAMES: [&str; 3] = ["acme", "blue", "cyan"];
         const CLIENTS: [&str; 3] = ["glidex", "gx-b", "script"];
-        const ORIGINS: [&str; 2] = ["https://gx.example.org", "https://ui.example.org:8443"];
         for seed in 1..=200u64 {
             let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("map.redb");
             let mut db = Db::create(&path).unwrap();
-            // The model: realms by name (id), clients' realms and origins.
+            // The model: realms by name (id), and clients' realms.
             let mut realms: BTreeMap<&str, u32> = BTreeMap::new();
-            let mut clients: BTreeMap<&str, (Vec<u32>, Vec<String>)> = BTreeMap::new();
+            let mut clients: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
             for _ in 0..40 {
                 match rng.below(6) {
                     0 => {
@@ -856,12 +723,7 @@ mod tests {
                         // "default", which always does.
                         let mut ids: Vec<u32> =
                             (0..1 + rng.below(2)).map(|_| rng.below(5) as u32).collect();
-                        let origins: Vec<String> = ORIGINS
-                            .iter()
-                            .filter(|_| rng.below(2) == 0)
-                            .map(|o| o.to_string())
-                            .collect();
-                        let r = set_client(&db, c, &ids, &origins);
+                        let r = set_client(&db, c, &ids);
                         if ids
                             .iter()
                             .any(|&i| i != 0 && !realms.values().any(|&x| x == i))
@@ -871,19 +733,12 @@ mod tests {
                             r.unwrap();
                             ids.sort_unstable();
                             ids.dedup();
-                            let mut o = origins.clone();
-                            o.sort();
-                            clients.insert(c, (ids, o));
+                            clients.insert(c, ids);
                         }
                     }
                     3 => {
                         let c = CLIENTS[rng.below(3) as usize];
-                        // Origins without realms are refused.
-                        assert!(matches!(
-                            set_client(&db, c, &[], &[ORIGINS[0].into()]),
-                            Err(Error::Refused { .. })
-                        ));
-                        set_client(&db, c, &[], &[]).unwrap();
+                        set_client(&db, c, &[]).unwrap();
                         clients.remove(c);
                     }
                     4 => {
@@ -891,7 +746,7 @@ mod tests {
                         let r = delete(&db, n);
                         match realms.get(n) {
                             None => assert!(matches!(r, Err(Error::NotFound)), "{r:?}"),
-                            Some(id) if clients.values().any(|(l, _)| l.contains(id)) => {
+                            Some(id) if clients.values().any(|l| l.contains(id)) => {
                                 assert!(
                                     matches!(
                                         r,
@@ -916,19 +771,15 @@ mod tests {
                     }
                 }
                 let now = load(&db).unwrap();
-                let got: BTreeMap<&str, (Vec<u32>, Vec<String>)> = CLIENTS
+                let got: BTreeMap<&str, Vec<u32>> = CLIENTS
                     .iter()
-                    .filter_map(|c| {
-                        now.clients
-                            .get(*c)
-                            .map(|x| (*c, (x.realms.clone(), x.origins.clone())))
-                    })
+                    .filter_map(|c| now.clients.get(*c).map(|x| (*c, x.realms.clone())))
                     .collect();
                 assert_eq!(got, clients, "seed {seed}");
                 for c in CLIENTS {
                     let want = clients
                         .get(c)
-                        .map(|(l, _)| l.iter().map(|&i| now.name(i)).collect::<Vec<String>>());
+                        .map(|l| l.iter().map(|&i| now.name(i)).collect::<Vec<String>>());
                     assert_eq!(now.client_realms(c), want, "seed {seed} {c}");
                 }
             }

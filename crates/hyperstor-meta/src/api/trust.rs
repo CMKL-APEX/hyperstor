@@ -1247,16 +1247,6 @@ impl TrustService for Api {
             })
             .await?;
         let realms = self.realms().await?;
-        // Who may call mgmt across origins with a directory's token (D310,
-        // I398): the directories' own UIs, and the UIs named on management
-        // clients' bindings.
-        let mut ui_origins: Vec<String> = dirs
-            .iter()
-            .filter_map(|d| crate::realms::issuer_origin(&d.dir.issuer))
-            .chain(realms.clients.values().flat_map(|c| c.origins.clone()))
-            .collect();
-        ui_origins.sort();
-        ui_origins.dedup();
         let directories = dirs
             .iter()
             .zip(feeds)
@@ -1273,7 +1263,6 @@ impl TrustService for Api {
         Ok(pb::GetLoginStateResponse {
             cluster_id,
             directories,
-            ui_origins,
             ..Default::default()
         }
         .into())

@@ -1612,3 +1612,14 @@ points for the owner, asked with options and a recommendation each:
 |---|---|---|---|
 | 274 | A directory pins mgmt's certificate, which renewals change: as built (documented); a long-lived certificate for directories on a name or port of its own; or the next pin sent in the signed reports, a glidex change (recommended, as the pilot's directory reaches mgmt directly) | The next pin in the reports; filed as glidex#501 | D312 |
 | 275 | `volume_used_bytes` in reports: 0 until the space counters exist (recommended); an estimate from PG bytes; or a walk of chunk indexes | 0 for now, with the counters filed for v0.0.8 | D313, #364 |
+
+## D310 revised: glidex's UI through glidex's server (2026-11-14)
+
+Revised: point 272 had glidex's UI call mgmt's API from the browser
+across origins, with a directory access token and mgmt allowing the
+origins it learned (I398, built on `impl/directory-ui` and removed before
+it merged). The owner chose instead:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 276 | How glidex's UI reads a tenant's storage from mgmt: the browser across origins with CORS (as built first); or glidex's server relaying a fixed set of calls with a token minted server-side | Through glidex's server: browsers never hold the token, glidex's CSP needs no change, mgmt needs no CORS | D314 |

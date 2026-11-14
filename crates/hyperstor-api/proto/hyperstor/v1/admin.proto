@@ -91,8 +91,7 @@ service RealmService {
   // Binds a management client (a `mgmt` identity other than
   // hyperstor-mgmt's, such as glidex's datastore driver, D122) to realms
   // (D311): it then acts only in them, as a person with roles there; none
-  // unbinds it. Also names its UI's web origins, which may call mgmt with
-  // a person's directory token (D310). Write.
+  // unbinds it. Write.
   rpc SetClientRealms(SetClientRealmsRequest) returns (SetClientRealmsResponse);
 }
 
@@ -754,8 +753,6 @@ message RealmClient {
   // The name in its `mgmt` certificate.
   string client = 1;
   repeated string realms = 2;
-  // Its UI's web origins, `https://host[:port]` (D310).
-  repeated string origins = 3;
 }
 
 message CreateRealmRequest {
@@ -821,8 +818,6 @@ message SetClientRealmsRequest {
   string client = 1;
   // Realm names; none: unbound, acting in the cluster as a whole as before.
   repeated string realms = 2;
-  // `https://host[:port]`; only with realms.
-  repeated string origins = 3;
 }
 
 message SetClientRealmsResponse {}
@@ -1266,10 +1261,6 @@ message GetLoginStateRequest {}
 message GetLoginStateResponse {
   string cluster_id = 1 [json_name = "cluster_id"];
   repeated LoginDirectory directories = 2;
-  // The web origins that may call mgmt across origins with a person's
-  // directory access token (D310, I398): each trusted directory's issuer's
-  // origin, and the origins on management clients' bindings.
-  repeated string ui_origins = 3 [json_name = "ui_origins"];
 }
 
 message ResolvePersonRequest {

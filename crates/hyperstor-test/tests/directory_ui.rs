@@ -150,37 +150,11 @@ fn a_bound_client_acts_only_in_its_realms() {
     let r = c.ctl(&["token", "create", "--role", "mgmt", "--name", "dashboard"]);
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.has("hyperstor-mgmt's own"), "{}", r.out);
-    // Origins are HTTPS origins.
-    let r = c.ctl(&[
-        "realm",
-        "client",
-        "--client",
-        "glidex",
-        "--realm",
-        "acme",
-        "--origins",
-        "http://gx.example",
-    ]);
-    assert_eq!(r.code, 1, "{}", r.out);
-
     // Bound to acme: only acme's projects.
-    c.ctl(&[
-        "realm",
-        "client",
-        "--client",
-        "glidex",
-        "--realm",
-        "acme",
-        "--origins",
-        "https://gx.example.org",
-    ])
-    .ok();
+    c.ctl(&["realm", "client", "--client", "glidex", "--realm", "acme"])
+        .ok();
     let listed = c.ctl(&["realm", "list"]).ok();
-    assert!(
-        listed.has("Client glidex acts in: acme; its UI: https://gx.example.org"),
-        "{}",
-        listed.out
-    );
+    assert!(listed.has("Client glidex acts in: acme"), "{}", listed.out);
     mk("a2", acme_web).ok();
     let r = mk("b2", blue_web);
     assert_eq!(r.code, 1, "{}", r.out);
@@ -249,25 +223,6 @@ fn a_bound_client_acts_only_in_its_realms() {
         let r = rpc(&c, dir, "TrustService/GetLoginState", &[], "{}");
         assert!(r.contains("permission_denied"), "{r}");
     }
-    let mine = c.pki();
-    let r = std::process::Command::new("curl")
-        .args(["-sS", "--cacert"])
-        .arg(mine.join("root.crt"))
-        .arg("--cert")
-        .arg(mine.join("mgmt.crt"))
-        .arg("--key")
-        .arg(mine.join("mgmt.key"))
-        .args(["-H", "Content-Type: application/json", "-d", "{}"])
-        .arg(format!(
-            "https://{}/hyperstor.v1.TrustService/GetLoginState",
-            c.api
-        ))
-        .output()
-        .unwrap();
-    let r = String::from_utf8_lossy(&r.stdout);
-    assert!(r.contains("ui_origins"), "{r}");
-    assert!(r.contains("https://gx.example.org"), "{r}");
-
     // Unbound again: the whole cluster.
     c.ctl(&["realm", "client", "--client", "glidex", "--realm", "any"])
         .ok();
@@ -285,13 +240,15 @@ fn a_bound_client_acts_only_in_its_realms() {
     );
 }
 
-/// D310, I398, I399: glidex's UI, at the directory's origin or at one an
-/// operator named, calls mgmt's API with a person's directory access
-/// token and reads what their links reach; other origins, cookies and API
-/// tokens are refused. A browser holds a local account and a directory's,
-/// one per directory, and switches between them.
+/// D310, D314, I399: glidex's server relays its UI's reads to mgmt with a
+/// person's directory access token, server to server (no `Origin`, no
+/// cookie), and reads what their links reach; a browser's request from
+/// another origin gets no CORS headers, and its writes are refused. The
+/// driver names its disks' projects by glidex's ids. A browser holds a
+/// local account and a directory's, one per directory, and switches
+/// between them.
 #[test]
-fn glidex_s_ui_reads_a_tenant_s_storage_across_origins() {
+fn glidex_s_server_reads_a_tenant_s_storage_for_a_person() {
     // SAFETY: before the cluster starts a thread; feeds pulled often.
     unsafe {
         std::env::set_var("HS_TRUST_POLL_MS", "300");
@@ -365,67 +322,26 @@ fn glidex_s_ui_reads_a_tenant_s_storage_across_origins() {
     ])
     .ok();
 
-    let gx = format!("https://{}", issuer.split('/').nth(2).unwrap());
     let host = c.dashboard_host();
     let list = "/api/hyperstor.v1.ClusterService/ListVolumes";
-    let preflight = |origin: &str, path: &str| {
+    // As glidex's server relays them: a bearer token, no Origin, no cookie.
+    let ann = dir.access_token("u1", &c.cluster_id, "s-ann").unwrap();
+    let bearer = format!("Bearer {ann}");
+    let relay = |auth: &str, path: &str, body: &str| {
         c.web(
-            "OPTIONS",
+            "POST",
             path,
             &host,
             &[
-                ("Origin", origin),
-                ("Access-Control-Request-Method", "POST"),
-                (
-                    "Access-Control-Request-Headers",
-                    "authorization, content-type",
-                ),
+                ("Authorization", auth),
+                ("Content-Type", "application/json"),
             ],
-            "",
+            body,
         )
     };
-    // The directory's own origin, learned with its trust (within mgmt's
-    // cache of what logins are checked against).
-    let (_, head, _) = wait_for("the directory's origin learned", 30, || {
-        let r = preflight(&gx, list);
-        (r.0 == 204).then_some(r)
-    });
-    assert_eq!(
-        header(&head, "access-control-allow-origin"),
-        vec![gx.as_str()]
-    );
-    assert!(header(&head, "vary").contains(&"Origin"), "{head}");
-    assert!(
-        header(&head, "access-control-allow-headers")[0].contains("authorization"),
-        "{head}"
-    );
-    assert!(header(&head, "access-control-allow-credentials").is_empty());
-    // Only the API and whoami.
-    assert_eq!(preflight(&gx, "/auth/tokens").0, 403);
-    // Another origin: nothing to read with.
-    let (code, head, _) = preflight("https://evil.example", list);
-    assert_eq!(code, 403);
-    assert!(header(&head, "access-control-allow-origin").is_empty());
-
-    // Ann's directory token: acme's volumes, readable from the page.
-    let ann = dir.access_token("u1", &c.cluster_id, "s-ann").unwrap();
-    let bearer = format!("Bearer {ann}");
-    let call = |origin: &str, auth: Option<&str>, cookie: Option<&str>, path: &str, body: &str| {
-        let mut h = vec![("Origin", origin), ("Content-Type", "application/json")];
-        if let Some(a) = auth {
-            h.push(("Authorization", a));
-        }
-        if let Some(k) = cookie {
-            h.push(("Cookie", k));
-        }
-        c.web("POST", path, &host, &h, body)
-    };
-    let (code, head, b) = call(&gx, Some(&bearer), None, list, r#"{"pool":1}"#);
+    let (code, head, b) = relay(&bearer, list, r#"{"pool":1}"#);
     assert_eq!(code, 200, "{b}");
-    assert_eq!(
-        header(&head, "access-control-allow-origin"),
-        vec![gx.as_str()]
-    );
+    assert!(header(&head, "access-control-allow-origin").is_empty());
     assert!(b.contains("acme-disk") && !b.contains("theirs"), "{b}");
     // Her tenant's buckets, keys and projects too (usage per project).
     for p in [
@@ -433,52 +349,81 @@ fn glidex_s_ui_reads_a_tenant_s_storage_across_origins() {
         "/api/hyperstor.v1.S3Service/ListS3Keys",
         "/api/hyperstor.v1.TenantService/ListTenants",
     ] {
-        let (code, _, b) = call(&gx, Some(&bearer), None, p, "{}");
+        let (code, _, b) = relay(&bearer, p, "{}");
         assert_eq!(code, 200, "{p}: {b}");
     }
+    let (code, _, b) = c.web(
+        "GET",
+        "/auth/whoami",
+        &host,
+        &[("Authorization", &bearer)],
+        "",
+    );
+    assert_eq!(code, 200, "{b}");
+    assert_eq!(json(&b)["user"], "u1@acme");
+    // Under her grants: nothing cluster-wide.
+    let (code, _, b) = relay(&bearer, "/api/hyperstor.v1.ClusterService/GetStatus", "{}");
+    assert_eq!(code, 403, "{b}");
+    // A write by the token needs no CSRF value (no cookie, no session).
+    let (code, _, b) = relay(
+        &bearer,
+        "/api/hyperstor.v1.ClusterService/CreateVolume",
+        &serde_json::json!({"pool": 1, "size": "1048576", "name": "relayed", "project": web})
+            .to_string(),
+    );
+    assert_eq!(code, 200, "{b}");
+    // No token: refused.
+    let (code, _, _) = c.web(
+        "POST",
+        list,
+        &host,
+        &[("Content-Type", "application/json")],
+        r#"{"pool":1}"#,
+    );
+    assert_eq!(code, 401);
+
+    // A browser at another origin (glidex's UI calling mgmt itself): no
+    // CORS headers to read with, and its writes refused.
+    let gx = format!("https://{}", issuer.split('/').nth(2).unwrap());
+    let (code, head, _) = c.web(
+        "OPTIONS",
+        list,
+        &host,
+        &[
+            ("Origin", &gx),
+            ("Access-Control-Request-Method", "POST"),
+            (
+                "Access-Control-Request-Headers",
+                "authorization, content-type",
+            ),
+        ],
+        "",
+    );
+    assert_ne!(code, 204);
+    assert!(header(&head, "access-control-allow-origin").is_empty());
     let (code, head, b) = c.web(
+        "POST",
+        list,
+        &host,
+        &[
+            ("Origin", &gx),
+            ("Authorization", &bearer),
+            ("Content-Type", "application/json"),
+        ],
+        r#"{"pool":1}"#,
+    );
+    assert_eq!(code, 403, "{b}");
+    assert!(b.contains("bad_origin"), "{b}");
+    assert!(header(&head, "access-control-allow-origin").is_empty());
+    let (_, head, _) = c.web(
         "GET",
         "/auth/whoami",
         &host,
         &[("Origin", &gx), ("Authorization", &bearer)],
         "",
     );
-    assert_eq!(code, 200, "{b}");
-    assert_eq!(json(&b)["user"], "u1@acme");
-    assert_eq!(
-        header(&head, "access-control-allow-origin"),
-        vec![gx.as_str()]
-    );
-    // A cookie from another origin's page is never read: refused, and
-    // the refusal readable.
-    let (code, head, b) = call(&gx, None, Some(&admin.cookie), list, r#"{"pool":1}"#);
-    assert_eq!(code, 401, "{b}");
-    assert_eq!(
-        header(&head, "access-control-allow-origin"),
-        vec![gx.as_str()]
-    );
-    // Nor an API token.
-    let (_, _, b) = c.as_session(&admin, "POST", "/auth/tokens", r#"{"name":"t","days":1}"#);
-    let hst = json(&b)["token"].as_str().unwrap().to_string();
-    let (code, _, b) = call(
-        &gx,
-        Some(&format!("Bearer {hst}")),
-        None,
-        list,
-        r#"{"pool":1}"#,
-    );
-    assert_eq!(code, 403, "{b}");
-    assert!(b.contains("cross_origin_token"), "{b}");
-    // Nor mgmt's own routes.
-    let (code, _, b) = call(&gx, Some(&bearer), None, "/auth/tokens", r#"{"name":"t"}"#);
-    assert_eq!(code, 403, "{b}");
-    assert!(b.contains("cross_origin_path"), "{b}");
-    // A write from another origin is refused as before.
-    let (code, _, b) = call("https://evil.example", Some(&bearer), None, list, "{}");
-    assert_eq!(code, 403, "{b}");
-    assert!(b.contains("bad_origin"), "{b}");
+    assert!(header(&head, "access-control-allow-origin").is_empty());
 
-    // A glidex cluster's UI, named on its driver's binding.
     let realm = json(&c.ctl(&["tenant", "list", "--json"]).ok().out)["tenants"]
         .as_array()
         .unwrap()
@@ -488,23 +433,6 @@ fn glidex_s_ui_reads_a_tenant_s_storage_across_origins() {
         .as_str()
         .unwrap()
         .to_string();
-    let cluster_ui = "https://gx-cluster.example.org:8443";
-    c.ctl(&[
-        "realm",
-        "client",
-        "--client",
-        "glidex",
-        "--realm",
-        &realm,
-        "--origins",
-        cluster_ui,
-    ])
-    .ok();
-    wait_for("the cluster's UI learned", 30, || {
-        (preflight(cluster_ui, list).0 == 204).then_some(())
-    });
-    let (code, _, b) = call(cluster_ui, Some(&bearer), None, list, r#"{"pool":1}"#);
-    assert_eq!(code, 200, "{b}");
 
     // Its driver, bound to the directory's realm and "default": an image
     // volume naming no project lands in "default" on purpose, and each
@@ -516,8 +444,6 @@ fn glidex_s_ui_reads_a_tenant_s_storage_across_origins() {
         "glidex",
         "--realm",
         &format!("{realm},default"),
-        "--origins",
-        cluster_ui,
     ])
     .ok();
     let gx_id = c.identity(Role::Mgmt, "glidex", false);
@@ -592,8 +518,8 @@ fn glidex_s_ui_reads_a_tenant_s_storage_across_origins() {
     ])
     .ok();
     assert!(r.has("disk3") || r.has("volume"), "{}", r.out);
-    // Ann's page sees the disks of her project, not the image.
-    let (_, _, b) = call(&gx, Some(&bearer), None, list, r#"{"pool":1}"#);
+    // Ann's reads hold the disks of her project, not the image.
+    let (_, _, b) = relay(&bearer, list, r#"{"pool":1}"#);
     assert!(
         b.contains("disk1") && b.contains("disk3") && !b.contains("\"image\""),
         "{b}"

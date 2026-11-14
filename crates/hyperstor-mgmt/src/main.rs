@@ -64,7 +64,6 @@ const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,A
 mod accounts;
 mod audit_ship;
 mod conn;
-mod cors;
 mod directory;
 mod front;
 mod limits;
@@ -879,28 +878,6 @@ async fn handle(state: &State, req: Req, peer: SocketAddr) -> Resp {
         let (status, body) = trust::relay(&state.members, &path, req.headers(), req.body()).await;
         return respond(status, "application/json", body);
     }
-    // A page at another origin (D310): glidex's UI, if mgmt learned its
-    // origin, with a person's directory token; any other gets no CORS
-    // headers, and its writes are refused below.
-    let scheme = if state.https { "https" } else { "http" };
-    let origin = req
-        .headers()
-        .get(http::header::ORIGIN)
-        .and_then(|o| o.to_str().ok())
-        .filter(|o| *o != format!("{scheme}://{host}"))
-        .map(String::from);
-    if let (Some(o), Some(l)) = (&origin, &state.login) {
-        let learned = match l.dirs.state().await {
-            Ok(st) => st.ui_origins.clone(),
-            Err(_) => Vec::new(),
-        };
-        if cors::allowed(o, &learned) {
-            return cross_origin(state, l, req, &path, o, peer).await;
-        }
-        if req.method() == http::Method::OPTIONS {
-            return error(403, "bad_origin", "this origin may not call hyperstor-mgmt");
-        }
-    }
     let read = req.method() == http::Method::GET || req.method() == http::Method::HEAD;
     match &state.login {
         None => {
@@ -925,55 +902,6 @@ async fn handle(state: &State, req: Req, peer: SocketAddr) -> Resp {
             with_login(state, l, req, &path, read, peer).await
         }
     }
-}
-
-/// A request from a page at allowed `origin` ([`cors`], D310): a
-/// preflight; else the cluster API or `whoami` with a directory's access
-/// token, never a cookie. Every answer names the origin, so the page can
-/// read refusals too.
-async fn cross_origin(
-    state: &State,
-    l: &Login,
-    mut req: Req,
-    path: &str,
-    origin: &str,
-    peer: SocketAddr,
-) -> Resp {
-    if req.method() == http::Method::OPTIONS {
-        let asked = req
-            .headers()
-            .get(http::header::ACCESS_CONTROL_REQUEST_METHOD)
-            .and_then(|m| m.to_str().ok());
-        return cors::preflight(origin, path, asked);
-    }
-    let mut resp = if !cors::path_allowed(req.method(), path) {
-        error(
-            403,
-            "cross_origin_path",
-            "from another origin, only the cluster API and whoami",
-        )
-    } else {
-        match bearer_of(req.headers()) {
-            None => error(
-                401,
-                "unauthenticated",
-                "from another origin, a directory's access token as a bearer token",
-            ),
-            Some(t) if !cors::bearer_allowed(&t) => error(
-                403,
-                "cross_origin_token",
-                "from another origin, a directory's access token only, not an API token",
-            ),
-            Some(_) => {
-                // No cookie is read for another origin's page.
-                req.headers_mut().remove(http::header::COOKIE);
-                let read = req.method() == http::Method::GET;
-                with_login(state, l, req, path, read, peer).await
-            }
-        }
-    };
-    cors::decorate(&mut resp, origin);
-    resp
 }
 
 /// The browser's sessions: the active one (the session cookie) and the

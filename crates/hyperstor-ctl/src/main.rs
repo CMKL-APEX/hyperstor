@@ -230,7 +230,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--origins URL[,URL...]] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -461,8 +461,6 @@ struct Args {
     /// `realm client`: a management client, by the name in its `mgmt`
     /// certificate (D311).
     client: Option<String>,
-    /// `realm client`: its UI's web origins, comma-separated (D310).
-    origins: Option<String>,
     description: Option<String>,
     /// `s3 placement set`: pool names.
     data_pool: Option<String>,
@@ -527,7 +525,6 @@ fn main() {
         holder: None,
         host: None,
         client: None,
-        origins: None,
         exclusive: false,
         all: false,
         lending: None,
@@ -745,7 +742,6 @@ fn main() {
             "--holder" => a.holder = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--host" => a.host = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--client" => a.client = Some(it.next().cloned().unwrap_or_else(|| usage())),
-            "--origins" => a.origins = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--exclusive" => a.exclusive = true,
             "--all" => a.all = true,
             "--lending" => a.lending = Some(it.next().cloned().unwrap_or_else(|| usage())),
@@ -1141,7 +1137,6 @@ fn main() {
         ) && a.realm.is_none())
         || ((cmd == "realm host") != a.host.is_some())
         || ((cmd == "realm client") != a.client.is_some())
-        || (cmd != "realm client" && a.origins.is_some())
         || (!realm_given && a.realm.is_some())
         || (matches!(cmd.as_str(), "realm create" | "realm delete") && a.name.is_empty())
         || (cmd == "realm pool" && a.pool.is_none())
@@ -3757,19 +3752,10 @@ where
                     .map(String::from)
                     .collect()
             };
-            let origins: Vec<String> = a
-                .origins
-                .as_deref()
-                .unwrap_or("")
-                .split(',')
-                .filter(|o| !o.is_empty())
-                .map(String::from)
-                .collect();
             client
                 .set_client_realms(pb::SetClientRealmsRequest {
                     client: c.clone(),
                     realms: realms.clone(),
-                    origins: origins.clone(),
                     ..Default::default()
                 })
                 .await?;
@@ -3777,12 +3763,6 @@ where
                 println!("client {c}: unbound, it acts in the cluster as a whole");
             } else {
                 println!("client {c}: acts only in realm(s) {}", realms.join(", "));
-                if !origins.is_empty() {
-                    println!(
-                        "its UI at {} may call hyperstor-mgmt with people's directory tokens",
-                        origins.join(", ")
-                    );
-                }
             }
         }
         _ => {

@@ -207,8 +207,7 @@ again), `permission_denied` (403), `csrf` (403), `bad_origin` (403),
 `login_failed` (401), `rate_limited` (429), `directory_stale` (503: the
 person's directory hasn't been heard from for longer than its
 `max_staleness`), `not_operator` and `from_directory` (403: roles a
-directory's person can't be given here), `cross_origin_token` and
-`cross_origin_path` (403, below), `too_many_accounts` (409). After 10 failed logins
+directory's person can't be given here), `too_many_accounts` (409). After 10 failed logins
 from one address in 5 minutes, logins from it get `rate_limited`, with
 `Retry-After`, until the window passes; other addresses aren't affected.
 
@@ -225,16 +224,10 @@ from one address in 5 minutes, logins from it get `rate_limited`, with
   `X-Hyperstor-CSRF`, and a write from another site's `Origin` is
   refused.
 - Pages carry a strict Content-Security-Policy and may not be framed.
-- **Other origins.** glidex's UI shows a tenant's storage by calling mgmt
-  from the person's browser. Pages at a trusted directory's origin (its
-  issuer's), or at an origin named on a management client's binding
-  (`hyperstorctl realm client --origins`), may call the cluster API
-  (`POST /api/hyperstor.v1.*`) and `GET /auth/whoami` with the
-  directory's access token as `Authorization: Bearer`; answers name the
-  origin (`Access-Control-Allow-Origin`, `Vary: Origin`), never
-  credentials. From those pages a cookie is never read, mgmt's and
-  glidex's API tokens are refused (`cross_origin_token`), and so is any
-  other path (`cross_origin_path`). Other origins get no CORS headers.
+- **No calls from other sites' pages.** mgmt sends no CORS headers.
+  glidex's UI shows a tenant's storage through glidex's own server, which
+  calls mgmt server to server with the person's directory access token
+  as `Authorization: Bearer` (no cookie, so no CSRF value).
 - The browser's other accounts are in the cookie `hs_accounts`
   (`HttpOnly; SameSite=Strict; Path=/auth/accounts`), at most five; mgmt
   keeps no record of which accounts a browser holds together.

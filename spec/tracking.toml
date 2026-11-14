@@ -1962,7 +1962,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_ui_reads_a_tenant_s_storage_across_origins"
+what = "Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person"
 spec = ["19-administration.md §23.12", "D310", "I395", "I399", "I400"]
 status = "done"
 tests = [
@@ -1977,7 +1977,7 @@ spec = ["19-administration.md §23.12", "D311", "I396", "I397"]
 status = "done"
 tests = [
     "hyperstor_meta::realms::tests::clients_follow_their_bindings_through_failovers",
-    "hyperstor_meta::realms::tests::clients_and_origins_are_checked",
+    "hyperstor_meta::realms::tests::clients_are_named_as_mgmt_tokens",
     "directory_ui::a_bound_client_acts_only_in_its_realms",
 ]
 
@@ -1986,12 +1986,9 @@ id = "AD4"
 title = "A tenant's storage in glidex's UI"
 
 [[milestone.item]]
-what = "mgmt answers glidex's UI across origins with a person's directory token: the origins learned from the trust and the clients' bindings, no cookie, no API tokens (D310); glidex's pages are glidex's half"
-spec = ["19-administration.md §23.12", "D310", "I398"]
+what = "mgmt answers glidex's server, which relays a fixed set of reads for its UI with a person's directory access token, server to server, under their grants; no CORS (D310, D314); glidex's pages and relay are glidex's half"
+spec = ["19-administration.md §23.12", "D310", "D314"]
 status = "partial"
 tests = [
-    "hyperstor_mgmt::cors::tests::origins_are_compared_as_learned",
-    "hyperstor_mgmt::cors::tests::only_the_api_and_whoami_with_a_directory_token",
-    "hyperstor_mgmt::cors::tests::a_preflight_says_what_may_be_sent",
-    "directory_ui::glidex_s_ui_reads_a_tenant_s_storage_across_origins",
+    "directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person",
 ]

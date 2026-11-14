@@ -544,8 +544,9 @@ roles (I390), an access token's age (I391), the CLI's device grant (I392),
 hyperstor's half of AD4 and the driver's binding (I395, #360 stage 6),
 with these choices open for review: only hyperstor-mgmt's own identity
 acts for people (I396), management clients bound to realms and naming
-glidex's projects (I397), the origins that may call mgmt (I398), accounts
-in one browser (I399), and the pickers as views (I400). Not yet: the
+glidex's projects (I397), accounts in one browser (I399), and the pickers
+as views (I400); glidex's UI reaches mgmt through glidex's server (D314,
+settled 2026-11-14, which replaced I398's cross-origin calls). Not yet: the
 email field, and glidex's half (below). With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
@@ -640,14 +641,15 @@ the directory's own pages, since those are written there.
 
 glidex's UI shows a tenant's storage inline as well: its volumes,
 buckets and S3 keys, and usage per project, through mgmt's API, on the
-tenant's and each project's pages (AD4). The browser asks the directory
-for an access token addressed to the hyperstor cluster (glidex D69: the
-directory gives one to members of tenants opted in to it) and calls
-mgmt with it as a bearer token; mgmt allows those calls from the glidex
-UI origins it has learned (each trusted glidex cluster's datastore
-record, D311), and answers them under the person's grants as for any
-other caller. Bearer tokens, not mgmt's cookie, so no cookie crosses
-sites and no CSRF value is needed. Administering the cluster (pools,
+tenant's and each project's pages (AD4). The page asks glidex's own
+server, which relays a fixed set of calls to mgmt (D314): it asks its
+directory for an access token addressed to the hyperstor cluster for the
+person's chain (glidex D69: the directory gives one to members of tenants
+opted in to it), and calls mgmt at the trusted cluster's `api`, pinned as
+the offer said (D312), with it as a bearer token, server to server; mgmt
+answers under the person's grants as for any other caller. The browser
+never holds the token, glidex's Content-Security-Policy needs no change,
+and mgmt sends no CORS headers. Administering the cluster (pools,
 devices, nodes, members) stays in mgmt's UI, linked from each datastore.
 Why: tenants work where their VMs are, in glidex, and operators where
 the hardware is; both read the same API under the same grants, so the
@@ -667,17 +669,17 @@ half builds on:
 | What | How |
 |---|---|
 | The driver's identity | as now: `hyperstorctl token create --role mgmt --name NAME`, joined by `TokenService.Join`, `hyperstor://<cluster>/mgmt/NAME`, over mutual TLS to the cluster API (not mgmt). It may not be named `dashboard` or `web`, and never reads mgmt's rows or acts for a person (I396). |
-| Binding it | `hyperstorctl realm client --client NAME --realm R[,R...] --origins https://UI[,…]` (`RealmService.SetClientRealms`); `--realm any` unbinds. The directories' realms, and `default` for its shared image volumes. Unbound, it acts in the whole cluster as before. |
+| Binding it | `hyperstorctl realm client --client NAME --realm R[,R...]` (`RealmService.SetClientRealms`); `--realm any` unbinds. The directories' realms, and `default` for its shared image volumes. Unbound, it acts in the whole cluster as before. |
 | Calls it makes | `ClusterService.ListVolumes`, `CreateVolume`, `CloneVolume`, `CreateSnapshot`, `ListSnapshots`, `DeleteVolume`, `ExpandVolume`, `GetStatus` (still allowed bound, for its pools' space), `TrashService.ListTrash` and `PurgeFromTrash`: bound, each reaches only its realms' tenants and projects. |
 | A disk's project | `CreateVolume.directory_project` and `CloneVolume.directory_project` (strings): glidex's project id, resolved to the project linked to it among those the call reaches. Not with `project`. The shared image volume names no project (it lands in `default`, which the client must be bound to); each disk is a clone of its snapshot in its own project (D300). |
 | Refusal reasons (`ErrorInfo.reason`) | `outside_realm` (a project, volume or call outside its realms), `tenant_required` (no project, and `default` not bound), `not_found` (no project linked to that id within reach, or a volume outside it), `ambiguous_project` (an unbound client trusted by two directories using the same id), `invalid_argument` (`project` and `directory_project` both). |
-| Pages in glidex's UI | the browser calls mgmt's address directly with `Authorization: Bearer <access token>`, the directory's `at+jwt` with `aud` = this cluster's id (glidex D69), as stage 5 checks it: `POST /api/hyperstor.v1.ClusterService/ListVolumes {"pool":N}` (each volume's `tenant`, `project`, `project_name`, `size`), `S3Service/ListS3Buckets {}` (`objects`, `bytes`, `project`), `S3Service/ListS3Keys {}` (`project`), `TenantService/ListTenants {}` (projects, `glidex_id`, `default_project`), `ClusterService/GetStatus` only for a person with a cluster-wide role, and `GET /auth/whoami`. Connect's JSON (`Content-Type: application/json`, `Connect-Protocol-Version: 1`). Usage per project is summed from these: provisioned bytes from volumes' `size`, buckets' `bytes`; used bytes come with HS15's counters (#364). Answers hold only what the person's links reach (D308). |
-| CORS | allowed: each trusted directory's issuer's origin, and the `--origins` of management clients' bindings, `https` only (I398). Preflight: `Access-Control-Allow-Methods: GET, POST`, `Access-Control-Allow-Headers: authorization, content-type, connect-protocol-version, connect-timeout-ms, x-hyperstor-realm`, `Max-Age: 600`. Answers carry `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`, never `Allow-Credentials`: fetch with `credentials: "omit"`. Refused from an allowed origin: no token (`401 unauthenticated`), an `hst_` or `gxt_` token (`403 cross_origin_token`), another path (`403 cross_origin_path`); a cookie is never read. glidex's CSP `connect-src` names mgmt's origin. |
+| Pages in glidex's UI (D314) | glidex's server relays them, server to server: it calls mgmt at the trusted cluster record's `api`, pinned to the offer's pin (D312), with `Authorization: Bearer <access token>`, the directory's `at+jwt` with `aud` = this cluster's id minted for the person's chain (glidex D69), checked as in stage 5. No `Origin` and no cookie, so no CSRF value: a bearer call needs none. The fixed set: `POST /api/hyperstor.v1.ClusterService/ListVolumes {"pool":N}` (each volume's `tenant`, `project`, `project_name`, `size`), `S3Service/ListS3Buckets {}` (`objects`, `bytes`, `project`), `S3Service/ListS3Keys {}` (`project`), `TenantService/ListTenants {}` (projects, `glidex_id`, `default_project`), and `GET /auth/whoami`; Connect's JSON (`Content-Type: application/json`). Usage per project is summed from these: provisioned bytes from volumes' `size`, buckets' `bytes`; used bytes come with HS15's counters (#364). Answers hold only what the person's links reach (D308): a cluster-wide call such as `GetStatus` is refused (`permission_denied`). No token: `401 unauthenticated`; a stale directory: `503 directory_stale`. Browsers never call mgmt across origins: mgmt sends no CORS headers, and refuses a write from another site's `Origin` (`403 bad_origin`). |
 | Links to administration | a datastore links to its mgmt: an optional URL on the datastore record, else the trusted cluster's `api` from the redeem (glidex's choice). mgmt's own pages link back: tenants and projects to `<issuer origin>/tenants/<glidex id>` and `/projects/<glidex id>`, a person to `<issuer origin>/account`. |
 
 **Changes in glidex** (glidex pull requests): the `glidex-trust` crate;
-reports with storage counts; the tenant's storage pages, calling mgmt's
-API with an access token for the hyperstor cluster; links from a
+reports with storage counts; the tenant's storage pages, read through
+glidex's server, which relays them to mgmt with an access token for the
+hyperstor cluster (D314); links from a
 hyperstor datastore to its mgmt; `gxctl auth token --cluster` if it
 isn't there. Nothing changes in directories themselves: a hyperstor
 cluster is a cluster to them.

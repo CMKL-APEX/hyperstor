@@ -585,7 +585,6 @@ impl RealmService for Api {
                 .map(|(n, c)| pb::RealmClient {
                     client: n.clone(),
                     realms: c.realms.iter().map(|&r| all.name(r)).collect(),
-                    origins: c.origins.clone(),
                     ..Default::default()
                 })
                 .collect()
@@ -732,16 +731,7 @@ impl RealmService for Api {
         req: ServiceRequest<'_, pb::SetClientRealmsRequest>,
     ) -> ServiceResult<pb::SetClientRealmsResponse> {
         let names: Vec<&str> = req.realms.iter().map(|r| r.as_ref()).collect();
-        let target = format!(
-            "client {}: realms {} origins {}",
-            req.client,
-            names.join(","),
-            req.origins
-                .iter()
-                .map(|o| o.as_ref())
-                .collect::<Vec<&str>>()
-                .join(",")
-        );
+        let target = format!("client {}: realms {}", req.client, names.join(","));
         let who = self.authorize(&ctx, "SetClientRealms", &target, true)?;
         let r = async {
             let client = req.client.to_string();
@@ -749,14 +739,6 @@ impl RealmService for Api {
                 return Err(invalid(
                     "a client is the name in its mgmt certificate: 1-32 of a-z, 0-9 and -, not hyperstor-mgmt's own (dashboard, web)",
                 ));
-            }
-            let mut origins = Vec::new();
-            for o in req.origins.iter() {
-                origins.push(realms::origin(o).ok_or_else(|| {
-                    invalid(format!(
-                        "{o:?}: an origin is https://host[:port], with no path"
-                    ))
-                })?);
             }
             let all = self.realms().await?;
             let mut ids = Vec::new();
@@ -768,10 +750,8 @@ impl RealmService for Api {
                     ids.push(id);
                 }
             }
-            self.realm_rows("such realm", move |db| {
-                realms::set_client(db, &client, &ids, &origins)
-            })
-            .await
+            self.realm_rows("such realm", move |db| realms::set_client(db, &client, &ids))
+                .await
         }
         .await;
         Self::audited(&who, "SetClientRealms", &target, r)?;

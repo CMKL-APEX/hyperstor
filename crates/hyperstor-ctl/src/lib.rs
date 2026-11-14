@@ -1525,19 +1525,9 @@ pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
         "Every realm may use: {}",
         list(r.open_pools.clone(), "no pool")
     );
-    // Management clients bound to realms (D311), and their UIs (D310).
+    // Management clients bound to realms (D311).
     for c in &r.clients {
-        let _ = writeln!(
-            o,
-            "Client {} acts in: {}{}",
-            c.client,
-            c.realms.join(","),
-            if c.origins.is_empty() {
-                String::new()
-            } else {
-                format!("; its UI: {}", c.origins.join(","))
-            }
-        );
+        let _ = writeln!(o, "Client {} acts in: {}", c.client, c.realms.join(","));
     }
     o
 }

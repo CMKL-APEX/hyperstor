@@ -482,9 +482,9 @@ come from its feed.
   beside the realm picker show one tenant's or project's volumes,
   buckets and keys, and link to their pages at the directory.
 - **In glidex's UI,** a tenant's volumes, buckets and keys show on its
-  pages: the browser calls mgmt with the person's directory token. mgmt
-  allows the directory's own origin; name a glidex cluster's UI with
-  `realm client --origins` (below).
+  pages: glidex's server reads them from mgmt, at the address the offer
+  named and pinned, with the person's directory token, under their
+  roles. People's browsers don't call mgmt for this.
 
 ```bash
 hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login \
@@ -503,15 +503,12 @@ makes, lists and deletes volumes only in their tenants' projects, which
 it names by glidex's project ids, and still reads the cluster's status:
 
 ```bash
-hyperstorctl realm client --client glidex --realm acme,default \
-    --origins https://glidex.example.org
+hyperstorctl realm client --client glidex --realm acme,default
 hyperstorctl realm list                                  # Client glidex acts in: ...
 hyperstorctl realm client --client glidex --realm any    # unbound again
 ```
 
-`--origins` names that glidex cluster's UI, which may then call mgmt with
-its people's directory tokens. A realm a client is bound to can't be
-deleted. No client acts for a person or reads mgmt's own records: only
+A realm a client is bound to can't be deleted. No client acts for a person or reads mgmt's own records: only
 hyperstor-mgmt itself, so a `mgmt` token can't be named `dashboard` or
 `web`.
 
