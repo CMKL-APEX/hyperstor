@@ -3978,11 +3978,15 @@ fn install(
                     fail(&format!("dpkg -i {} failed", deb.display()));
                 }
                 changed.push(format!("libblkid1 {version}{LIBBLKID_SUFFIX}"));
-                // udev probes a device again on a change event: lsblk then
-                // shows this host's devices as hyperstor's.
-                for (_, _, path) in s.devices() {
-                    run("udevadm", &["trigger", "--action=change", &path]);
+                // udevd probes disks in its own process, with the library it
+                // loaded when it started: restart it, then have it probe this
+                // host's devices again (the cluster file's and those added),
+                // so lsblk shows them as hyperstor's.
+                run("systemctl", &["restart", "systemd-udevd"]);
+                for path in p.nodes.iter().flat_map(|n| n.paths.iter().flatten()) {
+                    run("udevadm", &["trigger", "--action=change", path]);
                 }
+                run("udevadm", &["settle", "-t", "30"]);
             }
             let mark = under(root, &format!("/{LIBBLKID_MARK}"));
             if let Some(d) = mark.parent() {

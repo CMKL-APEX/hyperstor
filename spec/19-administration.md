@@ -138,7 +138,9 @@ Ubuntu ships it:
   `blkid` recognises images of both device formats and refuses a damaged
   superblock (D332).
 - `hyperstor-install install --libblkid-deb DIR` installs the file for
-  the host's libblkid1 version, found before anything changes (D333).
+  the host's libblkid1 version, found before anything changes (D333),
+  then restarts `systemd-udevd` (it probes in its own process, with the
+  library it loaded at start) and has it probe the nodes' devices again.
 - Ubuntu's next util-linux replaces it, so security fixes aren't held
   back; the host check then warns (D334).
 
