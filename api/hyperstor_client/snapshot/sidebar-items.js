@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_CHAIN","MAX_SNAPSHOTS"],"struct":["Branch"]};
