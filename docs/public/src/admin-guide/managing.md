@@ -531,6 +531,13 @@ only `CAP_SYS_ADMIN` read, comes from
 installer sets up on storage hosts. File-backed devices have no drive to
 read; they report their service time only.
 
+An NVMe drive whose controller isn't `live` (resetting after a PCIe
+fault, for example) isn't asked for its temperature or SMART log, since
+the kernel holds those reads until the controller comes back; its note
+says `controller resetting: not read`. A drive whose reading stops
+coming for 90 s shows no temperature or SMART and the note `the drive
+isn't answering`.
+
 ## Metrics
 
 Each storage node started with `--admin ADDR` (the installer uses

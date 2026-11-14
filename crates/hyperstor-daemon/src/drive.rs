@@ -6,19 +6,29 @@
 //! installer configured and nothing else.
 //!
 //! Read on a thread of its own every 30 s, never on a reactor: sysfs reads
-//! and the helper's answer may block.
+//! and the helper's answer may block. A controller that isn't `live` (one
+//! resetting after a PCIe fault) is not asked anything: the kernel holds a
+//! read of its temperature until the controller comes back, which may be
+//! never, and a thread blocked there can't be killed (#369). A reading
+//! older than [`STALE`] is reported as the drive not answering.
 
 use hyperstor_proto::perf::{Drive, Smart};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Where `hyperstor-smart` listens (its socket unit).
 pub const SMART_SOCKET: &str = "/run/hyperstor-smart/smart.sock";
 
 /// How often the drive is read.
 pub const EVERY: Duration = Duration::from_secs(30);
+
+/// A reading older than this is stale: the thread is stuck in a read.
+pub const STALE: Duration = Duration::from_secs(3 * 30);
+
+/// The latest reading and when it was taken.
+pub type Cell = Arc<Mutex<Option<(Instant, Drive)>>>;
 
 fn read(p: &Path) -> Option<String> {
     std::fs::read_to_string(p)
@@ -69,10 +79,20 @@ pub fn from_sysfs(sys: &Path, path: &Path, cpu: Option<usize>) -> Drive {
         .or_else(|| read(&sub.join("rev")))
         .unwrap_or_default();
     let dev = controller(&sub).unwrap_or(sub);
+    // An NVMe controller's state is the kernel's own; reading it doesn't go
+    // to the drive. Anything but `live` (resetting, connecting, dead) and
+    // the drive isn't asked: its temperature and SMART would wait on it.
+    let live = match read(&dev.join("state")) {
+        Some(s) if s != "live" => {
+            d.smart_note = format!("controller {s}: not read");
+            false
+        }
+        _ => true,
+    };
     if let Some(n) = read(&dev.join("numa_node")).and_then(|n| n.parse().ok()) {
         d.numa.0 = n;
     }
-    if let Ok(rd) = std::fs::read_dir(&dev) {
+    if live && let Ok(rd) = std::fs::read_dir(&dev) {
         for e in rd.flatten() {
             if e.file_name().to_string_lossy().starts_with("hwmon")
                 && let Some(t) = read(&e.path().join("temp1_input")).and_then(|t| t.parse().ok())
@@ -196,7 +216,7 @@ pub fn ask_helper(socket: &Path, path: &Path) -> Result<Smart, String> {
 /// Reads device `path`'s drive now and every [`EVERY`] on a thread of its
 /// own, keeping the latest in the returned cell. Files and memory have
 /// nothing to read: the cell stays empty.
-pub fn watch(device: u32, path: Option<PathBuf>, cpu: Option<usize>) -> Arc<Mutex<Option<Drive>>> {
+pub fn watch(device: u32, path: Option<PathBuf>, cpu: Option<usize>) -> Cell {
     let cell = Arc::new(Mutex::new(None));
     let Some(path) = path else {
         return cell;
@@ -211,7 +231,10 @@ pub fn watch(device: u32, path: Option<PathBuf>, cpu: Option<usize>) -> Arc<Mute
                     p.file_name()
                         .is_some_and(|n| n.to_string_lossy().starts_with("nvme"))
                 });
-                if nvme {
+                if !d.smart_note.is_empty() {
+                    // The controller isn't live: the helper's command
+                    // would wait on it too.
+                } else if nvme {
                     match ask_helper(Path::new(SMART_SOCKET), &path) {
                         Ok(s) => d.smart = Some(s),
                         Err(e) => d.smart_note = e,
@@ -219,11 +242,33 @@ pub fn watch(device: u32, path: Option<PathBuf>, cpu: Option<usize>) -> Arc<Mute
                 } else {
                     d.smart_note = "not an NVMe drive".into();
                 }
-                *c.lock().unwrap_or_else(|e| e.into_inner()) = Some(d);
+                *c.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), d));
                 std::thread::sleep(EVERY);
             }
         });
     cell
+}
+
+/// The drive as of `now`: the latest reading, or, when it is older than
+/// [`STALE`], what doesn't change (model, firmware, link, NUMA) and a note
+/// that the drive isn't answering, with no temperature or SMART to pass off
+/// as current.
+pub fn latest(cell: &Cell, now: Instant) -> Option<Drive> {
+    let (at, d) = cell.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    Some(aged(d, now.saturating_duration_since(at)))
+}
+
+fn aged(mut d: Drive, age: Duration) -> Drive {
+    if age >= STALE {
+        d.temperature_mc = None;
+        d.smart = None;
+        // The same words every time, so an unchanged report isn't resent.
+        d.smart_note = format!(
+            "no reading for over {} s: the drive isn't answering",
+            STALE.as_secs()
+        );
+    }
+    d
 }
 
 #[cfg(test)]
@@ -333,10 +378,59 @@ mod tests {
         assert_eq!(m.link, Some((4, 4, 160, 160)));
         assert_eq!(m.numa, (0, 0));
         assert!(!m.write_cache);
+        // A controller resetting (a PCIe fault): its temperature isn't read.
+        // The file is a FIFO with no writer, which blocks a read as the
+        // kernel's hwmon read does on such a controller (#369): reading it
+        // would hang this test.
+        w("class/block/nvme7n1/queue/write_cache", "write back");
+        w("class/block/nvme7n1/device/model", "Stuck Drive");
+        w("class/block/nvme7n1/device/state", "resetting");
+        std::fs::create_dir_all(root.join("class/block/nvme7n1/device/hwmon2")).unwrap();
+        let fifo = root.join("class/block/nvme7n1/device/hwmon2/temp1_input");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(dev.join("nvme7n1"), b"").unwrap();
+        let r = from_sysfs(&root, &dev.join("nvme7n1"), None);
+        assert_eq!(r.model, "Stuck Drive");
+        assert_eq!(r.temperature_mc, None);
+        assert_eq!(r.smart_note, "controller resetting: not read");
+        // Live, it is read as before.
+        w("class/block/nvme9n1/device/state", "live");
+        let l = from_sysfs(&root, &dev.join("nvme9n1"), Some(3));
+        assert_eq!((l.temperature_mc, l.smart_note.as_str()), (Some(44850), ""));
         // A file has none of it.
         let f = from_sysfs(&root, &root.join("nothing.img"), None);
         assert_eq!((f.model.as_str(), f.link, f.numa), ("", None, (-1, -1)));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A reading that stops coming (the thread stuck in a read) is reported
+    /// as the drive not answering, not as its last temperature and SMART.
+    #[test]
+    fn a_stale_reading_says_the_drive_isnt_answering() {
+        let d = Drive {
+            model: "Fast Drive".into(),
+            temperature_mc: Some(40000),
+            link: Some((4, 4, 160, 160)),
+            smart: Some(Smart::default()),
+            ..Default::default()
+        };
+        let cell: Cell = Arc::new(Mutex::new(None));
+        let t0 = Instant::now();
+        assert_eq!(latest(&cell, t0), None);
+        *cell.lock().unwrap() = Some((t0, d.clone()));
+        assert_eq!(latest(&cell, t0 + EVERY), Some(d.clone()));
+        let late = latest(&cell, t0 + STALE).unwrap();
+        assert_eq!((late.model.as_str(), late.link), ("Fast Drive", d.link));
+        assert_eq!((late.temperature_mc, &late.smart), (None, &None));
+        assert!(late.smart_note.contains("isn't answering"));
+        // The same note later, so an unchanged drive isn't resent each window.
+        assert_eq!(latest(&cell, t0 + 2 * STALE), Some(late));
     }
 
     #[test]
