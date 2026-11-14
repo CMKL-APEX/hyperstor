@@ -763,7 +763,7 @@ struct ShardState {
     /// This window's load, for the leader (`perf`, D218).
     heat: heat::Heat,
     /// The drive's latest reading (`drive::watch`), if it has one.
-    drive: RefCell<Option<Arc<std::sync::Mutex<Option<hyperstor_proto::perf::Drive>>>>>,
+    drive: RefCell<Option<drive::Cell>>,
 }
 
 /// Coarse deadlines for the I/O path: one ticker per reactor wakes them
@@ -4846,7 +4846,7 @@ impl ShardState {
                 .drive
                 .borrow()
                 .as_ref()
-                .and_then(|c| c.lock().unwrap_or_else(|e| e.into_inner()).clone());
+                .and_then(|c| drive::latest(c, std::time::Instant::now()));
             since_drive = since_drive.saturating_add(window_ms);
             let drive = match now {
                 Some(d) if sent_drive.as_ref() != Some(&d) || since_drive >= 30_000 => {

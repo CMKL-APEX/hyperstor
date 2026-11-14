@@ -1001,6 +1001,8 @@ pub struct LeaderView {
     pub flapping: Flapping,
     pub space: DeviceSpace,
     pub stuck: Stuck,
+    /// Devices whose drives aren't answering, with their notes (#369).
+    pub drives: Vec<(u32, String)>,
 }
 
 /// How long a follower keeps the leader's view: `GetStatus` is polled
@@ -1532,7 +1534,14 @@ impl Meta {
             flapping: self.flapping(now),
             space: self.space.borrow().clone(),
             stuck: self.stuck_now(now),
+            drives: self.drives_not_answering(),
         }
+    }
+
+    /// The devices whose latest drive reading says the drive isn't
+    /// answering (#369), and their notes: known to the leader only.
+    pub fn drives_not_answering(&self) -> Vec<(u32, String)> {
+        self.perf.borrow().not_answering()
     }
 
     /// The PGs devices reported stuck in the last [`STUCK_FOR`] (I276).
@@ -1566,7 +1575,12 @@ impl Meta {
                 Ok((hyperstor_proto::Msg::StuckStateOk { stuck }, _)) => stuck,
                 _ => Vec::new(),
             };
-            Some((state, stuck))
+            // Asked apart too (#369): a leader from before answers an error.
+            let drives = match c.call(&hyperstor_proto::Msg::DriveState, &[]).await {
+                Ok((hyperstor_proto::Msg::DriveStateOk { drives }, _)) => drives,
+                _ => Vec::new(),
+            };
+            Some((state, stuck, drives))
         };
         let Ok(Some((
             (
@@ -1579,6 +1593,7 @@ impl Meta {
                 _,
             ),
             stuck,
+            drives,
         ))) = hyperstor_reactor::time::timeout(LEADER_VIEW_FOR, asked).await
         else {
             return None;
@@ -1595,6 +1610,7 @@ impl Meta {
             flapping: flapping.into_iter().collect(),
             space: space.into_iter().map(|(d, t, f)| (d, (t, f))).collect(),
             stuck,
+            drives,
         };
         *self.leader_view.borrow_mut() = Some((Instant::now(), v.clone()));
         Some(v)
@@ -4018,6 +4034,7 @@ impl Meta {
                     | Msg::ScrubReport { .. }
                     | Msg::Stuck { .. }
                     | Msg::StuckState
+                    | Msg::DriveState
                     | Msg::ScrubAges { .. }
                     | Msg::PgUsage { .. }
                     | Msg::PerfReport { .. }
@@ -4186,6 +4203,9 @@ impl Meta {
             }
             Ok(Msg::StuckState) => Msg::StuckStateOk {
                 stuck: self.stuck_now(Instant::now()),
+            },
+            Ok(Msg::DriveState) => Msg::DriveStateOk {
+                drives: self.drives_not_answering(),
             },
             Ok(Msg::LeaderState) => {
                 let v = self.own_view(Instant::now());
@@ -6164,6 +6184,58 @@ mod tests {
                 }
             ));
         });
+    }
+
+    /// #369: a device reports a drive that isn't answering; the leader
+    /// answers `DriveState` with it (what a follower's status asks), its own
+    /// view has it, and health warns of it. A later report that answers
+    /// clears it.
+    #[test]
+    fn a_drive_not_answering_reaches_health() {
+        use hyperstor_proto::*;
+        let meta = Meta::new(map());
+        let report = |note: &str| {
+            meta.handle(Ok(Msg::PerfReport {
+                report: perf::PerfReport {
+                    device: 1000,
+                    window_ms: 5000,
+                    drive: Some(perf::Drive {
+                        smart_note: note.into(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            }))
+        };
+        assert!(matches!(
+            report("controller resetting: not read"),
+            Msg::Noted { .. }
+        ));
+        let want = vec![(1000, "controller resetting: not read".to_string())];
+        assert!(
+            matches!(meta.handle(Ok(Msg::DriveState)), Msg::DriveStateOk { drives } if drives == want)
+        );
+        let v = meta.own_view(Instant::now());
+        assert_eq!(v.drives, want);
+        let mut s = crate::api::status(
+            &meta.map.borrow(),
+            None,
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
+        crate::api::drives(&mut s, &v.drives);
+        assert_eq!(s.health, hyperstor_api::Health::HEALTH_WARN);
+        assert!(
+            s.reasons.iter().any(|r| r.text
+                == "device 1000's drive isn't answering (controller resetting: not read)"),
+            "{:?}",
+            s.reasons
+        );
+        report("");
+        assert!(
+            matches!(meta.handle(Ok(Msg::DriveState)), Msg::DriveStateOk { drives } if drives.is_empty())
+        );
     }
 
     /// I276: a device reports a fence for an epoch past the leader's map

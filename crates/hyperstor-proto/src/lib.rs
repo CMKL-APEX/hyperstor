@@ -543,6 +543,14 @@ pub enum Msg {
     StuckStateOk {
         stuck: Vec<(u32, u32, u32, u64)>,
     },
+    /// Follower to leader: the devices whose drives aren't answering
+    /// (#369), for a follower's status. A leader from before it answers
+    /// with an error.
+    DriveState,
+    /// Answer to `DriveState`: each such device and its drive's note.
+    DriveStateOk {
+        drives: Vec<(u32, String)>,
+    },
     /// Primary `device` to map service: the bytes its copy of each PG
     /// holds (D155), for the PGs whose bytes changed since its last
     /// report, or for all it is primary of if `full`.
@@ -860,6 +868,8 @@ mod kind {
     pub const PORT_REPORT: u16 = 92;
     pub const HOST: u16 = 93;
     pub const DEVICE_FORMAT: u16 = 94;
+    pub const DRIVE_STATE: u16 = 95;
+    pub const DRIVE_STATE_OK: u16 = 96;
     pub const ERROR: u16 = 99;
 }
 
@@ -966,6 +976,8 @@ impl Msg {
             Msg::Stuck { .. } => STUCK,
             Msg::StuckState => STUCK_STATE,
             Msg::StuckStateOk { .. } => STUCK_STATE_OK,
+            Msg::DriveState => DRIVE_STATE,
+            Msg::DriveStateOk { .. } => DRIVE_STATE_OK,
             Msg::Noted { .. } => NOTED,
             Msg::PgUsage { .. } => PG_USAGE,
             Msg::PerfReport { .. } => PERF_REPORT,
@@ -1019,6 +1031,7 @@ impl Msg {
                 | Msg::PgUsageOk { .. }
                 | Msg::LeaderStateOk { .. }
                 | Msg::StuckStateOk { .. }
+                | Msg::DriveStateOk { .. }
                 | Msg::FetchOk { .. }
                 | Msg::FetchPartOk { .. }
                 | Msg::VersionsOk { .. }
@@ -1324,6 +1337,12 @@ impl Msg {
             Msg::StuckStateOk { stuck } => {
                 e.seq(stuck, |e, (d, p, g, ep)| {
                     e.u32(*d).u32(*p).u32(*g).u64(*ep);
+                });
+            }
+            Msg::DriveState => {}
+            Msg::DriveStateOk { drives } => {
+                e.seq(drives, |e, (d, note)| {
+                    e.u32(*d).str(note);
                 });
             }
             Msg::PgUsage { device, full, pgs } => {
@@ -1696,6 +1715,10 @@ impl Msg {
             STUCK_STATE => Msg::StuckState,
             STUCK_STATE_OK => Msg::StuckStateOk {
                 stuck: d.seq(20, |d| Ok((d.u32()?, d.u32()?, d.u32()?, d.u64()?)))?,
+            },
+            DRIVE_STATE => Msg::DriveState,
+            DRIVE_STATE_OK => Msg::DriveStateOk {
+                drives: d.seq(8, |d| Ok((d.u32()?, d.str()?.to_string())))?,
             },
             NOTED => Msg::Noted {
                 map_epoch: d.u64()?,
@@ -2732,6 +2755,10 @@ mod tests {
             Msg::StuckState,
             Msg::StuckStateOk {
                 stuck: vec![(1000, 1, 2, 6_305_791)],
+            },
+            Msg::DriveState,
+            Msg::DriveStateOk {
+                drives: vec![(2, "controller resetting: not read".into())],
             },
             Msg::PgUsage {
                 device: 2000,
