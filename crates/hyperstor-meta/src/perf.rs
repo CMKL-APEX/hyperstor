@@ -160,6 +160,20 @@ impl Perf {
             .collect()
     }
 
+    /// The devices whose latest drive reading says the drive isn't
+    /// answering (#369), with the drive's note.
+    pub fn not_answering(&self) -> Vec<(u32, String)> {
+        self.devices
+            .iter()
+            .filter_map(|(id, d)| {
+                d.drive
+                    .as_ref()
+                    .filter(|dr| dr.not_answering())
+                    .map(|dr| (*id, dr.smart_note.clone()))
+            })
+            .collect()
+    }
+
     /// Volumes by requests per second over the fresh PG windows, summed
     /// across their PGs: (lineage, branch, requests/s, bytes/s), most
     /// first. Each PG names only its top few, so a volume spread thinly
@@ -680,6 +694,43 @@ mod tests {
             .expect("hot volume");
         assert!(hot.command.contains("move-volume") && hot.command.contains("--pool 3"));
         assert!(!rules.iter().any(|r| r.1 == "device 1001"), "{f:#?}");
+    }
+
+    /// A drive whose controller isn't live, or whose readings stopped,
+    /// is listed for health (#369); a drive that answers, or a later
+    /// report that answers again, isn't.
+    #[test]
+    fn drives_not_answering_are_listed() {
+        let mut p = Perf::default();
+        let note = |n: &str| Drive {
+            smart_note: n.into(),
+            ..Default::default()
+        };
+        for (dev, n) in [
+            (1000, "controller resetting: not read"),
+            (1001, "no reading for over 90 s: the drive isn't answering"),
+            (1002, ""),
+            (1003, "not an NVMe drive"),
+        ] {
+            let mut r = report(dev, vec![], 2);
+            r.drive = Some(note(n));
+            p.note(r);
+        }
+        let l = p.not_answering();
+        assert_eq!(
+            l.iter().map(|x| x.0).collect::<Vec<_>>(),
+            vec![1000, 1001],
+            "{l:?}"
+        );
+        assert_eq!(l[0].1, "controller resetting: not read");
+        // A report without a drive keeps the last one; one that answers
+        // again clears it.
+        p.note(report(1000, vec![], 2));
+        assert_eq!(p.not_answering().len(), 2);
+        let mut r = report(1000, vec![], 2);
+        r.drive = Some(note(""));
+        p.note(r);
+        assert_eq!(p.not_answering(), vec![(1001, l[1].1.clone())]);
     }
 
     #[test]

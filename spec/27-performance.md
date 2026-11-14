@@ -88,6 +88,23 @@ does one read-only thing for named devices, and a process per request
 holds nothing between them. Files and memory devices have no drive:
 their reports carry service time only.
 
+**A drive that isn't answering** (#369, I402, D331). The kernel holds
+every command to an NVMe controller that is resetting, a temperature
+read included, uninterruptibly, for as long as the controller stays that
+way; a PCIe fault can make that hours. So:
+
+- The thread reads the controller's `state` first: the kernel's own,
+  answered without the drive. Unless it is `live`, it reads neither the
+  temperature nor the SMART log, and the drive's note says `controller
+  <state>: not read`.
+- Each reading keeps its time. One older than 90 s (three rounds) is
+  reported without temperature or SMART, noted `no reading for over 90 s:
+  the drive isn't answering`: the thread is stuck in a read that began
+  before the controller failed.
+- Health warns `device D's drive isn't answering (<note>)`. The leader
+  has the reports; a follower asks it with `DriveState`, apart from
+  `LeaderState`, so a leader from before it still answers the rest.
+
 ### 30.4 The leader's view and the API (D218)
 
 The leader keeps, in memory only: each PG's newest window (for 20 s, then

@@ -57,6 +57,16 @@ minutes, up to a minute; ten quiet minutes reset it. Health warns
 `node N flapping (K transitions in 10 min)`. Look at that node's log for
 what holds it (see [Health](managing.md#health)).
 
+## A drive that stops answering
+
+A PCIe fault can leave an NVMe drive's controller resetting with no end:
+the kernel holds every command to it, and its device stalls rather than
+fails. Health warns `device D's drive isn't answering (controller
+resetting: not read)`, or `(no reading for over 90 s: ...)` when the
+drive's readings stopped coming. The device may still be in: take it out
+(`hyperstorctl out D`) so its PGs are served from their other copies, then
+look at the kernel log (`dmesg`) for the controller and its PCIe port.
+
 ## A storage node is cut off from its peers
 
 Storage nodes ping each other several times a second, over UDP (TCP for

@@ -1652,3 +1652,15 @@ owner took every recommendation:
 glidex refusing to delete a project that still holds hyperstor storage
 (D316) is a glidex follow-up, as is the device grant in glidex-trust's
 fake directory (D323, glidex#502).
+
+## Drives not answering (2026-11-14)
+
+A PCIe fault on a pilot host left an NVMe controller resetting for
+hours; `hyperstord`'s drive thread blocked reading it (#369). The fix
+(I402) stops reading a controller that isn't `live` and reports a
+reading that stops coming as the drive not answering. The owner was
+asked whether health should also say so:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 293 | Whether health warns when a device's drive isn't answering, or only the drive's note says it | Health warns | D331 |
