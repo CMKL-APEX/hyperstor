@@ -6,9 +6,9 @@
 import { Fragment, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { fmtRate } from "../perf";
-import { cluster, realms } from "../api";
+import { cluster, inScope, realms } from "../api";
 import type { Snapshot, Volume } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, realmOf, td, useCan, usePoll, useRealm } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, realmOf, td, useCan, usePoll, useRealm, useScope } from "../ui";
 
 type Dialog =
   | { kind: "create" }
@@ -59,6 +59,9 @@ function Snapshots({ v, open }: { v: Volume; open: (d: Dialog) => void }) {
 export default function Volumes() {
   const can = useCan();
   const realm = useRealm();
+  // The tenant and project picked in the header (D310): their volumes
+  // alone, and new ones go there.
+  const scope = useScope();
   // The cluster's pools, or acting in a realm, those it may use: its own,
   // then those open to every realm.
   const status = usePoll(async () => {
@@ -153,7 +156,7 @@ export default function Volumes() {
         head={["", "Id", "Name", "Size", "State", ...(realm ? [] : ["Realm"]), "Attached by", ""]}
         empty="No volumes in this pool."
       >
-        {(vols.data ?? []).map((v) => (
+        {(vols.data ?? []).filter((v) => inScope(scope, v.tenant, v.project)).map((v) => (
           <Fragment key={v.id}>
             <tr data-testid={`volume-${v.name}`}>
               <td className={td}>
@@ -219,13 +222,15 @@ export default function Volumes() {
         <ActionDialog
           title="Create a volume"
           submit="Create"
-          cli={`${realm ? `--in-realm ${realm} ` : ""}create-volume --pool ${pool} --size ${size || "S"}${name ? ` --name ${name}` : ""}${tenant ? ` --tenant ${tenant}` : ""}`}
+          cli={`${realm ? `--in-realm ${realm} ` : ""}create-volume --pool ${pool} --size ${size || "S"}${name ? ` --name ${name}` : ""}${
+            scope.project ? ` --project ${scope.project}` : scope.tenant ? ` --tenant ${scope.tenant}` : tenant ? ` --tenant ${tenant}` : ""
+          }`}
           run={async () => {
             const bytes = parseSize(size);
             if (bytes == null) throw new Error("size: bytes, or a number with K, M, G or T");
-            const t = tenant.trim() === "" ? 0 : Number(tenant);
+            const t = scope.tenant ?? (tenant.trim() === "" ? 0 : Number(tenant));
             if (!Number.isInteger(t) || t < 0) throw new Error("tenant: a number, or empty for none");
-            const r = await cluster.createVolume({ pool, size: bytes, name, tenant: t });
+            const r = await cluster.createVolume({ pool, size: bytes, name, tenant: scope.project ? 0 : t, project: scope.project ?? 0 });
             setNotice(`Created volume ${r.volume?.id}.`);
           }}
           onClose={close}
@@ -236,9 +241,15 @@ export default function Volumes() {
           <Field label="Size (bytes, or with K, M, G or T)">
             <input className={input} value={size} onChange={(e) => setSize(e.target.value)} />
           </Field>
-          <Field label={realm ? `Tenant (one of realm ${realm}'s)` : "Tenant (empty: none)"}>
-            <input className={input} value={tenant} inputMode="numeric" onChange={(e) => setTenant(e.target.value)} />
-          </Field>
+          {scope.tenant == null ? (
+            <Field label={realm ? `Tenant (one of realm ${realm}'s)` : "Tenant (empty: none)"}>
+              <input className={input} value={tenant} inputMode="numeric" onChange={(e) => setTenant(e.target.value)} />
+            </Field>
+          ) : (
+            <p className="text-xs text-slate-500">
+              In {scope.project ? `project ${scope.project}` : `tenant ${scope.tenant}'s default project`}, as picked above.
+            </p>
+          )}
         </ActionDialog>
       )}
       {dialog?.kind === "delete" && (

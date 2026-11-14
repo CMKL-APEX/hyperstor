@@ -161,6 +161,9 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("RealmService.SetTenantRealm", Group::Secure, true),
     // Which volumes a host may attach (D251).
     ("RealmService.SetHostRealms", Group::Secure, true),
+    // Where a management client acts, and which UIs may call mgmt with a
+    // person's directory token (D310, D311).
+    ("RealmService.SetClientRealms", Group::Secure, true),
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
     ("MapService.GetMapBackup", Group::Secure, true),
@@ -532,6 +535,7 @@ mod tests {
             "ClusterService.CreatePool",
             "ClusterService.GetStatus",
             "RealmService.SetHostRealms",
+            "RealmService.SetClientRealms",
             "RealmService.SetTenantRealm",
             "OperationService.CancelOperation",
             "Dashboard.Read",

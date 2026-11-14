@@ -536,6 +536,13 @@ impl RealmService for Api {
                 .map(|(h, _)| h.clone())
                 .collect()
         };
+        let clients_of = |id: u32| -> Vec<String> {
+            all.clients
+                .iter()
+                .filter(|(_, c)| c.realms.contains(&id))
+                .map(|(n, _)| n.clone())
+                .collect()
+        };
         let tenants_of = |id: u32| -> Vec<u32> {
             all.tenants
                 .iter()
@@ -551,6 +558,7 @@ impl RealmService for Api {
             pools,
             pool_ids,
             hosts: hosts_of(0),
+            clients: clients_of(0),
             ..Default::default()
         }];
         for r in &all.realms {
@@ -565,10 +573,24 @@ impl RealmService for Api {
                 pools,
                 pool_ids,
                 hosts: hosts_of(r.id),
+                clients: clients_of(r.id),
                 ..Default::default()
             });
         }
         out.retain(|r| scope.realm(r.id));
+        // Bindings name other realms too: the cluster's callers only.
+        let clients = if scope.whole() {
+            all.clients
+                .iter()
+                .map(|(n, c)| pb::RealmClient {
+                    client: n.clone(),
+                    realms: c.realms.iter().map(|&r| all.name(r)).collect(),
+                    ..Default::default()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let (open_pools, open_pool_ids) = map
             .pools
             .values()
@@ -579,6 +601,7 @@ impl RealmService for Api {
             realms: out,
             open_pools,
             open_pool_ids,
+            clients,
             ..Default::default()
         }
         .into())
@@ -700,6 +723,56 @@ impl RealmService for Api {
         .await;
         Self::audited(&who, "SetHostRealms", &target, r)?;
         Ok(pb::SetHostRealmsResponse::default().into())
+    }
+
+    async fn set_client_realms(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetClientRealmsRequest>,
+    ) -> ServiceResult<pb::SetClientRealmsResponse> {
+        let names: Vec<&str> = req.realms.iter().map(|r| r.as_ref()).collect();
+        let target = format!("client {}: realms {}", req.client, names.join(","));
+        let who = self.authorize(&ctx, "SetClientRealms", &target, true)?;
+        let r = async {
+            let client = req.client.to_string();
+            if !realms::valid_client(&client) {
+                return Err(invalid(
+                    "a client is the name in its mgmt certificate: 1-32 of a-z, 0-9 and -, not hyperstor-mgmt's own (dashboard, web)",
+                ));
+            }
+            let all = self.realms().await?;
+            let mut ids = Vec::new();
+            for n in &names {
+                let id = all
+                    .id(n)
+                    .ok_or_else(|| invalid(format!("no realm {n:?}")))?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            self.realm_rows("such realm", move |db| realms::set_client(db, &client, &ids))
+                .await
+        }
+        .await;
+        Self::audited(&who, "SetClientRealms", &target, r)?;
+        Ok(pb::SetClientRealmsResponse::default().into())
+    }
+}
+
+impl Api {
+    /// The realms management client `client` acts in (D311, I397): `None`
+    /// while unbound (the cluster as a whole, as before), its realms' names
+    /// once bound. Read from this member's copy on every call; a copy that
+    /// can't be read reaches nothing rather than everything.
+    pub(super) fn client_reach(&self, client: &str) -> Option<Vec<String>> {
+        let db = self.s3_store().ok()?;
+        match realms::load(&db) {
+            Ok(r) => r.client_realms(client),
+            Err(e) => {
+                eprintln!("hyperstor-meta: realms unreadable for client {client}: {e:?}");
+                Some(Vec::new())
+            }
+        }
     }
 }
 

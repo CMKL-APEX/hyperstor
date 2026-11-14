@@ -9,6 +9,9 @@
 //!   realm.
 //! - `hrealm/<host>`: the realms a host is bound to (D251, D259), by the
 //!   name it gives (D261); a host without a row is unbound.
+//! - `crealm/<client>`: the realms a management client is bound to (D311,
+//!   I397), by the name in its `mgmt` certificate (glidex's datastore
+//!   driver, D122); a client without a row is unbound.
 //!
 //! "default" is realm 0 and has no row. What one row needs of the others
 //! (a realm deleted only when nothing names it, a pool taken from a realm
@@ -27,6 +30,7 @@ const REALM: &str = "realm/";
 const TENANT: &str = "trealm/";
 const POOL: &str = "prealm/";
 const HOST: &str = "hrealm/";
+const CLIENT: &str = "crealm/";
 
 /// The realm every tenant is in until put in another.
 pub const DEFAULT_REALM: &str = "default";
@@ -82,6 +86,16 @@ pub struct Realms {
     pub pools: BTreeMap<u32, Vec<u32>>,
     /// Hosts bound to realms, and the realms.
     pub hosts: BTreeMap<String, Vec<u32>>,
+    /// Management clients bound to realms (D311), by their certificate's
+    /// name.
+    pub clients: BTreeMap<String, Client>,
+}
+
+/// A management client's binding (D311, I397).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Client {
+    /// The realms it acts in; never empty in a stored row.
+    pub realms: Vec<u32>,
 }
 
 impl Realms {
@@ -129,6 +143,14 @@ impl Realms {
     /// binding an administrator made.
     pub fn gateway_realms(&self, gateway: &str) -> Vec<u32> {
         self.hosts.get(gateway).cloned().unwrap_or_else(|| vec![0])
+    }
+
+    /// The realms management client `client` is bound to, by name (D311):
+    /// `None` while it is unbound, and acts in the cluster as a whole.
+    pub fn client_realms(&self, client: &str) -> Option<Vec<String>> {
+        self.clients
+            .get(client)
+            .map(|c| c.realms.iter().map(|&r| self.name(r)).collect())
     }
 
     /// Whether `realm` may use `pool` (D249): it's on the pool's list, or
@@ -188,6 +210,11 @@ fn read(t: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Realms, E
         let row = format!("{HOST}{host}");
         out.hosts
             .insert(host, ids(&v).map_err(|e| bad(&row, e.to_string()))?);
+    }
+    for (client, v) in scan(t, CLIENT)? {
+        let row = format!("{CLIENT}{client}");
+        let realms = ids(&v).map_err(|e| bad(&row, e.to_string()))?;
+        out.clients.insert(client, Client { realms });
     }
     Ok(out)
 }
@@ -249,11 +276,16 @@ pub fn delete(db: &Db, name: &str) -> Result<(), Error> {
         let pools = now.pools.values().filter(|l| l.contains(&r.id)).count();
         let places = placements.iter().filter(|p| p.realm == r.id).count();
         let hosts = now.hosts.values().filter(|l| l.contains(&r.id)).count();
-        if tenants + pools + places + hosts > 0 {
+        let clients = now
+            .clients
+            .values()
+            .filter(|c| c.realms.contains(&r.id))
+            .count();
+        if tenants + pools + places + hosts + clients > 0 {
             return Err(refused(
                 "realm_in_use",
                 format!(
-                    "realm {name} has {tenants} tenant(s), is on {pools} pool(s)' lists, has {places} S3 placement(s) and {hosts} host(s) bound to it"
+                    "realm {name} has {tenants} tenant(s), is on {pools} pool(s)' lists, has {places} S3 placement(s), {hosts} host(s) and {clients} management client(s) bound to it"
                 ),
             ));
         }
@@ -287,6 +319,43 @@ pub fn set_host(db: &Db, host: &str, realms: &[u32]) -> Result<(), Error> {
         } else {
             let mut e = Enc::new();
             e.seq(realms, |e, r| {
+                e.u32(*r);
+            });
+            t.insert(row.as_str(), e.into_vec().as_slice())
+                .map_err(StoreError::from)?;
+        }
+        Ok(())
+    })
+}
+
+/// Whether `client` may name a management client: as a `mgmt` token's
+/// name (1-32 of a-z, 0-9 and -), and not hyperstor-mgmt's own.
+pub fn valid_client(client: &str) -> bool {
+    (1..=32).contains(&client.len())
+        && client
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !hyperstor_pki::MGMT_RESERVED.contains(&client)
+}
+
+/// Binds management client `client` to `realms` (D311), which must exist
+/// ("default" is 0); none unbinds it.
+pub fn set_client(db: &Db, client: &str, realms: &[u32]) -> Result<(), Error> {
+    write(db, |t, now| {
+        for &r in realms {
+            if r != 0 && !now.realms.iter().any(|x| x.id == r) {
+                return Err(Error::NotFound);
+            }
+        }
+        let row = format!("{CLIENT}{client}");
+        if realms.is_empty() {
+            t.remove(row.as_str()).map_err(StoreError::from)?;
+        } else {
+            let mut l = realms.to_vec();
+            l.sort_unstable();
+            l.dedup();
+            let mut e = Enc::new();
+            e.seq(&l, |e, r| {
                 e.u32(*r);
             });
             t.insert(row.as_str(), e.into_vec().as_slice())
@@ -598,6 +667,122 @@ mod tests {
         assert!(valid_name("acme") && valid_name("t-1"));
         for bad in ["", "default", "Acme", "a/b", &"a".repeat(64)] {
             assert!(!valid_name(bad), "{bad}");
+        }
+    }
+
+    /// D311: clients are named as `mgmt` tokens are, never as
+    /// hyperstor-mgmt itself.
+    #[test]
+    fn clients_are_named_as_mgmt_tokens() {
+        assert!(valid_client("glidex") && valid_client("gx-2"));
+        for bad in ["", "dashboard", "web", "Glidex", "a/b", &"a".repeat(33)] {
+            assert!(!valid_client(bad), "{bad}");
+        }
+    }
+
+    /// D311, I397: what a management client is bound to, kept in the
+    /// store, against a model, through random bindings, unbindings, realms
+    /// made and deleted, and failovers (the store reopened, as by a new
+    /// leader). A realm a client is bound to isn't deleted; a binding
+    /// naming a realm that doesn't exist changes nothing.
+    #[test]
+    fn clients_follow_their_bindings_through_failovers() {
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: u64) -> u64 {
+                self.0 ^= self.0 >> 12;
+                self.0 ^= self.0 << 25;
+                self.0 ^= self.0 >> 27;
+                self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) % n
+            }
+        }
+        const NAMES: [&str; 3] = ["acme", "blue", "cyan"];
+        const CLIENTS: [&str; 3] = ["glidex", "gx-b", "script"];
+        for seed in 1..=200u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("map.redb");
+            let mut db = Db::create(&path).unwrap();
+            // The model: realms by name (id), and clients' realms.
+            let mut realms: BTreeMap<&str, u32> = BTreeMap::new();
+            let mut clients: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
+            for _ in 0..40 {
+                match rng.below(6) {
+                    0 => {
+                        let n = NAMES[rng.below(3) as usize];
+                        let r = create(&db, &realm(n));
+                        if realms.contains_key(n) {
+                            assert!(matches!(r, Err(Error::Refused { .. })), "{r:?}");
+                        } else {
+                            realms.insert(n, r.unwrap());
+                        }
+                    }
+                    1 | 2 => {
+                        let c = CLIENTS[rng.below(3) as usize];
+                        // Ids of realms that may or may not exist; 0 is
+                        // "default", which always does.
+                        let mut ids: Vec<u32> =
+                            (0..1 + rng.below(2)).map(|_| rng.below(5) as u32).collect();
+                        let r = set_client(&db, c, &ids);
+                        if ids
+                            .iter()
+                            .any(|&i| i != 0 && !realms.values().any(|&x| x == i))
+                        {
+                            assert!(matches!(r, Err(Error::NotFound)), "{r:?}");
+                        } else {
+                            r.unwrap();
+                            ids.sort_unstable();
+                            ids.dedup();
+                            clients.insert(c, ids);
+                        }
+                    }
+                    3 => {
+                        let c = CLIENTS[rng.below(3) as usize];
+                        set_client(&db, c, &[]).unwrap();
+                        clients.remove(c);
+                    }
+                    4 => {
+                        let n = NAMES[rng.below(3) as usize];
+                        let r = delete(&db, n);
+                        match realms.get(n) {
+                            None => assert!(matches!(r, Err(Error::NotFound)), "{r:?}"),
+                            Some(id) if clients.values().any(|l| l.contains(id)) => {
+                                assert!(
+                                    matches!(
+                                        r,
+                                        Err(Error::Refused {
+                                            reason: "realm_in_use",
+                                            ..
+                                        })
+                                    ),
+                                    "{r:?}"
+                                );
+                            }
+                            Some(_) => {
+                                r.unwrap();
+                                realms.remove(n);
+                            }
+                        }
+                    }
+                    _ => {
+                        // A failover: the next leader reads the same rows.
+                        drop(db);
+                        db = Db::create(&path).unwrap();
+                    }
+                }
+                let now = load(&db).unwrap();
+                let got: BTreeMap<&str, Vec<u32>> = CLIENTS
+                    .iter()
+                    .filter_map(|c| now.clients.get(*c).map(|x| (*c, x.realms.clone())))
+                    .collect();
+                assert_eq!(got, clients, "seed {seed}");
+                for c in CLIENTS {
+                    let want = clients
+                        .get(c)
+                        .map(|l| l.iter().map(|&i| now.name(i)).collect::<Vec<String>>());
+                    assert_eq!(now.client_realms(c), want, "seed {seed} {c}");
+                }
+            }
         }
     }
 }

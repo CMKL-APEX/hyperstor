@@ -37,8 +37,8 @@ covered by tests that run on every change.
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
 | AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
-| AD5: People from glidex directories | In progress |
-| AD4: A tenant's storage in glidex's UI | Planned |
+| AD5: People from glidex directories | Done |
+| AD4: A tenant's storage in glidex's UI | In progress |
 
 ## HS0: Local storage engine and reactor
 
@@ -298,4 +298,11 @@ covered by tests that run on every change.
 |---|---|
 | mgmt trusts glidex directories: offers, redeem and ends, the feed replica and the tenants and projects it makes, reports with storage counts | Done |
 | Logins through a directory (browser, access and API tokens, hyperstorctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness | Done |
-| The account picker, tenant and project pickers (D310), and the driver's projects bound to realms (D311) | Planned |
+| Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person | Done |
+| glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311) | Done |
+
+## AD4: A tenant's storage in glidex's UI
+
+| Feature | Status |
+|---|---|
+| mgmt answers glidex's server, which relays a fixed set of reads for its UI with a person's directory access token, server to server, under their grants; no CORS (D310, D314); glidex's pages and relay are glidex's half | In progress |

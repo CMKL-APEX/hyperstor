@@ -4,16 +4,25 @@
 // placements, the pools new buckets go in (D232); and realms (D248).
 import { useState } from "react";
 import { Modal, TokenReveal } from "@glidex/ui-kit";
-import { cluster, realms, s3 } from "../api";
+import { cluster, inScope, realms, s3, tenants } from "../api";
 import type { S3Bucket } from "../gen/hyperstor/v1/admin_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Table, fmtBytes, fmtTime, input, td, useCan, usePoll, useRealm } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Table, fmtBytes, fmtTime, input, td, useCan, usePoll, useRealm, useScope } from "../ui";
 
 const named = (b: S3Bucket) => `${b.tenant}/${b.name}`;
 /** A pool by name, or by id when it was deleted since. */
 const pool = (name: string, id: number) => name || `#${id} (deleted)`;
 
+/** Each tenant's default project, to place a key or bucket of project 0
+ * in the project picked (D310). */
+function useDefaults() {
+  const t = usePoll(async () => (await tenants.listTenants({})).tenants, 0);
+  return (tenant: number) => t.data?.find((x) => x.id === tenant)?.defaultProject ?? 0;
+}
+
 function Buckets() {
   const can = useCan();
+  const scope = useScope();
+  const defaults = useDefaults();
   const [tenant, setTenant] = useState("");
   const list = usePoll(async () => (await s3.listS3Buckets({ tenant: Number(tenant || "0") })).buckets, 10000);
   const [doomed, setDoomed] = useState<S3Bucket | null>(null);
@@ -33,7 +42,7 @@ function Buckets() {
     >
       <ErrorText error={list.error} />
       <Table head={["Bucket", "Realm", "Data pool", "Index pool", "Objects", "Size", "Created", ""]} empty="No buckets.">
-        {(list.data ?? []).map((b) => (
+        {(list.data ?? []).filter((b) => inScope(scope, b.tenant, b.project, defaults(b.tenant))).map((b) => (
           <tr key={named(b)} data-testid={`bucket-${b.tenant}-${b.name}`}>
             <td className={`${td} font-mono`}>{named(b)}</td>
             <td className={td}>{b.realm}</td>
@@ -77,6 +86,8 @@ function Buckets() {
 }
 
 function Keys() {
+  const scope = useScope();
+  const defaults = useDefaults();
   const list = usePoll(async () => (await s3.listS3Keys({})).keys, 0);
   const [making, setMaking] = useState(false);
   const [tenant, setTenant] = useState("");
@@ -94,7 +105,7 @@ function Keys() {
     >
       <ErrorText error={list.error} />
       <Table head={["Key", "Tenant", "Realm", "Description", "Made", "By", ""]} empty="No access keys.">
-        {(list.data ?? []).map((k) => (
+        {(list.data ?? []).filter((k) => inScope(scope, k.tenant, k.project, defaults(k.tenant))).map((k) => (
           <tr key={k.id} data-testid={`s3key-${k.id}`}>
             <td className={`${td} font-mono text-xs`}>{k.id}</td>
             <td className={td}>{k.tenant}</td>
@@ -115,9 +126,9 @@ function Keys() {
         <ActionDialog
           title="Make an access key"
           submit="Make"
-          cli={`s3 key create --tenant ${tenant || "N"}${description ? ` --description '${description}'` : ""}`}
+          cli={`s3 key create --tenant ${scope.tenant ?? (tenant || "N")}${scope.project ? ` --project ${scope.project}` : ""}${description ? ` --description '${description}'` : ""}`}
           run={async () => {
-            const r = await s3.createS3Key({ tenant: Number(tenant || "0"), description });
+            const r = await s3.createS3Key({ tenant: scope.tenant ?? Number(tenant || "0"), project: scope.project ?? 0, description });
             setMade({ id: r.key?.id ?? "", secret: r.secret });
           }}
           onClose={(done) => {
@@ -127,9 +138,16 @@ function Keys() {
             if (done) list.reload();
           }}
         >
-          <Field label="Tenant">
-            <input className={input} value={tenant} onChange={(e) => setTenant(e.target.value.replace(/\D/g, ""))} />
-          </Field>
+          {scope.tenant == null ? (
+            <Field label="Tenant">
+              <input className={input} value={tenant} onChange={(e) => setTenant(e.target.value.replace(/\D/g, ""))} />
+            </Field>
+          ) : (
+            <p className="text-xs text-slate-500">
+              For tenant {scope.tenant}
+              {scope.project ? `, its new buckets in project ${scope.project}` : ""}, as picked above.
+            </p>
+          )}
           <Field label="Description">
             <input className={input} value={description} onChange={(e) => setDescription(e.target.value)} />
           </Field>

@@ -18,6 +18,7 @@ import {
   OperationService,
   RealmService,
   S3Service,
+  TenantService,
   TokenService,
 } from "./gen/hyperstor/v1/admin_pb";
 
@@ -67,7 +68,12 @@ const realmListeners = new Set<() => void>();
 export function getActingRealm(): string | null {
   return actingRealm;
 }
+let realmChosen = false;
 export function setActingRealm(r: string | null) {
+  // Another realm's tenants: the tenant and project picked go (not at the
+  // first choice, which restores the last one's).
+  if (realmChosen && r !== actingRealm) setScope({ tenant: null, project: null });
+  realmChosen = true;
   actingRealm = r;
   try {
     if (r) localStorage.setItem("hyperstor.realm", r);
@@ -88,6 +94,54 @@ export function savedRealm(): string | null {
   } catch {
     return null;
   }
+}
+
+/** The tenant and project the pages show (D310): a view within what the
+ * person's grants reach, chosen in the header; null for all. Creations
+ * go to the chosen project. The server's reach doesn't change with it
+ * (I400). */
+export interface Scope {
+  tenant: number | null;
+  project: number | null;
+}
+let scope: Scope = { tenant: savedId("hyperstor.tenant"), project: savedId("hyperstor.project") };
+const scopeListeners = new Set<() => void>();
+function savedId(k: string): number | null {
+  try {
+    const v = Number(localStorage.getItem(k) ?? "");
+    return Number.isInteger(v) && v > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+export function getScope(): Scope {
+  return scope;
+}
+export function setScope(s: Scope) {
+  scope = s;
+  try {
+    for (const [k, v] of [
+      ["hyperstor.tenant", s.tenant],
+      ["hyperstor.project", s.project],
+    ] as const) {
+      if (v) localStorage.setItem(k, String(v));
+      else localStorage.removeItem(k);
+    }
+  } catch {
+    // No storage: the choice lasts this page.
+  }
+  scopeListeners.forEach((f) => f());
+}
+export function onScope(f: () => void): () => void {
+  scopeListeners.add(f);
+  return () => scopeListeners.delete(f);
+}
+/** Whether a volume, bucket or key of `tenant` in `project` (0: the
+ * tenant's default project, whose id is `defaultProject`) is shown. */
+export function inScope(s: Scope, tenant: number, project: number, defaultProject = 0): boolean {
+  if (s.tenant != null && tenant !== s.tenant) return false;
+  if (s.project != null && (project || defaultProject) !== s.project) return false;
+  return true;
 }
 
 const realmHeader: Interceptor = (next) => async (req) => {
@@ -132,6 +186,7 @@ export const trash = client(TrashService);
 export const audit = client(AuditService);
 export const s3 = client(S3Service);
 export const realms = client(RealmService);
+export const tenants = client(TenantService);
 /** Every realm the person may see, not only the one they act in. */
 export const allRealms = client(RealmService, anyRealm);
 
@@ -195,7 +250,57 @@ export interface Me extends WhoAmIBase {
   roles: string[];
   method: string;
   build: Build | null;
+  /** The issuer of the glidex directory they signed in through, if any. */
+  directory: string | null;
 }
+
+/** The web origin of a directory's issuer, where its pages are (D310). */
+export function directoryOrigin(issuer: string): string | null {
+  try {
+    return new URL(issuer).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** An account this browser holds (D310, as glidex D71). */
+export interface Account {
+  user: string;
+  /** Its directory's issuer; empty for a local account. */
+  directory: string;
+  realm: string;
+  method: string;
+  active: boolean;
+}
+
+/** The browser's accounts, outside the session's handling: they work on
+ * the login page too. */
+async function plain<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const t = csrfToken();
+  if (method !== "GET" && t) headers["X-Hyperstor-CSRF"] = t;
+  const r = await fetch(path, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+    credentials: "same-origin",
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new ApiError(r.status, j.reason ?? "error", j.message ?? `${path}: ${r.status}`);
+  return j as T;
+}
+
+export const accounts = {
+  list: () => plain<{ accounts: Account[] }>("GET", "/auth/accounts").then((r) => r.accounts),
+  switchTo: async (user: string) => {
+    const r = await plain<{ csrf: string | null }>("POST", "/auth/accounts/switch", { user });
+    setCsrf(r.csrf);
+  },
+  add: () => plain("POST", "/auth/accounts/add", {}),
+  remove: (user: string) => plain("POST", "/auth/accounts/remove", { user }),
+  logoutAll: () => plain("POST", "/auth/accounts/logout-all", {}),
+};
 
 export interface Person {
   name: string;
@@ -246,7 +351,14 @@ export function setClaimCode(c: string) {
 export const auth: AuthApi<Me, Methods> = {
   methods: () => call<Methods>("GET", "/auth/methods"),
   whoami: async () => {
-    const w = await call<{ user: string; roles: string[]; method: string; csrf: string | null; build?: Build }>(
+    const w = await call<{
+      user: string;
+      roles: string[];
+      method: string;
+      csrf: string | null;
+      build?: Build;
+      directory?: string | null;
+    }>(
       "GET",
       "/auth/whoami",
       undefined,
@@ -258,6 +370,7 @@ export const auth: AuthApi<Me, Methods> = {
       method: w.method,
       csrf: w.csrf,
       build: w.build ?? null,
+      directory: w.directory ?? null,
       user: { display_name: w.user },
     };
   },

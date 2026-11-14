@@ -494,3 +494,57 @@ test("single sign-on with the identity provider", async ({ page }) => {
   // Back where the login began.
   await expect(page).toHaveURL(/\/volumes$/);
 });
+
+test("the tenant and project pickers show theirs, and new volumes go there", async ({ page }) => {
+  // ui-e2e-cluster made tenant lab, its project web, and a volume in each
+  // of lab's projects.
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-lab-default-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
+  await page.getByLabel("Tenant", { exact: true }).selectOption({ label: "tenant lab" });
+  await expect(page.getByTestId("volume-lab-default-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-lab-web-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
+  await page.getByLabel("Project", { exact: true }).selectOption({ label: "project web" });
+  await expect(page.getByTestId("volume-lab-web-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-lab-default-vol")).toHaveCount(0);
+  // A new volume goes to the project picked.
+  await page.getByRole("button", { name: "Create volume" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText(/as picked above/)).toBeVisible();
+  await expect(dialog.getByText(/create-volume .* --project \d+/)).toBeVisible();
+  await dialog.getByLabel("Name").fill("picked-vol");
+  await dialog.getByLabel(/Size/).fill("4M");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByTestId("volume-picked-vol")).toBeVisible();
+  // The choice is kept on this browser, and "All tenants" shows all again.
+  await page.reload();
+  await expect(page.getByLabel("Project", { exact: true })).toHaveValue(/\d+/);
+  await page.getByLabel("Tenant", { exact: true }).selectOption("");
+  await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
+});
+
+test("a browser holds two accounts and switches between them", async ({ page }) => {
+  // A password's account and the identity provider's: one each.
+  await logIn(page, "ann");
+  await page.getByRole("button", { name: "Accounts" }).click();
+  await page.getByRole("menuitem", { name: "Add another account" }).click();
+  // The login page, with ann's account to continue as.
+  await expect(page.getByTestId("held-accounts")).toContainText("Continue as ann");
+  await page.getByRole("button", { name: /Sign in with/ }).click();
+  await expect(page.getByTestId("whoami")).toContainText(process.env.HS_SSO!);
+  await page.getByRole("button", { name: "Accounts" }).click();
+  await expect(page.getByTestId("account-ann")).toBeVisible();
+  await page.getByTestId("account-ann").getByRole("menuitem", { name: "Switch" }).click();
+  await expect(page.getByTestId("whoami")).toContainText("ann");
+  // The provider's account is held now; removing it ends it.
+  await page.getByRole("button", { name: "Accounts" }).click();
+  const sso = page.getByTestId(`account-${process.env.HS_SSO!}`);
+  await expect(sso).toBeVisible();
+  await sso.getByRole("menuitem", { name: "Remove" }).click();
+  await expect(sso).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Sign out of all accounts" }).click();
+  await expect(page.getByLabel("Username")).toBeVisible();
+  await expect(page.getByTestId("held-accounts")).toHaveCount(0);
+});

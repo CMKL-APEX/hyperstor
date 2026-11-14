@@ -310,6 +310,10 @@ namespace Hyperstor {
   action "RealmService.SetHostRealms" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  // Where a management client acts, and which UIs may call mgmt (D310, D311).
+  action "RealmService.SetClientRealms" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "CaService.ListCertificates" in [Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
