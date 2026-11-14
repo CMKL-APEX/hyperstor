@@ -87,7 +87,29 @@ pub struct Identity {
     pub id: String,
 }
 
+/// The id of `hyperstor-mgmt`'s own `mgmt` identity, which the installer
+/// gives every map service member (`mgmt.crt`). Only it acts for people
+/// and reads mgmt's rows; any other `mgmt` identity (glidex's datastore
+/// driver, a script enrolled with a token, D122) is a management client
+/// (01-implementation-notes.md I396).
+pub const MGMT_SERVICE: &str = "dashboard";
+
+/// Ids a `mgmt` token may not give: the service's own, and its web
+/// certificate's (D108).
+pub const MGMT_RESERVED: [&str; 2] = [MGMT_SERVICE, "web"];
+
 impl Identity {
+    /// Whether this is `hyperstor-mgmt` itself ([`MGMT_SERVICE`]).
+    pub fn is_mgmt_service(&self) -> bool {
+        self.role == Role::Mgmt && self.id == MGMT_SERVICE
+    }
+
+    /// Whether this is a management client: a `mgmt` identity other than
+    /// `hyperstor-mgmt`'s (D122, D311), such as glidex's datastore driver.
+    pub fn is_mgmt_client(&self) -> bool {
+        self.role == Role::Mgmt && self.id != MGMT_SERVICE
+    }
+
     pub fn uri(&self) -> String {
         format!(
             "hyperstor://{}/{}/{}",

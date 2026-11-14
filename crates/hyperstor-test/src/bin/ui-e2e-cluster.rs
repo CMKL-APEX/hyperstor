@@ -6,7 +6,8 @@
 //! hyperstor-mgmt serving the UI in `DIR` (`bun run build`'s `dist`), with
 //! the made-up PAM helper ([`hyperstor_test::start_authd`]) and a made-up
 //! identity provider that logs any browser in as `dee@example.com`. It
-//! realm `acme` holding tenant 7. It
+//! realm `acme` holding tenant 7, and tenant `lab` with a volume in its
+//! default project and one in its project `web`. It
 //! prints one JSON line: `url`, the claim code, the people's password,
 //! and the provider's person; then runs until its standard input closes,
 //! and removes everything.
@@ -60,6 +61,35 @@ fn main() {
     c.ctl(&["realm", "create", "--name", "acme"]).ok();
     c.ctl(&["realm", "tenant", "--tenant", "7", "--realm", "acme"])
         .ok();
+    // Tenant lab with its project web, and a volume in each of its
+    // projects, for the tenant and project pickers (D310).
+    let lab = c.ctl(&["tenant", "create", "--name", "lab", "--json"]).ok();
+    let lab: serde_json::Value = serde_json::from_str(&lab.out).unwrap();
+    let lab = lab["tenant"]["id"].as_u64().unwrap().to_string();
+    let web = c
+        .ctl(&[
+            "project", "create", "--tenant", &lab, "--name", "web", "--json",
+        ])
+        .ok();
+    let web: serde_json::Value = serde_json::from_str(&web.out).unwrap();
+    let web = web["project"]["id"].as_u64().unwrap().to_string();
+    for (name, flag, id) in [
+        ("lab-default-vol", "--tenant", &lab),
+        ("lab-web-vol", "--project", &web),
+    ] {
+        c.ctl(&[
+            "create-volume",
+            "--pool",
+            "1",
+            "--size",
+            "4M",
+            "--name",
+            name,
+            flag,
+            id,
+        ])
+        .ok();
+    }
     let claim = c.claim_code();
     println!(
         "{}",

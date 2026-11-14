@@ -1175,6 +1175,10 @@ message CreateVolumeRequest {
   // Its project (D300), whose tenant it then is; 0: its tenant's default
   // project. Naming both, they must agree.
   uint32 project = 6;
+  // Its project by its id in a glidex directory (D311), for glidex's
+  // datastore driver, which knows no hyperstor ids: the project linked to
+  // it among those the caller reaches. Not with `project`.
+  string directory_project = 7 [json_name = "directory_project"];
 }
 
 message CreateVolumeResponse {
@@ -1252,6 +1256,9 @@ message CloneVolumeRequest {
   // The clone's project (D300), which may be another tenant's; 0: the
   // parent's project and tenant.
   uint32 project = 5;
+  // The clone's project by its id in a glidex directory (D311), as for
+  // CreateVolume. Not with `project`.
+  string directory_project = 6 [json_name = "directory_project"];
 }
 
 message CloneVolumeResponse {

@@ -105,6 +105,10 @@ fn meta_error(e: String, kind: fn(String) -> ConnectError, reason: &str) -> Conn
 /// Why a member that doesn't lead refuses to start an operation.
 const OPS_BY_LEADER: &str = "operations are started by the leader";
 
+/// Calls of the cluster as a whole that a management client bound to
+/// realms may still make (I397): reads its driver needs.
+const CLIENT_CLUSTER_READS: [&str; 1] = ["GetStatus"];
+
 /// Calls per second per caller, and the burst allowed (§23.3).
 const RATE: f64 = 200.0;
 const BURST: f64 = 1000.0;
@@ -440,6 +444,14 @@ impl Api {
         need: Need,
     ) -> Result<String, ConnectError> {
         let (who, reach) = self.authorize_reach(ctx, op, target, need)?;
+        // A management client bound to realms still reads the cluster's
+        // status, for its pools' space (glidex's `capacity`, I397).
+        if reach.is_some()
+            && CLIENT_CLUSTER_READS.contains(&op)
+            && hyperstor_pki::Identity::parse(&who).is_some_and(|i| i.is_mgmt_client())
+        {
+            return Ok(who);
+        }
         if let Some(realms) = reach {
             let e = with_reason(
                 ConnectError::permission_denied(format!(
@@ -565,7 +577,10 @@ impl Api {
                         who.role,
                         hyperstor_pki::Role::Host | hyperstor_pki::Role::Orchestrator
                     ),
-                    Need::Mgmt => who.role == hyperstor_pki::Role::Mgmt,
+                    // hyperstor-mgmt's own identity, not any `mgmt` one: a
+                    // management client (glidex's driver, a script, D122)
+                    // reads no person's rows (I396).
+                    Need::Mgmt => who.is_mgmt_service(),
                     Need::S3 => who.role == hyperstor_pki::Role::S3,
                     Need::Member => who.role == hyperstor_pki::Role::Meta,
                     Need::Identity | Need::Anyone => true,
@@ -592,7 +607,14 @@ impl Api {
                 // it is limited to (D262); no one else may.
                 let realms = ctx.header(hyperstor_api::REALMS_HEADER);
                 match ctx.header(hyperstor_api::ON_BEHALF_HEADER) {
-                    None if realms.is_none() => who.uri(),
+                    // A management client bound to realms acts only in
+                    // them (D311, I397), as a person holding roles there.
+                    None if realms.is_none() => {
+                        if who.is_mgmt_client() {
+                            reach = self.client_reach(&who.id);
+                        }
+                        who.uri()
+                    }
                     None => {
                         return Err(refuse(
                             &who.uri(),
@@ -606,10 +628,7 @@ impl Api {
                         ));
                     }
                     Some(v) => match v.to_str() {
-                        Ok(p)
-                            if who.role == hyperstor_pki::Role::Mgmt
-                                && hyperstor_api::valid_person(p) =>
-                        {
+                        Ok(p) if who.is_mgmt_service() && hyperstor_api::valid_person(p) => {
                             let p = format!("{} for {p}", who.uri());
                             if let Some(r) = realms {
                                 match r.to_str().ok().and_then(hyperstor_api::parse_reach) {
@@ -3200,22 +3219,32 @@ impl ClusterService for Api {
         if req.project != 0 {
             target.push_str(&format!(" project {}", req.project));
         }
+        if !req.directory_project.is_empty() {
+            target.push_str(&format!(" directory project {:?}", req.directory_project));
+        }
         let (who, reach) = self.authorize_in(&ctx, "CreateVolume", &target, true)?;
         let scope = self.scope(reach).await?;
         // A project names its tenant (D300).
         let tenancy = self.tenancy().await?;
-        let (tenant, project) = match project_owner(
+        let named = directory_project(
             &tenancy,
-            req.tenant,
+            &scope,
             req.project,
+            req.directory_project,
             &who,
             "CreateVolume",
             &target,
-        ) {
-            Ok(o) => o,
-            Err(e) => return Err(e),
-        };
-        if tenant == 0 && project == 0 {
+        )?;
+        let (tenant, project) =
+            match project_owner(&tenancy, req.tenant, named, &who, "CreateVolume", &target) {
+                Ok(o) => o,
+                Err(e) => return Err(e),
+            };
+        // A management client bound to "default" among its realms puts what
+        // names no project there on purpose (glidex's image volumes, I397).
+        let client_default = scope.realm(0)
+            && hyperstor_pki::Identity::parse(&who).is_some_and(|i| i.is_mgmt_client());
+        if tenant == 0 && project == 0 && !client_default {
             scope.named(
                 &who,
                 "CreateVolume",
@@ -3457,6 +3486,12 @@ impl ClusterService for Api {
             Some(parse_volume_id(req.new_id)?)
         };
         let mut target = format!("volume {id:032x} snapshot {}", req.epoch);
+        if !req.directory_project.is_empty() {
+            target.push_str(&format!(
+                " into directory project {:?}",
+                req.directory_project
+            ));
+        }
         // Into another project, maybe another tenant's (D300).
         // Resolved to its tenant once the caller is known (snap).
         let owner = if req.project == 0 {
@@ -3472,7 +3507,12 @@ impl ClusterService for Api {
             new_id,
             owner,
         };
-        match self.snap(&ctx, "CloneVolume", target, true, op).await? {
+        let dproj = (!req.directory_project.is_empty())
+            .then(|| (req.project, req.directory_project.to_string()));
+        match self
+            .snap_with(&ctx, "CloneVolume", target, true, op, dproj)
+            .await?
+        {
             crate::SnapDone::Volume(v) => Ok(pb::CloneVolumeResponse {
                 volume: Some(volume_pb(&v)).into(),
                 ..Default::default()
@@ -3873,9 +3913,28 @@ impl Api {
         write: bool,
         op: crate::SnapOp,
     ) -> Result<crate::SnapDone, ConnectError> {
+        self.snap_with(ctx, rpc, target, write, op, None).await
+    }
+
+    /// [`Api::snap`], a clone naming its project by a glidex directory's id
+    /// (`dproj`: the `project` also given, and that id, D311).
+    async fn snap_with(
+        &self,
+        ctx: &RequestContext,
+        rpc: &str,
+        target: String,
+        write: bool,
+        op: crate::SnapOp,
+        dproj: Option<(u32, String)>,
+    ) -> Result<crate::SnapDone, ConnectError> {
         let (who, reach) = self.authorize_in(ctx, rpc, &target, write)?;
         let scope = self.scope(reach).await?;
         let mut op = op;
+        if let (Some((given, glidex)), crate::SnapOp::Clone { owner, .. }) = (dproj, &mut op) {
+            let tenancy = self.tenancy().await?;
+            let p = directory_project(&tenancy, &scope, given, &glidex, &who, rpc, &target)?;
+            *owner = Some((0, p));
+        }
         if let crate::SnapOp::Clone {
             owner: Some(owner), ..
         } = &mut op
@@ -4004,6 +4063,56 @@ fn parse_volume_id(s: &str) -> Result<u128, ConnectError> {
 /// in (D300): a project names its tenant, and naming both they must
 /// agree; a moving project takes nothing new (D303). With no project, the
 /// tenant's default project, when it has a record; else none (0).
+/// The project a call names: `project`, or the one linked to glidex
+/// directory project `glidex` among those `scope` reaches (D311, I397);
+/// both named is refused. A directory's project ids are its own, so two
+/// directories' may be the same: an unbound caller reaching both is
+/// asked for hyperstor's id instead (`ambiguous_project`).
+fn directory_project(
+    tenancy: &crate::tenancy::Tenancy,
+    scope: &realms::Scope,
+    project: u32,
+    glidex: &str,
+    who: &str,
+    op: &str,
+    target: &str,
+) -> Result<u32, ConnectError> {
+    if glidex.is_empty() {
+        return Ok(project);
+    }
+    let fail = |e: ConnectError| {
+        refused(who, op, target, &e);
+        e
+    };
+    if project != 0 {
+        return Err(fail(with_reason(
+            ConnectError::invalid_argument("name a project or a directory's project, not both"),
+            "invalid_argument",
+        )));
+    }
+    let found: Vec<u32> = tenancy
+        .projects
+        .iter()
+        .filter(|p| p.glidex_id == glidex && scope.container(p.tenant, p.id))
+        .map(|p| p.id)
+        .collect();
+    match found[..] {
+        [one] => Ok(one),
+        [] => Err(fail(with_reason(
+            ConnectError::not_found(format!(
+                "no project linked to directory project {glidex:?} that this call reaches"
+            )),
+            "not_found",
+        ))),
+        _ => Err(fail(with_reason(
+            ConnectError::invalid_argument(format!(
+                "directory project {glidex:?} is linked in several directories: name hyperstor's project id"
+            )),
+            "ambiguous_project",
+        ))),
+    }
+}
+
 fn project_owner(
     tenancy: &crate::tenancy::Tenancy,
     tenant: u32,

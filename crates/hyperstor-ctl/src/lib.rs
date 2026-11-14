@@ -1050,6 +1050,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("RealmService.DeleteRealm", "realm delete"),
     ("RealmService.SetTenantRealm", "realm tenant"),
     ("RealmService.SetHostRealms", "realm host"),
+    ("RealmService.SetClientRealms", "realm client"),
     ("RealmService.SetPoolRealms", "realm pool"),
     ("TenantService.CreateTenant", "tenant create"),
     ("TenantService.ListTenants", "tenant list"),
@@ -1524,6 +1525,20 @@ pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
         "Every realm may use: {}",
         list(r.open_pools.clone(), "no pool")
     );
+    // Management clients bound to realms (D311), and their UIs (D310).
+    for c in &r.clients {
+        let _ = writeln!(
+            o,
+            "Client {} acts in: {}{}",
+            c.client,
+            c.realms.join(","),
+            if c.origins.is_empty() {
+                String::new()
+            } else {
+                format!("; its UI: {}", c.origins.join(","))
+            }
+        );
+    }
     o
 }
 

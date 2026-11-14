@@ -186,6 +186,8 @@ never goes in `FILE` itself.
 | `POST /auth/directory/start` | `{"directory", "return_to"?, "reauth"?}` → `{"redirect"}`: where to send the browser to sign in at a trusted glidex directory (its issuer or id) |
 | `GET /auth/directory/callback` | Where the directory sends the browser back; then on to `return_to` with a session |
 | `POST /auth/logout` | Ends the session |
+| `GET /auth/accounts` | The accounts this browser holds, one per directory (`local` for this cluster's own): `{"accounts": [{"user", "directory", "realm", "method", "active"}]}`; no login needed |
+| `POST /auth/accounts/switch`, `add`, `remove`, `logout-all` | Switch to a held account (`{"user"}`, answers its `csrf`), put the active one aside to sign in as another, end a held one (`{"user"}`), or end them all. From a page of this site (`Origin`), with the CSRF value while signed in |
 | `GET`, `POST /auth/tokens`, `DELETE /auth/tokens/ID` | Your API tokens: list, make (`{"name", "days"?}`; the token is shown once), revoke |
 | `GET /auth/users`, `PUT /auth/users/NAME/roles`, `DELETE /auth/users/NAME` | People (security administrators). Roles are `role`, `role@realm`, `role@tenant:NAME` or `role@project:TENANT/NAME`; a security administrator in realms sees and sets only those realms' grants, and the rest stay |
 | `POST /api/hyperstor.v1.SERVICE/METHOD` | The cluster API's call, as it came (Connect, gRPC-Web; JSON or protobuf), if your roles allow it |
@@ -205,7 +207,8 @@ again), `permission_denied` (403), `csrf` (403), `bad_origin` (403),
 `login_failed` (401), `rate_limited` (429), `directory_stale` (503: the
 person's directory hasn't been heard from for longer than its
 `max_staleness`), `not_operator` and `from_directory` (403: roles a
-directory's person can't be given here). After 10 failed logins
+directory's person can't be given here), `cross_origin_token` and
+`cross_origin_path` (403, below), `too_many_accounts` (409). After 10 failed logins
 from one address in 5 minutes, logins from it get `rate_limited`, with
 `Retry-After`, until the window passes; other addresses aren't affected.
 
@@ -222,6 +225,19 @@ from one address in 5 minutes, logins from it get `rate_limited`, with
   `X-Hyperstor-CSRF`, and a write from another site's `Origin` is
   refused.
 - Pages carry a strict Content-Security-Policy and may not be framed.
+- **Other origins.** glidex's UI shows a tenant's storage by calling mgmt
+  from the person's browser. Pages at a trusted directory's origin (its
+  issuer's), or at an origin named on a management client's binding
+  (`hyperstorctl realm client --origins`), may call the cluster API
+  (`POST /api/hyperstor.v1.*`) and `GET /auth/whoami` with the
+  directory's access token as `Authorization: Bearer`; answers name the
+  origin (`Access-Control-Allow-Origin`, `Vary: Origin`), never
+  credentials. From those pages a cookie is never read, mgmt's and
+  glidex's API tokens are refused (`cross_origin_token`), and so is any
+  other path (`cross_origin_path`). Other origins get no CORS headers.
+- The browser's other accounts are in the cookie `hs_accounts`
+  (`HttpOnly; SameSite=Strict; Path=/auth/accounts`), at most five; mgmt
+  keeps no record of which accounts a browser holds together.
 - Every login and every change is audited on standard error as a JSON
   line with the person (`user:NAME`) and how they logged in, and sent to
   the cluster's audit log in `.meta`. mgmt names

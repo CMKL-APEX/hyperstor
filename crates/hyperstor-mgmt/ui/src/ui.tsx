@@ -4,7 +4,7 @@
 // refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Modal, useSession } from "@glidex/ui-kit";
-import { getActingRealm, onActingRealm, rolesIn, type Me, type Methods } from "./api";
+import { getActingRealm, getScope, onActingRealm, onScope, rolesIn, type Me, type Methods, type Scope } from "./api";
 
 export function Card({ title, actions, children }: { title?: string; actions?: ReactNode; children: ReactNode }) {
   return (
@@ -206,6 +206,11 @@ const GROUPS: Record<string, string[]> = {
 /** The realm the person acts in, or null for the cluster as a whole. */
 export function useRealm(): string | null {
   return useSyncExternalStore(onActingRealm, getActingRealm);
+}
+
+/** The tenant and project picked in the header (D310). */
+export function useScope(): Scope {
+  return useSyncExternalStore(onScope, getScope);
 }
 
 /** A row's realm as lists name it (D286), with its tenant if any. */

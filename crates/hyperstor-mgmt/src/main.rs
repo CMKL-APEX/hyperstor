@@ -61,8 +61,10 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "usage: hyperstor-mgmt --listen ADDR[,ADDR...] --api ADDR[,ADDR...] --tls DIR [--metrics ADDR,ADDR...] [--authd SOCKET] [--oidc FILE] [--web-tls DIR] [--tailscale SOCKET] [--hosts NAME,...] [--proxy-ca FILE] [--trusted-proxies CIDR,...] [--proxy-only] [--ui DIR]";
 
+mod accounts;
 mod audit_ship;
 mod conn;
+mod cors;
 mod directory;
 mod front;
 mod limits;
@@ -877,6 +879,28 @@ async fn handle(state: &State, req: Req, peer: SocketAddr) -> Resp {
         let (status, body) = trust::relay(&state.members, &path, req.headers(), req.body()).await;
         return respond(status, "application/json", body);
     }
+    // A page at another origin (D310): glidex's UI, if mgmt learned its
+    // origin, with a person's directory token; any other gets no CORS
+    // headers, and its writes are refused below.
+    let scheme = if state.https { "https" } else { "http" };
+    let origin = req
+        .headers()
+        .get(http::header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .filter(|o| *o != format!("{scheme}://{host}"))
+        .map(String::from);
+    if let (Some(o), Some(l)) = (&origin, &state.login) {
+        let learned = match l.dirs.state().await {
+            Ok(st) => st.ui_origins.clone(),
+            Err(_) => Vec::new(),
+        };
+        if cors::allowed(o, &learned) {
+            return cross_origin(state, l, req, &path, o, peer).await;
+        }
+        if req.method() == http::Method::OPTIONS {
+            return error(403, "bad_origin", "this origin may not call hyperstor-mgmt");
+        }
+    }
     let read = req.method() == http::Method::GET || req.method() == http::Method::HEAD;
     match &state.login {
         None => {
@@ -900,6 +924,245 @@ async fn handle(state: &State, req: Req, peer: SocketAddr) -> Resp {
             }
             with_login(state, l, req, &path, read, peer).await
         }
+    }
+}
+
+/// A request from a page at allowed `origin` ([`cors`], D310): a
+/// preflight; else the cluster API or `whoami` with a directory's access
+/// token, never a cookie. Every answer names the origin, so the page can
+/// read refusals too.
+async fn cross_origin(
+    state: &State,
+    l: &Login,
+    mut req: Req,
+    path: &str,
+    origin: &str,
+    peer: SocketAddr,
+) -> Resp {
+    if req.method() == http::Method::OPTIONS {
+        let asked = req
+            .headers()
+            .get(http::header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|m| m.to_str().ok());
+        return cors::preflight(origin, path, asked);
+    }
+    let mut resp = if !cors::path_allowed(req.method(), path) {
+        error(
+            403,
+            "cross_origin_path",
+            "from another origin, only the cluster API and whoami",
+        )
+    } else {
+        match bearer_of(req.headers()) {
+            None => error(
+                401,
+                "unauthenticated",
+                "from another origin, a directory's access token as a bearer token",
+            ),
+            Some(t) if !cors::bearer_allowed(&t) => error(
+                403,
+                "cross_origin_token",
+                "from another origin, a directory's access token only, not an API token",
+            ),
+            Some(_) => {
+                // No cookie is read for another origin's page.
+                req.headers_mut().remove(http::header::COOKIE);
+                let read = req.method() == http::Method::GET;
+                with_login(state, l, req, path, read, peer).await
+            }
+        }
+    };
+    cors::decorate(&mut resp, origin);
+    resp
+}
+
+/// The browser's sessions: the active one (the session cookie) and the
+/// others ([`accounts`]), each live, with its directory key and person;
+/// others of the active one's directory or listed twice are ended and
+/// left out. Also the list to keep.
+struct Held {
+    active: Option<(String, people::Principal, String)>,
+    others: Vec<(String, people::Principal, String)>,
+}
+
+async fn held(state: &State, l: &Login, headers: &http::HeaderMap) -> Held {
+    let active = match cookie_of(headers, state.https) {
+        Some(c) => match session_principal(l, &c).await {
+            Ok(p) => {
+                let k = accounts::key(p.directory.as_ref().map(|d| d.id.as_str()), &p.method);
+                Some((c, p, k))
+            }
+            Err(_) => None,
+        },
+        None => None,
+    };
+    let mut others: Vec<(String, people::Principal, String)> = Vec::new();
+    for id in accounts::held(headers) {
+        if active.as_ref().is_some_and(|(a, ..)| *a == id) {
+            continue;
+        }
+        let Ok(p) = session_principal(l, &id).await else {
+            continue;
+        };
+        let k = accounts::key(p.directory.as_ref().map(|d| d.id.as_str()), &p.method);
+        // One account per directory (as glidex D71): a later login there
+        // replaced this one.
+        if active.as_ref().is_some_and(|(.., ak)| *ak == k) || others.iter().any(|(.., x)| *x == k)
+        {
+            let _ = l.people.end_session(&id).await;
+            continue;
+        }
+        others.push((id, p, k));
+    }
+    Held { active, others }
+}
+
+/// An account as `/auth/accounts` lists it.
+async fn account_json(l: &Login, p: &people::Principal, active: bool) -> serde_json::Value {
+    let (directory, realm) = match &p.directory {
+        Some(d) => match l.dirs.state().await {
+            Ok(st) => st.dir(&d.id).map_or((String::new(), String::new()), |x| {
+                (x.d.issuer.clone(), x.realm.clone())
+            }),
+            Err(_) => (String::new(), String::new()),
+        },
+        None => (String::new(), String::new()),
+    };
+    serde_json::json!({
+        "user": p.user, "directory": directory, "realm": realm,
+        "method": p.method, "active": active,
+    })
+}
+
+/// `GET /auth/accounts` and `POST /auth/accounts/{switch,add,remove,
+/// logout-all}` ([`accounts`]): public, as a person picks an account on
+/// the login page too; writes need the page's `Origin` (a cross-site one
+/// was refused already), and the active session's CSRF value if it has one.
+async fn accounts_route(state: &State, l: &Login, req: Req, peer: SocketAddr) -> Resp {
+    #[derive(serde::Deserialize, Default)]
+    struct Pick {
+        #[serde(default)]
+        user: String,
+    }
+    let h = held(state, l, req.headers()).await;
+    let path = req.uri().path().to_string();
+    let keep = |others: &[(String, people::Principal, String)]| {
+        accounts::set(
+            &others.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>(),
+            state.https,
+        )
+    };
+    let with_cookies = |mut r: Resp, cookies: Vec<String>| {
+        for c in cookies {
+            r.headers_mut()
+                .append(http::header::SET_COOKIE, c.parse().expect("cookie"));
+        }
+        r
+    };
+    if req.method() == http::Method::GET {
+        let mut list = Vec::new();
+        if let Some((_, p, _)) = &h.active {
+            list.push(account_json(l, p, true).await);
+        }
+        for (_, p, _) in &h.others {
+            list.push(account_json(l, p, false).await);
+        }
+        return with_cookies(
+            json_resp(200, serde_json::json!({ "accounts": list })),
+            vec![keep(&h.others)],
+        );
+    }
+    if req.headers().get(http::header::ORIGIN).is_none() {
+        return error(
+            403,
+            "bad_origin",
+            "an account is changed from a page of this site",
+        );
+    }
+    if let Some((_, p, _)) = &h.active {
+        let sent = req.headers().get(CSRF_HEADER).and_then(|v| v.to_str().ok());
+        if !p
+            .csrf
+            .as_deref()
+            .zip(sent)
+            .is_some_and(|(a, b)| glidex_auth::secrets::constant_eq(a, b))
+        {
+            return error(403, "csrf", "missing or wrong CSRF value");
+        }
+    }
+    let pick: Pick = serde_json::from_slice(req.body()).unwrap_or_default();
+    let mut others = h.others;
+    match path.as_str() {
+        "/auth/accounts/switch" => {
+            let Some(i) = others.iter().position(|(_, p, _)| p.user == pick.user) else {
+                return error(404, "not_found", "no such account in this browser");
+            };
+            let (id, p, _) = others.remove(i);
+            if let Some(a) = h.active {
+                others.push(a);
+            }
+            audit(&format!("user:{}", p.user), "SwitchAccount", "mgmt", "ok");
+            with_cookies(
+                json_resp(200, serde_json::json!({ "user": p.user, "csrf": p.csrf })),
+                vec![set_cookie(state, &id, None), keep(&others)],
+            )
+        }
+        "/auth/accounts/add" => {
+            let Some(a) = h.active else {
+                return json_resp(200, serde_json::json!({}));
+            };
+            if others.len() >= accounts::MAX {
+                return error(
+                    409,
+                    "too_many_accounts",
+                    "this browser holds as many accounts as it may: remove one first",
+                );
+            }
+            others.push(a);
+            with_cookies(
+                json_resp(200, serde_json::json!({})),
+                vec![set_cookie(state, "", Some(0)), keep(&others)],
+            )
+        }
+        "/auth/accounts/remove" => {
+            let Some(i) = others.iter().position(|(_, p, _)| p.user == pick.user) else {
+                return error(404, "not_found", "no such account in this browser");
+            };
+            let (id, p, _) = others.remove(i);
+            end_account(l, &id, &p).await;
+            audit(
+                &format!("user:{} from {}", p.user, peer.ip()),
+                "Logout",
+                "mgmt",
+                "ok",
+            );
+            with_cookies(json_resp(200, serde_json::json!({})), vec![keep(&others)])
+        }
+        "/auth/accounts/logout-all" => {
+            for (id, p, _) in h.active.iter().chain(others.iter()) {
+                end_account(l, id, p).await;
+                audit(&format!("user:{}", p.user), "Logout", "mgmt", "ok");
+            }
+            with_cookies(
+                json_resp(200, serde_json::json!({})),
+                vec![
+                    set_cookie(state, "", Some(0)),
+                    accounts::set(&[], state.https),
+                ],
+            )
+        }
+        _ => error(404, "not_found", "no such call"),
+    }
+}
+
+/// Ends session `id` of `p`, and its login chain at its directory (glidex
+/// D72).
+async fn end_account(l: &Login, id: &str, p: &people::Principal) {
+    let _ = l.people.end_session(id).await;
+    if let Some(d) = &p.directory
+        && !d.sid.is_empty()
+    {
+        l.dirs.tell_logout(d.id.clone(), d.sid.clone());
     }
 }
 
@@ -1754,6 +2017,13 @@ async fn with_login(
         }
         (&http::Method::GET, directory::CALLBACK) => {
             return directory_callback(state, l, req, peer).await;
+        }
+        // The browser's accounts (D310, as glidex D71).
+        (&http::Method::GET, accounts::PATH) => {
+            return accounts_route(state, l, req, peer).await;
+        }
+        (&http::Method::POST, p2) if p2.starts_with("/auth/accounts/") => {
+            return accounts_route(state, l, req, peer).await;
         }
         (&http::Method::POST, "/auth/login") => {
             let (_, body) = req.into_parts();

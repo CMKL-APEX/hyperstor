@@ -540,9 +540,13 @@ operator tenant's members, from here, and partitions past `max_staleness`
 (I387, #360 stage 5), with these choices open for review: a person's
 account here (I388), local and directory accounts apart (I389), links to
 roles (I390), an access token's age (I391), the CLI's device grant (I392),
-`max_staleness` (I393), and where logins come back (I394). Not yet: the
-account picker and the tenant and project pickers, the email field, and
-the driver. With realms as
+`max_staleness` (I393), and where logins come back (I394). Built too,
+hyperstor's half of AD4 and the driver's binding (I395, #360 stage 6),
+with these choices open for review: only hyperstor-mgmt's own identity
+acts for people (I396), management clients bound to realms and naming
+glidex's projects (I397), the origins that may call mgmt (I398), accounts
+in one browser (I399), and the pickers as views (I400). Not yet: the
+email field, and glidex's half (below). With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
 directories the way a glidex cluster does (glidex 19-tenancy.md §7,
@@ -656,6 +660,20 @@ project. The operator binds that identity to the realms it may act in,
 as hosts and gateways are bound (D251, I370); the map service refuses a
 project outside them. Why: one glidex cluster can't make volumes in
 another directory's projects, whatever it names.
+
+**The contract with glidex (#360 stage 6; I395–I400).** What glidex's
+half builds on:
+
+| What | How |
+|---|---|
+| The driver's identity | as now: `hyperstorctl token create --role mgmt --name NAME`, joined by `TokenService.Join`, `hyperstor://<cluster>/mgmt/NAME`, over mutual TLS to the cluster API (not mgmt). It may not be named `dashboard` or `web`, and never reads mgmt's rows or acts for a person (I396). |
+| Binding it | `hyperstorctl realm client --client NAME --realm R[,R...] --origins https://UI[,…]` (`RealmService.SetClientRealms`); `--realm any` unbinds. The directories' realms, and `default` for its shared image volumes. Unbound, it acts in the whole cluster as before. |
+| Calls it makes | `ClusterService.ListVolumes`, `CreateVolume`, `CloneVolume`, `CreateSnapshot`, `ListSnapshots`, `DeleteVolume`, `ExpandVolume`, `GetStatus` (still allowed bound, for its pools' space), `TrashService.ListTrash` and `PurgeFromTrash`: bound, each reaches only its realms' tenants and projects. |
+| A disk's project | `CreateVolume.directory_project` and `CloneVolume.directory_project` (strings): glidex's project id, resolved to the project linked to it among those the call reaches. Not with `project`. The shared image volume names no project (it lands in `default`, which the client must be bound to); each disk is a clone of its snapshot in its own project (D300). |
+| Refusal reasons (`ErrorInfo.reason`) | `outside_realm` (a project, volume or call outside its realms), `tenant_required` (no project, and `default` not bound), `not_found` (no project linked to that id within reach, or a volume outside it), `ambiguous_project` (an unbound client trusted by two directories using the same id), `invalid_argument` (`project` and `directory_project` both). |
+| Pages in glidex's UI | the browser calls mgmt's address directly with `Authorization: Bearer <access token>`, the directory's `at+jwt` with `aud` = this cluster's id (glidex D69), as stage 5 checks it: `POST /api/hyperstor.v1.ClusterService/ListVolumes {"pool":N}` (each volume's `tenant`, `project`, `project_name`, `size`), `S3Service/ListS3Buckets {}` (`objects`, `bytes`, `project`), `S3Service/ListS3Keys {}` (`project`), `TenantService/ListTenants {}` (projects, `glidex_id`, `default_project`), `ClusterService/GetStatus` only for a person with a cluster-wide role, and `GET /auth/whoami`. Connect's JSON (`Content-Type: application/json`, `Connect-Protocol-Version: 1`). Usage per project is summed from these: provisioned bytes from volumes' `size`, buckets' `bytes`; used bytes come with HS15's counters (#364). Answers hold only what the person's links reach (D308). |
+| CORS | allowed: each trusted directory's issuer's origin, and the `--origins` of management clients' bindings, `https` only (I398). Preflight: `Access-Control-Allow-Methods: GET, POST`, `Access-Control-Allow-Headers: authorization, content-type, connect-protocol-version, connect-timeout-ms, x-hyperstor-realm`, `Max-Age: 600`. Answers carry `Access-Control-Allow-Origin: <origin>` and `Vary: Origin`, never `Allow-Credentials`: fetch with `credentials: "omit"`. Refused from an allowed origin: no token (`401 unauthenticated`), an `hst_` or `gxt_` token (`403 cross_origin_token`), another path (`403 cross_origin_path`); a cookie is never read. glidex's CSP `connect-src` names mgmt's origin. |
+| Links to administration | a datastore links to its mgmt: an optional URL on the datastore record, else the trusted cluster's `api` from the redeem (glidex's choice). mgmt's own pages link back: tenants and projects to `<issuer origin>/tenants/<glidex id>` and `/projects/<glidex id>`, a person to `<issuer origin>/account`. |
 
 **Changes in glidex** (glidex pull requests): the `glidex-trust` crate;
 reports with storage counts; the tenant's storage pages, calling mgmt's

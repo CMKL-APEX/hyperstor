@@ -395,6 +395,14 @@ impl TokenService for Api {
                     "invalid_argument",
                 ));
             }
+            // hyperstor-mgmt's own identities (I396): a token's would act
+            // for people.
+            if req.role == "mgmt" && hyperstor_pki::MGMT_RESERVED.contains(&name.as_str()) {
+                return Err(invalid(
+                    format!("{name:?} is hyperstor-mgmt's own identity: name the client otherwise"),
+                    "invalid_argument",
+                ));
+            }
         } else if !name.is_empty() {
             return Err(invalid(
                 "only a mgmt, s3 or metrics token takes a name",

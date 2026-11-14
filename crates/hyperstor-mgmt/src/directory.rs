@@ -57,6 +57,10 @@ pub struct Dir {
 pub struct LoginState {
     pub cluster_id: String,
     pub dirs: Vec<Dir>,
+    /// Web origins that may call mgmt across origins with a person's
+    /// directory access token (D310, I398): the directories' issuers'
+    /// origins and those on management clients' bindings.
+    pub ui_origins: Vec<String>,
 }
 
 impl LoginState {
@@ -227,6 +231,7 @@ impl Directories {
         let s = Arc::new(LoginState {
             cluster_id: r.cluster_id,
             dirs,
+            ui_origins: r.ui_origins,
         });
         *lock(&self.state) = Some((s.clone(), Instant::now()));
         Ok(s)

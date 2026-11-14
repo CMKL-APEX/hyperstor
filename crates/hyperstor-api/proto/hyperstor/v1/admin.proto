@@ -87,6 +87,13 @@ service RealmService {
   // D261): it then attaches only their volumes; none unbinds it. Answered
   // once storage nodes can read it. Write.
   rpc SetHostRealms(SetHostRealmsRequest) returns (SetHostRealmsResponse);
+
+  // Binds a management client (a `mgmt` identity other than
+  // hyperstor-mgmt's, such as glidex's datastore driver, D122) to realms
+  // (D311): it then acts only in them, as a person with roles there; none
+  // unbinds it. Also names its UI's web origins, which may call mgmt with
+  // a person's directory token (D310). Write.
+  rpc SetClientRealms(SetClientRealmsRequest) returns (SetClientRealmsResponse);
 }
 
 // Certificates (04-decisions.md D53, D56).
@@ -738,6 +745,17 @@ message Realm {
   repeated string hosts = 8;
   // In answers: the ids of `pools`, in the same order.
   repeated uint32 pool_ids = 9 [json_name = "pool_ids"];
+  // In answers: the management clients bound to it (D311).
+  repeated string clients = 10;
+}
+
+// A management client's binding (D311).
+message RealmClient {
+  // The name in its `mgmt` certificate.
+  string client = 1;
+  repeated string realms = 2;
+  // Its UI's web origins, `https://host[:port]` (D310).
+  repeated string origins = 3;
 }
 
 message CreateRealmRequest {
@@ -760,6 +778,9 @@ message ListRealmsResponse {
   // Their ids, in the same order: with each realm's `pool_ids`, the pools
   // someone with roles only in realms may put volumes in (D262).
   repeated uint32 open_pool_ids = 3 [json_name = "open_pool_ids"];
+  // Management clients bound to realms (D311), by name; to the cluster's
+  // callers only.
+  repeated RealmClient clients = 4;
 }
 
 message DeleteRealmRequest {
@@ -793,6 +814,18 @@ message SetHostRealmsRequest {
 }
 
 message SetHostRealmsResponse {}
+
+message SetClientRealmsRequest {
+  // A `mgmt` identity's name: 1-32 of a-z, 0-9 and -, not "dashboard" or
+  // "web" (hyperstor-mgmt's own).
+  string client = 1;
+  // Realm names; none: unbound, acting in the cluster as a whole as before.
+  repeated string realms = 2;
+  // `https://host[:port]`; only with realms.
+  repeated string origins = 3;
+}
+
+message SetClientRealmsResponse {}
 
 message GetClusterKeyRequest {}
 
@@ -1233,6 +1266,10 @@ message GetLoginStateRequest {}
 message GetLoginStateResponse {
   string cluster_id = 1 [json_name = "cluster_id"];
   repeated LoginDirectory directories = 2;
+  // The web origins that may call mgmt across origins with a person's
+  // directory access token (D310, I398): each trusted directory's issuer's
+  // origin, and the origins on management clients' bindings.
+  repeated string ui_origins = 3 [json_name = "ui_origins"];
 }
 
 message ResolvePersonRequest {

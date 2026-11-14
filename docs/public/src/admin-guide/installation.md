@@ -476,12 +476,44 @@ come from its feed.
   refused, as a revocation may be missing; local logins keep working, as
   a way in while the directory is away.
 
+- **One browser, several accounts:** the header's Accounts menu holds a
+  local account and directories' accounts, one per directory, to switch
+  between without signing in again. The tenant and project pickers
+  beside the realm picker show one tenant's or project's volumes,
+  buckets and keys, and link to their pages at the directory.
+- **In glidex's UI,** a tenant's volumes, buckets and keys show on its
+  pages: the browser calls mgmt with the person's directory token. mgmt
+  allows the directory's own origin; name a glidex cluster's UI with
+  `realm client --origins` (below).
+
 ```bash
 hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login \
     auth login --directory https://id.acme.example/d/acme
 hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login status
 hyperstorctl admission staleness --directory https://id.acme.example/d/acme --minutes 30
 ```
+
+### glidex's datastore driver
+
+glidex's `hyperstor` driver acts with its own certificate, enrolled with
+`hyperstorctl token create --role mgmt --name glidex`. Unbound, it acts
+in the whole cluster. Bind it to the realms of the directories its glidex
+cluster serves, and `default` for its shared image volumes; it then
+makes, lists and deletes volumes only in their tenants' projects, which
+it names by glidex's project ids, and still reads the cluster's status:
+
+```bash
+hyperstorctl realm client --client glidex --realm acme,default \
+    --origins https://glidex.example.org
+hyperstorctl realm list                                  # Client glidex acts in: ...
+hyperstorctl realm client --client glidex --realm any    # unbound again
+```
+
+`--origins` names that glidex cluster's UI, which may then call mgmt with
+its people's directory tokens. A realm a client is bound to can't be
+deleted. No client acts for a person or reads mgmt's own records: only
+hyperstor-mgmt itself, so a `mgmt` token can't be named `dashboard` or
+`web`.
 
 ## Running as services by hand
 
