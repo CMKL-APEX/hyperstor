@@ -526,28 +526,27 @@ evidence.
 
 Settled 2026-11-12 (05-decision-log.md points 267–273). Built: the
 trust, offers, redeems and ends, the feed and what it makes, and reports
-(I380, #360 stage 4), with these choices open for review: the records
-and the replica in the map service's settings table, which checks the
-handshake (I381); the cluster key made on first use; tenants and
-projects gone from the feed kept unlinked (I382); names and clashes
-(I383); a directory's realm (I384). Settled: reports send used bytes
-from the space counters, 0 until they exist (D313, #364); a directory's
-pin of mgmt's certificate follows renewals through the reports, and an
-offer names mgmt's direct address, not a proxy's (D312, glidex#501). Built
-too: logins through a directory in a browser and by `hyperstorctl auth
-login`, its access and API tokens, roles from its links and, for the
-operator tenant's members, from here, and partitions past `max_staleness`
-(I387, #360 stage 5), with these choices open for review: a person's
-account here (I388), local and directory accounts apart (I389), links to
-roles (I390), an access token's age (I391), the CLI's device grant (I392),
-`max_staleness` (I393), and where logins come back (I394). Built too,
-hyperstor's half of AD4 and the driver's binding (I395, #360 stage 6),
-with these choices open for review: only hyperstor-mgmt's own identity
-acts for people (I396), management clients bound to realms and naming
-glidex's projects (I397), accounts in one browser (I399), the pickers
-as views (I400), and `ListVolumes` across pools (I401); glidex's UI reaches mgmt through glidex's server (D314,
-settled 2026-11-14, which replaced I398's cross-origin calls). Not yet: the
-email field, and glidex's half (below). With realms as
+(I380, #360 stage 4); logins through a directory in a browser and by
+`hyperstorctl auth login`, its access and API tokens, roles from its
+links and, for the operator tenant's members, from here, and partitions
+past `max_staleness` (I387, stage 5); hyperstor's half of AD4 and the
+driver's binding (I395, stage 6). The choices made while building them
+were settled on 2026-11-14 (points 277–292): trust's records in the map
+service, which checks the handshake (D315); tenants and projects gone
+from the feed kept unlinked (D316); names and clashes (D317); a
+directory's realm (D318); a person's account here (D319), local and
+directory accounts apart (D320), links to roles (D321), an access
+token's age (D322), the CLI's device grant (D323), `max_staleness`
+(D324), where logins come back (D325); only hyperstor-mgmt's own
+identity acts for people (D326), management clients bound to realms and
+naming glidex's projects (D327), accounts in one browser (D328), the
+pickers as views (D329), and `ListVolumes` across pools (D330). Settled
+too: reports send used bytes from the space counters, 0 until they
+exist (D313, #364); a directory's pin of mgmt's certificate follows
+renewals through the reports, and an offer names mgmt's direct address,
+not a proxy's (D312, glidex#501); glidex's UI reaches mgmt through
+glidex's server (D314, which replaced I398's cross-origin calls). glidex's half is built
+too (glidex #494 and #505). Not yet: the email field. With realms as
 directories, tenants as tenants and projects as projects (20-tenants.md
 §24.9, D299–D304), `hyperstor-mgmt` takes people from glidex's
 directories the way a glidex cluster does (glidex 19-tenancy.md §7,
@@ -570,7 +569,7 @@ cluster, through glidex's own handshake and feed:
 | Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the map service's leader on first use (I380), kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
 | Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate |
 | Redeem | the tenant's admin runs `gxctl tenant opt-in --offer` at the directory (D65) | unchanged: the directory redeems at mgmt, which pins the directory's keys; the first redeemed offer of a directory makes its realm (or links the one named) |
-| Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica as rows of the map service's store, where people's records are now (D98); every mgmt reads them |
+| Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica, with the offers and trust records, as rows of the map service's settings table (`trust/…`); the map service checks redeems and ends, which mgmt relays (D315); every mgmt reads them |
 | Reports | admission, cap, counts of VMs, disks, networks (D70) | admission, caps per pool, counts of volumes, buckets and bytes per project; glidex shows them on the tenant's page (a glidex change) |
 | Ending | either side ends it (D66) | the same; the realm and its tenants stay, unlinked, until an operator removes them |
 
@@ -663,7 +662,7 @@ as hosts and gateways are bound (D251, I370); the map service refuses a
 project outside them. Why: one glidex cluster can't make volumes in
 another directory's projects, whatever it names.
 
-**The contract with glidex (#360 stage 6; I395–I400).** What glidex's
+**The contract with glidex (#360 stage 6; I395; D326, D327, D330).** What glidex's
 half builds on:
 
 | What | How |
