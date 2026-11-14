@@ -1987,7 +1987,7 @@ title = "A tenant's storage in glidex's UI"
 
 [[milestone.item]]
 what = "mgmt answers glidex's server, which relays a fixed set of reads for its UI with a person's directory access token, server to server, under their grants; no CORS (D310, D314); glidex's pages and relay are glidex's half"
-spec = ["19-administration.md §23.12", "D310", "D314"]
+spec = ["19-administration.md §23.12", "D310", "D314", "I401"]
 status = "partial"
 tests = [
     "directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person",

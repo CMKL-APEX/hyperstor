@@ -5846,6 +5846,9 @@ export const VolumeSchema: GenMessage<Volume, {jsonType: VolumeJson}> = /*@__PUR
  */
 export type ListVolumesRequest = Message<"hyperstor.v1.ListVolumesRequest"> & {
   /**
+   * 0: every pool's volumes the caller reaches, each naming its pool
+   * (D314, I401).
+   *
    * @generated from field: uint32 pool = 1;
    */
   pool: number;
@@ -5856,6 +5859,9 @@ export type ListVolumesRequest = Message<"hyperstor.v1.ListVolumesRequest"> & {
  */
 export type ListVolumesRequestJson = {
   /**
+   * 0: every pool's volumes the caller reaches, each naming its pool
+   * (D314, I401).
+   *
    * @generated from field: uint32 pool = 1;
    */
   pool?: number;

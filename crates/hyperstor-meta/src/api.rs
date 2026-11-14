@@ -3175,15 +3175,31 @@ impl ClusterService for Api {
         let (_, reach) =
             self.authorize_in(&ctx, "ListVolumes", &format!("pool {}", req.pool), false)?;
         let scope = self.scope(reach).await?;
-        let (reply, rx) = oneshot();
-        self.tx
-            .send(Admin::ListVolumes {
-                pool: req.pool,
-                trash: false,
-                reply,
-            })
-            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
-        let vols = volume_result(rx.recv().await)?;
+        // Pool 0 (`.meta`, which holds no volumes): every pool's, so a
+        // tenant's people, and glidex's server on their behalf, need not
+        // know the pools (D314, I401). Each row names its pool.
+        let pools: Vec<u32> = if req.pool == hyperstor_map::META_POOL {
+            let (map, ..) = self.published().await?;
+            map.pools
+                .keys()
+                .copied()
+                .filter(|&p| p != hyperstor_map::META_POOL)
+                .collect()
+        } else {
+            vec![req.pool]
+        };
+        let mut vols = Vec::new();
+        for pool in pools {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::ListVolumes {
+                    pool,
+                    trash: false,
+                    reply,
+                })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            vols.extend(volume_result(rx.recv().await)?);
+        }
         let names = self.realm_names(&scope).await;
         let tenancy = self.tenancy_names(&scope).await;
         Ok(pb::ListVolumesResponse {

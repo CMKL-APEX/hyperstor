@@ -187,6 +187,13 @@ fn a_bound_client_acts_only_in_its_realms() {
         "{}",
         vols.out
     );
+    // Every pool's at once (pool 0, I401): still acme's alone.
+    let all = rpc(&c, &gx, "ClusterService/ListVolumes", &[], r#"{"pool":0}"#);
+    assert!(all.contains("\"a1\"") && all.contains("\"a2\""), "{all}");
+    assert!(
+        !all.contains("\"b1\"") && !all.contains("\"none\""),
+        "{all}"
+    );
     // The cluster's status, for its pools' space: still read.
     c.ctl_via(Via::Tls(&gx), &["status"]).ok();
     // The cluster's own changes: refused.
@@ -321,6 +328,45 @@ fn glidex_s_server_reads_a_tenant_s_storage_for_a_person() {
         "theirs",
     ])
     .ok();
+    // A second pool, with one of acme's and one of no tenant's.
+    c.ctl(&[
+        "pool",
+        "create",
+        "--name",
+        "second",
+        "--classes",
+        "file",
+        "--copies",
+        "1",
+        "--min",
+        "1",
+    ])
+    .ok();
+    let second = wait_for("the second pool in the map", 30, || {
+        let v = json(&c.ctl(&["status", "--json"]).ok().out);
+        v["pools"]
+            .as_array()?
+            .iter()
+            .find(|p| p["name"] == "second")
+            .and_then(|p| p["id"].as_u64())
+    })
+    .to_string();
+    for (name, project) in [("acme-disk2", Some(web)), ("theirs2", None)] {
+        let mut args = vec![
+            "create-volume",
+            "--pool",
+            &second,
+            "--size",
+            "1M",
+            "--name",
+            name,
+        ];
+        let p = project.map(|p| p.to_string());
+        if let Some(p) = &p {
+            args.extend(["--project", p.as_str()]);
+        }
+        c.ctl(&args).ok();
+    }
 
     let host = c.dashboard_host();
     let list = "/api/hyperstor.v1.ClusterService/ListVolumes";
@@ -343,6 +389,34 @@ fn glidex_s_server_reads_a_tenant_s_storage_for_a_person() {
     assert_eq!(code, 200, "{b}");
     assert!(header(&head, "access-control-allow-origin").is_empty());
     assert!(b.contains("acme-disk") && !b.contains("theirs"), "{b}");
+    // Pool 0, or none: every pool's she reaches, each naming its pool
+    // (I401), so glidex's server needn't know the pools.
+    for body in [r#"{"pool":0}"#, "{}"] {
+        let (code, _, b) = relay(&bearer, list, body);
+        assert_eq!(code, 200, "{b}");
+        let v = json(&b);
+        let mut got: Vec<(String, u64)> = v["volumes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| {
+                (
+                    x["name"].as_str().unwrap().to_string(),
+                    x["pool"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        got.sort();
+        let second: u64 = second.parse().unwrap();
+        assert_eq!(
+            got,
+            vec![
+                ("acme-disk".to_string(), 1),
+                ("acme-disk2".to_string(), second)
+            ],
+            "{b}"
+        );
+    }
     // Her tenant's buckets, keys and projects too (usage per project).
     for p in [
         "/api/hyperstor.v1.S3Service/ListS3Buckets",
