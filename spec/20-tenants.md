@@ -241,7 +241,7 @@ project (D303) and per-volume ownership (D300) are drafted for review.
 The records, projects on volumes, clones, buckets and keys, and roles
 on a tenant or a project are built (I378, #360 stage 1), and so is the
 transfer (§24.9.1, I379, stage 2), and so is the feed's part below
-(I380–I384, stage 4); quotas and logins through glidex are not. It amends D61's mapping (a glidex project was to be a
+(I380, stage 4; its choices D315–D318); quotas and logins through glidex are not. It amends D61's mapping (a glidex project was to be a
 hyperstor tenant) so that the same word means the same thing on both
 sides.
 
@@ -348,8 +348,9 @@ is the authority for the records above:
 - a directory's first admitted tenant makes its realm;
 - a tenant admitted makes a tenant; a project made, renamed or deleted
   in the feed does the same here (a project with containers isn't
-  deleted: it is marked and reported, as glidex refuses deleting a
-  tenant that still holds resources);
+  deleted: it is unlinked and kept as a local project, D316; glidex
+  refusing to delete it is a glidex follow-up, as glidex refuses
+  deleting a tenant that still holds resources);
 - a project whose tenant changes in the feed starts a transfer (below);
 - glidex's datastore driver creates each disk in its project
   (`--project`), and the map service refuses a project outside the

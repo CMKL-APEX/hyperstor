@@ -1624,6 +1624,35 @@ it merged). The owner chose instead:
 |---|---|---|---|
 | 276 | How glidex's UI reads a tenant's storage from mgmt: the browser across origins with CORS (as built first); or glidex's server relaying a fixed set of calls with a token minted server-side | Through glidex's server: browsers never hold the token, glidex's CSP needs no change, mgmt needs no CORS | D314 |
 
+## #360's implementation notes, reviewed (2026-11-14)
+
+Building #360's stages 4–6 left these choices open for the owner, each
+with options and a recommendation (01-implementation-notes.md). The
+owner took every recommendation:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 277 | Where trust's records and the feed replica live: the map service's settings table, which checks the handshake (built, recommended); or mgmt's rows, with mgmt checking (I381) | As recommended | D315 |
+| 278 | Tenants and projects gone from the feed: unlinked (built, recommended), glidex refusing the delete later; kept linked and marked `orphaned`; or only glidex refusing (I382) | As recommended | D316 |
+| 279 | Names from glidex that clash: suffixes (built, recommended); left unmade until the operator renames; or the local record adopted (I383) | As recommended | D317 |
+| 280 | Which realm a directory maps to: the first offer's (built, recommended); always a new one; or `default` allowed (I384) | As recommended | D318 |
+| 281 | A directory's person's account: `<id>@<realm>` (built, recommended); named by display name or email; or no account rows (I388) | As recommended | D319 |
+| 282 | Local and directory accounts: separate (built, recommended); linked by email; or linked by an administrator (I389) | As recommended | D320 |
+| 283 | Links to roles: D308's table, membership giving nothing (built, recommended); members viewers of their tenant; or a table the operator edits (I390) | As recommended | D321 |
+| 284 | An access token's age for step-up: `auth_time` (built, recommended); or never fresh (I391) | As recommended | D322 |
+| 285 | The CLI's directory login: the device grant (built, recommended); relayed by mgmt; or the browser flow through mgmt (I392) | As recommended | D323 |
+| 286 | `max_staleness`'s default: an hour (built, recommended); 15 minutes; or a day (I393) | As recommended | D324 |
+| 287 | Where logins come back: per offer (built, recommended); a cluster setting; or an option of mgmt's (I394) | As recommended | D325 |
+| 288 | Who acts for people: mgmt's own identity by name (built, recommended); a new `datastore` role; or as before (I396) | As recommended | D326 |
+| 289 | Clients bound to realms: image volumes in `default` and glidex's project id on the call (built, recommended); the operator tenant's project, or a lookup or names (I397) | As recommended | D327 |
+| 290 | Accounts in one browser: one session per directory, ended ones dropped (built, recommended); ended kept listed; or one account (I399) | As recommended | D328 |
+| 291 | Tenant and project pickers: views (built, recommended); or acting in a tenant as in a realm (I400) | As recommended | D329 |
+| 292 | Volumes across pools: pool 0 as every pool (built, recommended); a `ListPools` for tenants; or pools in `ListRealms` (I401) | As recommended | D330 |
+
+glidex refusing to delete a project that still holds hyperstor storage
+(D316) is a glidex follow-up, as is the device grant in glidex-trust's
+fake directory (D323, glidex#502).
+
 ## Drives not answering (2026-11-14)
 
 A PCIe fault on a pilot host left an NVMe controller resetting for
@@ -1635,4 +1664,3 @@ asked whether health should also say so:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 293 | Whether health warns when a device's drive isn't answering, or only the drive's note says it | Health warns | D331 |
-
