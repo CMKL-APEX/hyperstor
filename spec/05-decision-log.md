@@ -1623,3 +1623,16 @@ it merged). The owner chose instead:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 276 | How glidex's UI reads a tenant's storage from mgmt: the browser across origins with CORS (as built first); or glidex's server relaying a fixed set of calls with a token minted server-side | Through glidex's server: browsers never hold the token, glidex's CSP needs no change, mgmt needs no CORS | D314 |
+
+## Drives not answering (2026-11-14)
+
+A PCIe fault on a pilot host left an NVMe controller resetting for
+hours; `hyperstord`'s drive thread blocked reading it (#369). The fix
+(I402) stops reading a controller that isn't `live` and reports a
+reading that stops coming as the drive not answering. The owner was
+asked whether health should also say so:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 293 | Whether health warns when a device's drive isn't answering, or only the drive's note says it | Health warns | D331 |
+

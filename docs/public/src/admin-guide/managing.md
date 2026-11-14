@@ -217,7 +217,7 @@ POOL NAME         KIND       SIZE MIN   PGS  CHUNK  CLEAN DEGRADED  BACKFILL INA
 | Health | Means | Exit status |
 |---|---|---|
 | `ok` | Every PG has all its copies | 0 |
-| `warn` | Something is down, out, degraded or backfilling, a node flaps, a device is past `nearfull` or `backfillfull`, cache PGs wait for a down node, or scrub found PGs whose copies it couldn't repair (`inconsistent`); data is still writable | 1 |
+| `warn` | Something is down, out, degraded or backfilling, a node flaps, a device is past `nearfull` or `backfillfull`, a device's drive isn't answering, cache PGs wait for a down node, or scrub found PGs whose copies it couldn't repair (`inconsistent`); data is still writable | 1 |
 | `error` | Some PG has fewer copies than the pool's minimum, or no primary: writes to it stop. Or a device is past `full`: it refuses new data | 1 |
 
 The exit status makes `hyperstorctl status` usable in scripts and
@@ -536,7 +536,9 @@ fault, for example) isn't asked for its temperature or SMART log, since
 the kernel holds those reads until the controller comes back; its note
 says `controller resetting: not read`. A drive whose reading stops
 coming for 90 s shows no temperature or SMART and the note `the drive
-isn't answering`.
+isn't answering`. Either way health warns: `device 2's drive isn't
+answering (controller resetting: not read)`. Any member's status shows
+it: the leader has the drives' reports, and the others ask it.
 
 ## Metrics
 

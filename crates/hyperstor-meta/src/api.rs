@@ -734,6 +734,23 @@ fn domain(d: Domain) -> String {
 /// epoch not yet published, or whose primary can't peer with its members.
 /// Either refuses the PG's writes, so it is an error, as a PG below
 /// `min` is.
+/// Health's warning for drives that aren't answering (#369): a controller
+/// not `live`, or readings that stopped coming. The device may still be in
+/// (its I/O can stall without failing), so it is said apart from devices
+/// down or out.
+pub fn drives(s: &mut pb::GetStatusResponse, drives: &[(u32, String)]) {
+    for (d, note) in drives {
+        s.reasons.push(pb::Reason {
+            level: pb::Health::HEALTH_WARN.into(),
+            text: format!("device {d}'s drive isn't answering ({note})"),
+            ..Default::default()
+        });
+        if health_of(s) < Health::Warn {
+            s.health = pb::Health::HEALTH_WARN.into();
+        }
+    }
+}
+
 pub fn stuck(s: &mut pb::GetStatusResponse, stuck: &crate::Stuck) {
     let list = |which: &[&(u32, u32, u32, u64)]| {
         let mut l: Vec<String> = which
@@ -1377,6 +1394,7 @@ impl ClusterService for Api {
                 pool_space(&mut s, &map, &v.space);
                 fullness(&mut s, &map, &v.space);
                 stuck(&mut s, &v.stuck);
+                drives(&mut s, &v.drives);
                 s
             }
             // No leader, or it didn't answer: the map alone.
@@ -4721,6 +4739,30 @@ mod tests {
 
     /// D227, D228: a pool's scrub from its PGs' records, and health's
     /// scrub checks in the status.
+    /// A drive that isn't answering is a warning, named by device, and
+    /// doesn't lower an error (#369).
+    #[test]
+    fn a_drive_not_answering_is_a_warning() {
+        let mut s = super::pb::GetStatusResponse {
+            health: super::pb::Health::HEALTH_OK.into(),
+            ..Default::default()
+        };
+        super::drives(&mut s, &[]);
+        assert_eq!(s.health, super::pb::Health::HEALTH_OK);
+        assert!(s.reasons.is_empty());
+        super::drives(&mut s, &[(2, "controller resetting: not read".into())]);
+        assert_eq!(s.health, super::pb::Health::HEALTH_WARN);
+        assert_eq!(
+            s.reasons[0].text,
+            "device 2's drive isn't answering (controller resetting: not read)"
+        );
+        assert_eq!(s.reasons[0].level, super::pb::Health::HEALTH_WARN);
+        s.health = super::pb::Health::HEALTH_ERROR.into();
+        super::drives(&mut s, &[(3, "x: not read".into())]);
+        assert_eq!(s.health, super::pb::Health::HEALTH_ERROR);
+        assert_eq!(s.reasons.len(), 2);
+    }
+
     #[test]
     fn scrub_status_and_health_from_the_records() {
         use crate::scrubs::{PgScrubs, Records, Summary};

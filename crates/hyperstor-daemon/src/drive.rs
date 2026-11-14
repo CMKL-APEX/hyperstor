@@ -84,7 +84,7 @@ pub fn from_sysfs(sys: &Path, path: &Path, cpu: Option<usize>) -> Drive {
     // the drive isn't asked: its temperature and SMART would wait on it.
     let live = match read(&dev.join("state")) {
         Some(s) if s != "live" => {
-            d.smart_note = format!("controller {s}: not read");
+            d.smart_note = format!("controller {s}{}", hyperstor_proto::perf::NOT_READ);
             false
         }
         _ => true,
@@ -264,8 +264,9 @@ fn aged(mut d: Drive, age: Duration) -> Drive {
         d.smart = None;
         // The same words every time, so an unchanged report isn't resent.
         d.smart_note = format!(
-            "no reading for over {} s: the drive isn't answering",
-            STALE.as_secs()
+            "no reading for over {} s: {}",
+            STALE.as_secs(),
+            hyperstor_proto::perf::NOT_ANSWERING
         );
     }
     d

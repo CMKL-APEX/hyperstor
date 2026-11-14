@@ -121,6 +121,20 @@ pub struct Drive {
     pub smart_note: String,
 }
 
+/// The end of a drive's note when its controller isn't `live` and it
+/// wasn't read (`controller resetting: not read`, #369).
+pub const NOT_READ: &str = ": not read";
+/// The end of a drive's note when its readings stopped coming (#369).
+pub const NOT_ANSWERING: &str = "the drive isn't answering";
+
+impl Drive {
+    /// The drive isn't answering: its controller isn't `live`, or its
+    /// readings stopped coming. Health warns of it.
+    pub fn not_answering(&self) -> bool {
+        self.smart_note.ends_with(NOT_READ) || self.smart_note.ends_with(NOT_ANSWERING)
+    }
+}
+
 /// A device's report to the map service's leader.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PerfReport {
@@ -298,6 +312,19 @@ fn decode_drive(d: &mut Dec) -> Result<Drive, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drive_says_when_it_isnt_answering() {
+        let d = |n: &str| Drive {
+            smart_note: n.into(),
+            ..Default::default()
+        };
+        assert!(d("controller resetting: not read").not_answering());
+        assert!(d("no reading for over 90 s: the drive isn't answering").not_answering());
+        assert!(!d("").not_answering());
+        assert!(!d("not an NVMe drive").not_answering());
+        assert!(!d("hyperstor-smart isn't answering (refused)").not_answering());
+    }
 
     #[test]
     fn quantiles_come_from_the_buckets() {
