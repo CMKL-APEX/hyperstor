@@ -117,9 +117,35 @@ the reason and the fix:
   storage NIC's NUMA node against the devices' (H7);
 - free cores for reactors after the host's reservations;
 - clock sync (leases depend on bounded drift, D48);
-- that no device given is mounted, in use by LVM or another datastore.
+- that no device given is mounted, in use by LVM or another datastore;
+- whether libblkid knows Hyperstor's superblock (D332–D334): info when
+  it doesn't, warn when it once did on this host and an update replaced
+  it.
 
 A check that rests on a host claim cites its host check (G…).
+
+**Other tools and Hyperstor's devices** (D332–D334). A whole device
+Hyperstor formats has no partition table, and util-linux's libblkid,
+which `lsblk`, `blkid`, `wipefs`, `fdisk` and `mkfs` ask, doesn't know its
+superblock: the device looks blank, and nothing stops `mkfs` writing
+over it. The fix is a prober in libblkid
+(`packaging/libblkid/hyperstor.c`), offered to util-linux. Until
+Ubuntu ships it:
+
+- `scripts/build-libblkid-deb.sh RELEASE DIR` builds Ubuntu's own
+  util-linux for that release with the prober added, in a container,
+  and keeps `libblkid1_VERSION+hyperstor1_ARCH.deb` only after its
+  `blkid` recognises images of both device formats and refuses a damaged
+  superblock (D332).
+- `hyperstor-install install --libblkid-deb DIR` installs the file for
+  the host's libblkid1 version, found before anything changes (D333).
+- Ubuntu's next util-linux replaces it, so security fixes aren't held
+  back; the host check then warns (D334).
+
+The prober reports `TYPE=hyperstor`, the format version, the cluster's
+id as `UUID` (the same on each device of a cluster, as btrfs shares its
+filesystem UUID) and `device-N` as `LABEL`, and checks the superblock's
+CRC32C (I403).
 
 #### 23.4.2 Bootstrap and join
 

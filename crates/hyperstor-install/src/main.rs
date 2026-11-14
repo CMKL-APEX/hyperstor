@@ -82,7 +82,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--libblkid-deb DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -445,6 +445,7 @@ fn main() {
     let mut cluster_file: Option<String> = None;
     // Never saved: where this install's UI comes from.
     let mut ui_from: Option<String> = None;
+    let mut libblkid_from: Option<String> = None;
     let (mut out_file, mut in_file, mut remove_key) = (None, None, false);
     let mut passphrase: Option<String> = std::env::var("HYPERSTOR_BACKUP_PASSPHRASE").ok();
     // Never saved: a token is single-use and secret (§23.10).
@@ -494,6 +495,10 @@ fn main() {
             }
             "--ui" => {
                 ui_from = Some(val());
+                continue;
+            }
+            "--libblkid-deb" => {
+                libblkid_from = Some(val());
                 continue;
             }
             "--tailscale-cert" => {
@@ -792,14 +797,22 @@ fn main() {
                 }
                 remove_devices(&root, &mut s, cluster_file.clone(), &removed);
             }
-            install(&root, real, no_start, &s, cluster_file, ui_from)
+            install(
+                &root,
+                real,
+                no_start,
+                &s,
+                cluster_file,
+                ui_from,
+                libblkid_from,
+            )
         }
     }
 }
 
 // --- Host checks (§23.4.1) ------------------------------------------------
 
-#[derive(PartialEq, PartialOrd, Clone, Copy)]
+#[derive(Debug, PartialEq, PartialOrd, Clone, Copy)]
 enum Level {
     Ok,
     Info,
@@ -1099,7 +1112,75 @@ fn check(root: &Path, s: &Settings) -> bool {
             }
         }
     }
+    // libblkid (D332, D334): whether lsblk, blkid, wipefs and mkfs know a
+    // hyperstor device, and whether an update replaced the build that did.
+    if let Some((version, _)) = libblkid_installed() {
+        let knows = Command::new("blkid").arg("-k").output().is_ok_and(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.trim() == "hyperstor")
+        });
+        let marked = under(root, &format!("/{LIBBLKID_MARK}")).exists();
+        let (l, d) = libblkid_state(knows, &version, marked);
+        note(l, "libblkid", d);
+    }
     worst == Level::Fail
+}
+
+/// What the patched libblkid's version adds to Ubuntu's (D332): apt
+/// takes Ubuntu's next util-linux over it (D334).
+const LIBBLKID_SUFFIX: &str = "+hyperstor1";
+/// Written when the installer installs the patched libblkid, with the
+/// version: the host check then warns once an update has replaced it.
+const LIBBLKID_MARK: &str = "etc/hyperstor/libblkid";
+
+/// libblkid1's installed version and dpkg's architecture; `None` off a
+/// Debian-family host.
+fn libblkid_installed() -> Option<(String, String)> {
+    let out = |cmd: &str, args: &[&str]| -> Option<String> {
+        let o = Command::new(cmd).args(args).output().ok()?;
+        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        (o.status.success() && !s.is_empty()).then_some(s)
+    };
+    Some((
+        out("dpkg-query", &["-W", "-f=${Version}", "libblkid1"])?,
+        out("dpkg", &["--print-architecture"])?,
+    ))
+}
+
+fn libblkid_patched(version: &str) -> bool {
+    version.ends_with(LIBBLKID_SUFFIX)
+}
+
+/// The patched package's file for Ubuntu's libblkid1 `version` (no epoch
+/// in a file name, as dpkg names them).
+fn libblkid_deb(version: &str, arch: &str) -> String {
+    let v = version.split_once(':').map_or(version, |(_, v)| v);
+    format!("libblkid1_{v}{LIBBLKID_SUFFIX}_{arch}.deb")
+}
+
+/// The host check's line for libblkid: `knows` is whether `blkid -k`
+/// lists hyperstor, `marked` whether this installer once installed a
+/// build that did.
+fn libblkid_state(knows: bool, version: &str, marked: bool) -> (Level, String) {
+    if knows {
+        (Level::Ok, format!("{version} knows hyperstor's devices"))
+    } else if marked {
+        (
+            Level::Warn,
+            format!(
+                "{version} replaced the build that knows hyperstor's devices (an Ubuntu update): lsblk, wipefs and mkfs see them as blank again; install {} with --libblkid-deb DIR",
+                libblkid_deb(version, "ARCH")
+            ),
+        )
+    } else {
+        (
+            Level::Info,
+            format!(
+                "{version} doesn't know hyperstor's devices: lsblk, wipefs and mkfs see them as blank; --libblkid-deb DIR installs a build that does (scripts/build-libblkid-deb.sh)"
+            ),
+        )
+    }
 }
 
 fn free_gib(p: &Path) -> u64 {
@@ -3831,6 +3912,7 @@ fn install(
     s: &Settings,
     cluster_file: Option<String>,
     ui_from: Option<String>,
+    libblkid_from: Option<String>,
 ) {
     let mut own = s.clone();
     let s = &mut own;
@@ -3855,6 +3937,25 @@ fn install(
         }
         println!();
     }
+    // The patched libblkid (D332, D333), found before anything changes.
+    let libblkid = libblkid_from.map(|dir| {
+        if !real {
+            return None;
+        }
+        let (version, arch) = libblkid_installed()
+            .unwrap_or_else(|| fail("--libblkid-deb: dpkg doesn't list libblkid1 on this host"));
+        if libblkid_patched(&version) {
+            return Some((version, None));
+        }
+        let deb = Path::new(&dir).join(libblkid_deb(&version, &arch));
+        if !deb.is_file() {
+            fail(&format!(
+                "--libblkid-deb: no {} for this host's libblkid1 {version}: build it with scripts/build-libblkid-deb.sh (after `apt upgrade` if the build is for a newer util-linux)",
+                deb.display()
+            ));
+        }
+        Some((version, Some(deb)))
+    });
     let mut changed: Vec<String> = Vec::new();
 
     // 1. Binaries, from beside this executable, read above.
@@ -3867,6 +3968,31 @@ fn install(
         }
     }
     drop(binaries);
+
+    // 1b. The patched libblkid (D332), when asked for; a host installed
+    // into a scratch root has no packages to change.
+    match libblkid {
+        Some(Some((version, deb))) => {
+            if let Some(deb) = deb {
+                if !run("dpkg", &["-i", &deb.to_string_lossy()]) {
+                    fail(&format!("dpkg -i {} failed", deb.display()));
+                }
+                changed.push(format!("libblkid1 {version}{LIBBLKID_SUFFIX}"));
+                // udev probes a device again on a change event: lsblk then
+                // shows this host's devices as hyperstor's.
+                for (_, _, path) in s.devices() {
+                    run("udevadm", &["trigger", "--action=change", &path]);
+                }
+            }
+            let mark = under(root, &format!("/{LIBBLKID_MARK}"));
+            if let Some(d) = mark.parent() {
+                let _ = fs::create_dir_all(d);
+            }
+            let _ = fs::write(&mark, format!("{version}\n"));
+        }
+        Some(None) => println!("--libblkid-deb: only on the host itself (not with --root)"),
+        None => {}
+    }
 
     // The web UI (D100), where mgmt runs: from --ui, else from beside
     // this executable (a release's `hyperstor-ui`). Kept as it is when
@@ -5190,6 +5316,37 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D332–D334: the patched libblkid's file name follows Ubuntu's version
+    /// (without an epoch), and the host check says whether the library
+    /// knows hyperstor's devices, warning once an update replaced the build
+    /// this installer put in.
+    #[test]
+    fn the_patched_libblkid_is_named_and_checked() {
+        assert_eq!(
+            libblkid_deb("2.39.3-9ubuntu6.5", "amd64"),
+            "libblkid1_2.39.3-9ubuntu6.5+hyperstor1_amd64.deb"
+        );
+        assert_eq!(
+            libblkid_deb("1:2.41.3-3ubuntu2.2", "arm64"),
+            "libblkid1_2.41.3-3ubuntu2.2+hyperstor1_arm64.deb"
+        );
+        assert!(libblkid_patched("2.39.3-9ubuntu6.5+hyperstor1"));
+        assert!(!libblkid_patched("2.39.3-9ubuntu6.5"));
+        assert_eq!(
+            libblkid_state(true, "2.39.3-9ubuntu6.5+hyperstor1", true).0,
+            Level::Ok
+        );
+        let (l, d) = libblkid_state(false, "2.39.3-9ubuntu6.6", true);
+        assert_eq!(l, Level::Warn);
+        assert!(
+            d.contains("libblkid1_2.39.3-9ubuntu6.6+hyperstor1_ARCH.deb"),
+            "{d}"
+        );
+        let (l, d) = libblkid_state(false, "2.39.3-9ubuntu6.5", false);
+        assert_eq!(l, Level::Info);
+        assert!(d.contains("--libblkid-deb"), "{d}");
+    }
 
     #[test]
     fn key_files_are_written_with_their_final_mode() {

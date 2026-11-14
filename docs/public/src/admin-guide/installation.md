@@ -512,6 +512,43 @@ A realm a client is bound to can't be deleted. No client acts for a person or re
 hyperstor-mgmt itself, so a `mgmt` token can't be named `dashboard` or
 `web`.
 
+## Other tools and Hyperstor's devices
+
+A device Hyperstor formats whole has no partition table and a
+superblock other tools don't know: `lsblk -f`, `blkid`, `wipefs`,
+`fdisk` and `mkfs` take it for a blank disk, and nothing stops `mkfs` or
+an OS installer from writing over it. They all ask util-linux's libblkid
+what a disk holds. Until util-linux knows Hyperstor's superblock, a
+build of Ubuntu's own libblkid with Hyperstor's prober added does:
+
+```sh
+scripts/build-libblkid-deb.sh 24.04 dist/    # one per Ubuntu release: 24.04, 26.04
+sudo ./hyperstor-install install --libblkid-deb dist/ ...
+```
+
+The script builds in a container (podman or docker) from Ubuntu's
+source for that release, and keeps the package only after its `blkid`
+recognises Hyperstor devices of both formats and refuses a damaged
+superblock. The installer installs the file matching the host's
+libblkid1 version, or stops if `dist/` has none. Then:
+
+```text
+$ lsblk -f /dev/nvme1n1
+NAME    FSTYPE    FSVER LABEL       UUID                                 FSAVAIL FSUSE% MOUNTPOINTS
+nvme1n1 hyperstor 2     device-1002 00000000-0000-0000-0000-007fa9c2b2a7
+```
+
+The UUID is the cluster's id, the same on each of its devices, and the
+label names the device. `wipefs` lists the signature and `mkfs` warns
+before writing over it.
+
+The package is Ubuntu's version with `+hyperstor1` appended, so Ubuntu's
+next util-linux update, a security fix for example, replaces it. That
+is on purpose: fixes aren't held back. `hyperstor-install check` then
+warns that the library no longer knows Hyperstor's devices; build the
+package for the new version and run the installer again. `uninstall`
+leaves the library as it is.
+
 ## Running as services by hand
 
 Without the installer, a minimal unit for a storage node:
