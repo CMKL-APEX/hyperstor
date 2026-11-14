@@ -191,6 +191,8 @@ pub enum Algorithm {
     Crc32c,
     Sha1,
     Sha256,
+    /// CRC-64/NVME, of the whole object only (no COMPOSITE), as S3's.
+    Crc64Nvme,
 }
 
 impl Algorithm {
@@ -204,6 +206,7 @@ impl Algorithm {
             "crc32c" => Algorithm::Crc32c,
             "sha1" => Algorithm::Sha1,
             "sha256" => Algorithm::Sha256,
+            "crc64nvme" => Algorithm::Crc64Nvme,
             // x-amz-checksum-type and -algorithm aren't values.
             "type" | "algorithm" => return Ok(None),
             _ => return Err(BodyError::Unsupported("this checksum algorithm")),
@@ -216,6 +219,7 @@ impl Algorithm {
             Algorithm::Crc32c => "CRC32C",
             Algorithm::Sha1 => "SHA1",
             Algorithm::Sha256 => "SHA256",
+            Algorithm::Crc64Nvme => "CRC64NVME",
         }
     }
 
@@ -231,6 +235,7 @@ impl Algorithm {
             Algorithm::Crc32c => 2,
             Algorithm::Sha1 => 3,
             Algorithm::Sha256 => 4,
+            Algorithm::Crc64Nvme => 5,
         }
     }
 
@@ -240,6 +245,7 @@ impl Algorithm {
             2 => Algorithm::Crc32c,
             3 => Algorithm::Sha1,
             4 => Algorithm::Sha256,
+            5 => Algorithm::Crc64Nvme,
             _ => return None,
         })
     }
@@ -248,6 +254,7 @@ impl Algorithm {
 enum Running {
     Crc32(crc32fast::Hasher),
     Crc32c(u32),
+    Crc64Nvme(Box<hyperstor_codec::Crc64Nvme>),
     Digest(Box<digest::Context>),
 }
 
@@ -260,6 +267,7 @@ impl Running {
                 &digest::SHA1_FOR_LEGACY_USE_ONLY,
             ))),
             Algorithm::Sha256 => Running::Digest(Box::new(digest::Context::new(&digest::SHA256))),
+            Algorithm::Crc64Nvme => Running::Crc64Nvme(Box::default()),
         }
     }
 
@@ -267,6 +275,7 @@ impl Running {
         match self {
             Running::Crc32(h) => h.update(b),
             Running::Crc32c(c) => *c = hyperstor_codec::crc32c_append(*c, b),
+            Running::Crc64Nvme(c) => c.update(b),
             Running::Digest(c) => c.update(b),
         }
     }
@@ -275,6 +284,7 @@ impl Running {
         match self {
             Running::Crc32(h) => h.finalize().to_be_bytes().to_vec(),
             Running::Crc32c(c) => c.to_be_bytes().to_vec(),
+            Running::Crc64Nvme(c) => c.finish().to_be_bytes().to_vec(),
             Running::Digest(c) => c.finish().as_ref().to_vec(),
         }
     }
@@ -406,6 +416,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn crc64nvme_is_checked_in_a_trailer_and_kept_by_code() {
+        let a = Algorithm::Crc64Nvme;
+        assert_eq!(a.header(), "x-amz-checksum-crc64nvme");
+        assert_eq!(Algorithm::of_code(a.code()), Some(a));
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i * 13) as u8).collect();
+        let crc = hyperstor_codec::crc64nvme(&data).to_be_bytes();
+        let trailer = format!("x-amz-checksum-crc64nvme:{}\r\n", B64.encode(crc));
+        let body = encode(&data, 8192, None, &trailer);
+        for step in [1, 7, 8194, body.len()] {
+            let mut d = Chunked::new(None);
+            let mut c = Checks::new(None, Some((a, None))).unwrap();
+            let mut out = Vec::new();
+            for piece in body.chunks(step) {
+                d.feed(piece, &mut out).unwrap();
+            }
+            c.update(&out);
+            let t = d.finish().unwrap();
+            assert_eq!(c.finish(&t), Ok(Some((a, crc.to_vec()))), "step {step}");
+            assert_eq!(out, data);
+        }
+        // The wrong value is refused by name.
+        let mut c = Checks::new(None, Some((a, None))).unwrap();
+        c.update(b"x");
+        let t = [("x-amz-checksum-crc64nvme".to_string(), B64.encode(crc))];
+        assert_eq!(c.finish(&t), Err(BodyError::Checksum("CRC64NVME")));
+    }
+
+    #[test]
     fn unsigned_bodies_carry_their_checksum_after() {
         let data: Vec<u8> = (0..100_000u32).map(|i| (i * 7) as u8).collect();
         let crc = crc32fast::hash(&data).to_be_bytes();
@@ -467,6 +505,10 @@ mod tests {
         }
         assert_eq!(
             Algorithm::of_header("x-amz-checksum-crc64nvme"),
+            Ok(Some(Algorithm::Crc64Nvme))
+        );
+        assert_eq!(
+            Algorithm::of_header("x-amz-checksum-xxhash64"),
             Err(BodyError::Unsupported("this checksum algorithm"))
         );
         assert_eq!(Algorithm::of_header("x-amz-checksum-type"), Ok(None));
