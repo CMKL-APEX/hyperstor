@@ -1664,3 +1664,19 @@ asked whether health should also say so:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 293 | Whether health warns when a device's drive isn't answering, or only the drive's note says it | Health warns | D331 |
+
+## Other tools and Hyperstor's devices (2026-11-14)
+
+A device Hyperstor formats whole is blank to `lsblk`, `blkid`, `wipefs`,
+`fdisk` and `mkfs`: libblkid doesn't know its superblock. Asked with
+options (a udev rule; a libblkid prober offered to util-linux; a GPT
+partition with a type of its own) and a recommendation (the udev rule
+now, the prober upstream), the owner chose the prober, and the installer
+providing a patched build meanwhile:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 294 | Where the patched util-linux is built: once per Ubuntu release, in a container (recommended); or on each host, with its build dependencies | Once per release | D332 |
+| 295 | Installed by default on storage hosts, or only with an option (recommended) | Only with an option | D333 |
+| 296 | When Ubuntu updates util-linux: let apt replace it and warn (recommended); hold the package; or rebuild on the host from an apt hook | Replace and warn | D334 |
+
