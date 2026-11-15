@@ -301,7 +301,7 @@ covered by tests that run on every change.
 | mgmt trusts glidex directories: offers, redeem and ends, the feed replica and the tenants and projects it makes, reports with storage counts | Done |
 | Logins through a directory (browser, access and API tokens, hyperstorctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness | Done |
 | Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person | Done |
-| The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once); a directory's records read-only | Done |
+| The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once, pin from mgmt's own certificate); a directory's records refused to every caller; GetSpace without volume rows | Done |
 | glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311) | Done |
 
 ## AD4: A tenant's storage in glidex's UI

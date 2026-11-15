@@ -1710,8 +1710,12 @@ host's addresses; both), the owner chose the installer's line:
 ## The Tenancy page's questions (2026-11-15)
 
 Building the web UI's Tenancy page (I411) raised what a security
-administrator alone may read:
+administrator alone may read, who refuses changes to a directory's
+records, where an offer's pin comes from, and what `GetSpace` sends:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 303 | Whether `security-admin` reads realms and tenants (`ListRealms`, `ListTenants`), which it changes but couldn't read without a read role | Yes | D341 |
+| 304 | Whether the map service refuses changes to what a trusted directory owns (rename, realm, move, delete of linked tenants and projects), or only the UI hides them | Refused, reason `from_directory`, for every caller; the feed's own path exempt | D342 |
+| 305 | Where an offer's pin comes from in the web UI: typed; or mgmt's own certificate, with another pasted if need be | mgmt's own, with “Use another” | D343 |
+| 306 | Whether `GetSpace` may leave out the row of each volume | Yes: `skip_volumes`, default every row | I411 |

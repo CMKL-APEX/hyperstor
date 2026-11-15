@@ -597,11 +597,12 @@ cluster, through glidex's own handshake and feed:
 | Step | glidex (19-tenancy.md) | hyperstor |
 |---|---|---|
 | Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the map service's leader on first use (I380), kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
-| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate |
+| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate; the web UI's Tenancy page makes one too, and an offer through mgmt naming no pin takes the SHA-256 of mgmt's own `--web-tls` certificate, never what a browser was served (D343) |
 | Redeem | the tenant's admin runs `gxctl tenant opt-in --offer` at the directory (D65) | unchanged: the directory redeems at mgmt, which pins the directory's keys; the first redeemed offer of a directory makes its realm (or links the one named) |
 | Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica, with the offers and trust records, as rows of the map service's settings table (`trust/…`); the map service checks redeems and ends, which mgmt relays (D315); every mgmt reads them |
 | Reports | admission, cap, counts of VMs, disks, networks (D70) | admission, caps per pool, counts of volumes, buckets and bytes per project; glidex shows them on the tenant's page (a glidex change) |
 | Ending | either side ends it (D66) | the same; the realm and its tenants stay, unlinked, until an operator removes them |
+| Records | the directory owns its tenants' and projects' names and membership | the map service refuses renaming, moving, a tenant's realm and deleting a trusted directory's tenant or linked project to every caller (`from_directory`, D342); the feed changes them by its own path; unlinked, they are local |
 
 The operator's own directory is trusted the same way when the operator
 takes the cluster over (`hyperstorctl cluster set-operator`, as glidex's

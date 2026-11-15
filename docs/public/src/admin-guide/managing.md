@@ -492,21 +492,26 @@ minutes asks for one.
   named.
 - **Records from a glidex directory** carry a badge naming the
   directory, with a link to the tenant's or project's page there. Their
-  names and which tenant a project belongs to come from the directory,
-  so they are changed there, not here; a local project of such a tenant
-  is managed here as any other.
+  names, realm and which tenant a project belongs to come from the
+  directory, so they are changed there: the cluster refuses renaming,
+  moving or deleting them, from the page and from `hyperstorctl` alike
+  (`from_directory`). Once the trust ends, or the directory unlinks a
+  project that still holds volumes, they are local and managed here. A
+  project you make here in such a tenant is local too.
 - **Directories**, for security administrators: each trusted directory
   with its realm, when its feed last answered and changed, and how long
   it may go unheard before its people are refused (change it; 0 is the
   default, an hour); its tenants, the operator tenant (make one, or
   clear it), and ending the trust in a tenant (its records stay,
   unlinked). **Offers**: make one for a directory's tenant, and revoke
-  an open one. An offer needs the SHA-256 of the certificate mgmt
-  serves at the address the directory reaches it by; the browser can't
-  read it, so paste it (`openssl s_client -connect HOST:PORT </dev/null
-  | openssl x509 -noout -fingerprint -sha256`, or use `hyperstorctl
-  admission offer`, which reads it). The offer's token is shown once:
-  copy it and pass it only to that tenant's administrator.
+  an open one. The directory pins the certificate mgmt serves at the
+  address it reaches mgmt by (mgmt's own address, not a proxy's): the
+  dialog shows the SHA-256 of mgmt's own certificate, which the offer
+  takes. Where mgmt serves another one there (its Tailscale
+  certificate), choose **Use another** and paste that one's
+  (`openssl s_client -connect HOST:PORT </dev/null | openssl x509
+  -noout -fingerprint -sha256`). The offer's token is shown once: copy
+  it and pass it only to that tenant's administrator.
 
 People with only `viewer`, `operator` or `storage-admin` see the
 Realms and Tenants tabs with what their role allows; security
