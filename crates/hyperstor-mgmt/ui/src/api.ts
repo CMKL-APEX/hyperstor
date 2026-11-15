@@ -421,4 +421,8 @@ export interface NodeMetrics {
   samples: [string, Record<string, string>, number][];
 }
 
+/** The pin an offer for `url` takes: the SHA-256 of the certificate this
+ * mgmt serves itself (D343), never what the browser was served. */
+export const offerPin = (url: string) => call<{ pin: string }>("POST", "/auth/offer-pin", { url }).then((r) => r.pin);
+
 export const metrics = () => call<{ nodes: NodeMetrics[] }>("GET", "/api/metrics").then((r) => r.nodes);

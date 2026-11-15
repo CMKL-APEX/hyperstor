@@ -145,6 +145,8 @@ struct State {
     front: front::Front,
     /// The Tailscale names served their certificate now (`--tailscale`).
     held: Option<Arc<glidex_tls::tailscale::Held>>,
+    /// `--web-tls`'s certificate as served now, for offers' pins (D343).
+    web_cert: Option<Arc<glidex_tls::CertSlot>>,
     login: Option<Login>,
     ui: Option<PathBuf>,
 }
@@ -330,6 +332,7 @@ fn main() {
             front,
             https: web.is_some(),
             held: web.as_ref().and_then(|w| w.held.clone()),
+            web_cert: web.as_ref().map(|w| w.slot.clone()),
             login,
             ui,
         });
@@ -1271,6 +1274,48 @@ fn too_many(wait: Duration, message: &str) -> Resp {
 
 /// Checks `action` for `p`: `Err` with the response to send if refused.
 /// Refuses unless `p` may do `action` in the cluster as a whole.
+/// The pin of the certificate this mgmt serves at `url` (D343).
+fn own_pin(state: &State, url: &str) -> Result<String, String> {
+    let cert = state.web_cert.as_ref().map(|s| s.get());
+    let leaf = cert
+        .as_ref()
+        .and_then(|c| c.cert.first())
+        .map(|c| c.as_ref());
+    web::offer_pin(url, leaf, state.held.as_deref())
+}
+
+/// A `CreateOffer` body (Connect JSON or binary) with its pin filled in
+/// from this mgmt's own certificate when it names none (D343); any other
+/// body as it came, for the map service to judge.
+fn with_offer_pin(state: &State, headers: &http::HeaderMap, body: Bytes) -> Result<Bytes, String> {
+    use buffa::Message as _;
+    use hyperstor_api::proto::hyperstor::v1 as pb;
+    let json = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|t| t.starts_with("application/json"));
+    let mut req: pb::CreateOfferRequest = if json {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(_) => return Ok(body),
+        }
+    } else {
+        match pb::CreateOfferRequest::decode_from_slice(&body) {
+            Ok(r) => r,
+            Err(_) => return Ok(body),
+        }
+    };
+    if !req.pin.is_empty() {
+        return Ok(body);
+    }
+    req.pin = own_pin(state, &req.url)?;
+    Ok(if json {
+        Bytes::from(serde_json::to_vec(&req).map_err(|e| e.to_string())?)
+    } else {
+        req.encode_to_bytes()
+    })
+}
+
 fn authorize(l: &Login, p: &people::Principal, action: &str, target: &str) -> Result<(), Resp> {
     match authorize_in(l, p, action, target, None)? {
         policy::Reach::Cluster => Ok(()),
@@ -2087,6 +2132,18 @@ async fn with_login(
                 Err(e) => people_error(e),
             }
         }
+        // The pin an offer for `url` takes (D343), for the dialog to show.
+        (&http::Method::POST, "/auth/offer-pin") => {
+            if let Err(r) = authorize(l, &p, "TrustService.ListOffers", "offers") {
+                return r;
+            }
+            let (_, body) = req.into_parts();
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            match own_pin(state, v["url"].as_str().unwrap_or("")) {
+                Ok(pin) => json_resp(200, serde_json::json!({ "pin": pin })),
+                Err(e) => error(412, "no_pin", &e),
+            }
+        }
         (&http::Method::POST, "/auth/tokens") => {
             if let Err(r) = authorize(l, &p, "People.CreateToken", "own") {
                 return r;
@@ -2249,7 +2306,14 @@ async fn with_login(
                 Ok(r) => r,
                 Err(r) => return r,
             };
-            let (parts, body) = req.into_parts();
+            let (parts, mut body) = req.into_parts();
+            // An offer with no pin takes mgmt's own certificate's (D343).
+            if action == "TrustService.CreateOffer" {
+                body = match with_offer_pin(state, &parts.headers, body) {
+                    Ok(b) => b,
+                    Err(e) => return error(412, "no_pin", &e),
+                };
+            }
             let r = proxy::forward(
                 &state.tls,
                 &state.members,

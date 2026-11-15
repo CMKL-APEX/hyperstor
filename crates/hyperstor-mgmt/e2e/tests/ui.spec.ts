@@ -725,9 +725,12 @@ test("tenancy: a directory's records are read-only, offers are shown once and re
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel(/^glidex tenant/).fill("chem");
   await dialog.getByLabel(/^Directory/).fill(issuer);
-  await dialog.getByLabel(/^SHA-256/).fill("ab".repeat(32));
+  // The pin is mgmt's own certificate's, from mgmt (D343).
+  await expect(dialog.getByLabel("Pin")).toHaveValue(/^[0-9a-f]{64}$/);
+  const pin = await dialog.getByLabel("Pin").inputValue();
   await expect(dialog).toContainText(`hyperstorctl admission offer --tenant chem --directory ${issuer} --url https://`);
   await dialog.getByRole("button", { name: "Make" }).click();
+  await expect(page.getByTestId("offer-made")).toContainText(pin);
   const secret = page.getByRole("dialog").getByLabel("offer token");
   await expect(secret).toHaveAttribute("type", "password");
   const token = await secret.inputValue();
@@ -744,6 +747,19 @@ test("tenancy: a directory's records are read-only, offers are shown once and re
   await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
   await expect(offer).toContainText("revoked");
   await expect(offer.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+  // Another pin, pasted, is the offer's instead.
+  await page.getByRole("button", { name: "Make an offer" }).click();
+  await dialog.getByLabel(/^glidex tenant/).fill("bio");
+  await dialog.getByLabel(/^Directory/).fill(issuer);
+  await dialog.getByRole("button", { name: "Use another" }).click();
+  await dialog.getByLabel(/^SHA-256/).fill("AB:".repeat(31) + "AB");
+  await expect(dialog).toContainText(`--pin ${"AB:".repeat(31)}AB`);
+  await dialog.getByRole("button", { name: "Make" }).click();
+  await expect(page.getByTestId("offer-made")).toContainText("ab".repeat(32));
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await page.getByTestId("offer-bio").getByRole("button", { name: "Revoke" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await expect(page.getByTestId("offer-bio")).toContainText("revoked");
 });
 
 test("tenancy: a viewer sees realms and tenants with no actions", async ({ page }) => {

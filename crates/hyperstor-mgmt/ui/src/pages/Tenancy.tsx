@@ -16,7 +16,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Modal, TokenReveal } from "@glidex/ui-kit";
-import { cluster, directoryOrigin, ops, realms, tenants, trust } from "../api";
+import { cluster, directoryOrigin, offerPin, ops, realms, tenants, trust } from "../api";
 import { OperationState, type Project, type Realm, type Tenant, type TrustedDirectory, type TrustOffer } from "../gen/hyperstor/v1/admin_pb";
 import type { SpaceRow } from "../gen/hyperstor/v1/cluster_pb";
 import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, td, useCan, usePoll } from "../ui";
@@ -720,6 +720,21 @@ function DirectoriesTab() {
   // dialog showing it is open: never in storage, a URL or a log.
   const [f, setF] = useState({ tenant: "", directory: "", name: "", realm: "", url: "", pin: "", days: "7", ui: "" });
   const [made, setMade] = useState<{ token: string; offer?: TrustOffer } | null>(null);
+  // The pin mgmt gives the offer's address (D343), unless another is
+  // pasted ("Use another").
+  const [own, setOwn] = useState<{ pin?: string; error?: unknown }>({});
+  const [other, setOther] = useState(false);
+  const offering = dialog?.kind === "offer";
+  useEffect(() => {
+    if (!offering || other) return;
+    let live = true;
+    offerPin(f.url.trim())
+      .then((pin) => live && setOwn({ pin }))
+      .catch((error) => live && setOwn({ error }));
+    return () => {
+      live = false;
+    };
+  }, [offering, other, f.url]);
   const operator = dirs.data?.operator ?? 0;
   const operatorName = dirs.data?.directories.flatMap((d) => d.tenants).find((t) => t.tenant === operator && operator !== 0)?.name;
   const now = Date.now() / 1000;
@@ -733,7 +748,7 @@ function DirectoriesTab() {
   const offerCli = () =>
     [
       `admission offer --tenant ${f.tenant || "SLUG"} --directory ${f.directory || "ISSUER"} --url ${f.url || "URL"}`,
-      f.pin && `--pin ${f.pin}`,
+      other && f.pin && `--pin ${f.pin}`,
       f.name && `--name ${f.name}`,
       f.realm && `--realm ${f.realm}`,
       f.days && f.days !== "7" && `--days ${f.days}`,
@@ -824,6 +839,8 @@ function DirectoriesTab() {
             <Button
               onClick={() => {
                 setF({ tenant: "", directory: "", name: "", realm: "", url: window.location.origin, pin: "", days: "7", ui: "" });
+                setOther(false);
+                setOwn({});
                 setDialog({ kind: "offer" });
               }}
             >
@@ -917,7 +934,8 @@ function DirectoriesTab() {
               name: f.name.trim(),
               realm: f.realm.trim(),
               url: f.url.trim(),
-              pin: f.pin.trim(),
+              // Empty: mgmt takes its own certificate's (D343).
+              pin: other ? f.pin.trim() : "",
               days: Number(f.days || "0"),
               ui: f.ui.trim(),
             });
@@ -940,13 +958,42 @@ function DirectoriesTab() {
           <Field label="mgmt's address as the directory reaches it (https://host[:port])">
             <input className={input} value={f.url} onChange={set("url")} />
           </Field>
-          <Field label="SHA-256 of the certificate mgmt serves there (64 hex digits)">
-            <input className={`${input} font-mono`} value={f.pin} onChange={set("pin")} spellCheck={false} />
-          </Field>
-          <p className="text-xs text-slate-500">
-            The directory pins it. The browser can&apos;t read it: hyperstorctl admission offer reads it from the address, or{" "}
-            <code>openssl s_client -connect HOST:PORT &lt;/dev/null | openssl x509 -noout -fingerprint -sha256</code>.
-          </p>
+          {other ? (
+            <>
+              <Field label="SHA-256 of the certificate served there (64 hex digits)">
+                <input className={`${input} font-mono`} value={f.pin} onChange={set("pin")} spellCheck={false} autoFocus />
+              </Field>
+              <p className="text-xs text-slate-500">
+                For an address where mgmt doesn&apos;t serve its own certificate: hyperstorctl admission offer reads it from
+                the address, or <code>openssl s_client -connect HOST:PORT &lt;/dev/null | openssl x509 -noout -fingerprint -sha256</code>.{" "}
+                <button type="button" className="text-sky-700 dark:text-sky-300 hover:underline" onClick={() => setOther(false)}>
+                  Use mgmt&apos;s
+                </button>
+              </p>
+            </>
+          ) : (
+            <div className="grid gap-1 text-xs text-slate-500">
+              <span>SHA-256 of the certificate mgmt serves there, which the directory pins (from mgmt, not this browser)</span>
+              <div className="flex gap-2 items-center">
+                <input
+                  readOnly
+                  aria-label="Pin"
+                  className={`${input} font-mono text-xs flex-1`}
+                  value={own.pin ?? ""}
+                  placeholder={own.error ? "none: paste one" : "…"}
+                />
+                <Button
+                  onClick={() => {
+                    setF((x) => ({ ...x, pin: "" }));
+                    setOther(true);
+                  }}
+                >
+                  Use another
+                </Button>
+              </div>
+              <ErrorText error={own.error} />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-2">
             <Field label="Lasts (days, 1 to 30)">
               <input className={input} value={f.days} onChange={(e) => setF((x) => ({ ...x, days: e.target.value.replace(/\D/g, "") }))} />
@@ -967,7 +1014,8 @@ function DirectoriesTab() {
             copiedHint="Copied. They redeem it at their directory."
           >
             <div data-testid="offer-made" className="text-xs text-slate-500">
-              Offer {made.offer?.id} for {made.offer?.tenant}, until {fmtTime(made.offer?.expiresUnix ?? 0n)}. At the directory:
+              Offer {made.offer?.id} for {made.offer?.tenant}, until {fmtTime(made.offer?.expiresUnix ?? 0n)}, pinning SHA-256{" "}
+              <span className="font-mono">{made.offer?.pin}</span>. At the directory:
               <code className="block mt-1 p-2 rounded-sm bg-slate-100 dark:bg-slate-800">gxctl tenant opt-in --offer TOKEN</code>
             </div>
           </TokenReveal>

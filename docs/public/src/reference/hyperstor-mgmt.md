@@ -186,6 +186,7 @@ never goes in `FILE` itself.
 | `POST /auth/directory/start` | `{"directory", "return_to"?, "reauth"?}` → `{"redirect"}`: where to send the browser to sign in at a trusted glidex directory (its issuer or id) |
 | `GET /auth/directory/callback` | Where the directory sends the browser back; then on to `return_to` with a session |
 | `POST /auth/logout` | Ends the session |
+| `POST /auth/offer-pin` | `{"url"}` → `{"pin"}`: the SHA-256 of the certificate this mgmt serves itself (`--web-tls`), which an offer for that address takes when it names no pin; `no_pin` (412) for a host given its Tailscale certificate. Security administrators |
 | `GET /auth/accounts` | The accounts this browser holds, one per directory (`local` for this cluster's own): `{"accounts": [{"user", "directory", "realm", "method", "active"}]}`; no login needed |
 | `POST /auth/accounts/switch`, `add`, `remove`, `logout-all` | Switch to a held account (`{"user"}`, answers its `csrf`), put the active one aside to sign in as another, end a held one (`{"user"}`), or end them all. From a page of this site (`Origin`), with the CSRF value while signed in |
 | `GET`, `POST /auth/tokens`, `DELETE /auth/tokens/ID` | Your API tokens: list, make (`{"name", "days"?}`; the token is shown once), revoke |
