@@ -19,6 +19,7 @@ The usage line lists the most common modes; all of them:
 | `cluster mem\|DIR [REACTORS]` | A whole cluster in one process, on memory or on files in `DIR`, with `REACTORS` devices per node (default 1) |
 | `remote ADDR` | A running cluster, as a client of the map service at `ADDR`; writes test data to pool 1 |
 | `index FILE` | Memory and checkpoint cost of the engine's index; needs 2 GiB free |
+| `space-walk` | The walk each primary makes of its PGs every 30 s: D155's sum of blocks alone, and with each chunk's versions laid over each other for the space counts (D335), on one PG's index in memory; the whole walk and its longest slice of 4,096 objects |
 
 | Environment variable | Default | Meaning |
 |---|---|---|

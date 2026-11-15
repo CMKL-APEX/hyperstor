@@ -569,6 +569,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                 io_timeout: std::time::Duration::ZERO,
                 read_timeout: std::time::Duration::ZERO,
                 perf_every: std::time::Duration::ZERO,
+                usage_every: std::time::Duration::ZERO,
                 commit_delays: None,
                 pings: None,
                 older: None,
@@ -874,6 +875,7 @@ fn adminload_suite(secs: f64) {
                 io_timeout: std::time::Duration::ZERO,
                 read_timeout: std::time::Duration::ZERO,
                 perf_every: std::time::Duration::ZERO,
+                usage_every: std::time::Duration::ZERO,
                 commit_delays: None,
                 pings: None,
                 older: None,
@@ -1701,6 +1703,7 @@ fn failover_suite() {
                         io_timeout: std::time::Duration::ZERO,
                         read_timeout: std::time::Duration::ZERO,
                         perf_every: std::time::Duration::ZERO,
+                        usage_every: std::time::Duration::ZERO,
                         commit_delays: None,
                         pings: None,
                         older: None,
@@ -1827,6 +1830,7 @@ fn rejoin_suite() {
                 io_timeout: std::time::Duration::ZERO,
                 read_timeout: std::time::Duration::ZERO,
                 perf_every: std::time::Duration::ZERO,
+                usage_every: std::time::Duration::ZERO,
                 commit_delays: None,
                 pings: None,
                 older: None,
@@ -2182,6 +2186,122 @@ fn map_commit_suite(dir: &Path, n: usize) {
     }
 }
 
+/// The cost of the walk primaries make every 30 s (D155, D335): D155's
+/// sum of blocks alone, as before, and the walk that also lays each
+/// chunk's versions over each other, on one PG's index in memory, a slice
+/// of 4,096 objects at a time as on a reactor. Prints the whole walk's
+/// time and its longest slice, the stall a request could wait behind.
+fn space_walk() {
+    use hyperstor_daemon::space::{SLICE, Walk};
+    use hyperstor_engine::index::{BlockMap, Index, Object};
+    use hyperstor_proto::space::Heads;
+    // 4 MiB chunks (1,024 blocks): written whole (one run), written in
+    // 8-block pieces (64 runs), or every other block (a dense map); a
+    // third of chunks with two older versions (snapshots).
+    type Fill = fn(&mut BlockMap, &mut u64);
+    let shapes: [(&str, Fill); 3] = [
+        ("whole", |m, pb| {
+            m.map(0, *pb, &[0; 1024]);
+            *pb += 1024;
+        }),
+        ("64 runs", |m, pb| {
+            for r in 0..64 {
+                m.map(r * 16, *pb, &[0; 8]);
+                *pb += 8;
+            }
+        }),
+        ("dense", |m, pb| {
+            for b in 0..512 {
+                m.map(b * 2, *pb, &[0]);
+                *pb += 1;
+            }
+            m.rebalance(&Default::default(), 0, 1024);
+        }),
+    ];
+    println!(
+        "| chunks | shape | objects | D155 sum | sum and overlay | longest slice before | after |"
+    );
+    println!("|---|---|---|---|---|---|---|");
+    for chunks in [10_000u64, 100_000] {
+        for (shape, fill) in shapes {
+            let mut index = Index::default();
+            let mut pb = 1u64 << 20;
+            for c in 0..chunks {
+                let versions = if c % 3 == 0 { 3 } else { 1 };
+                for v in 0..versions {
+                    let mut name = ((c % 500) as u128 + 1).to_be_bytes().to_vec();
+                    name.extend_from_slice(&c.to_be_bytes());
+                    let mut o = Object::default();
+                    fill(&mut o.blocks, &mut pb);
+                    index
+                        .objects
+                        .insert(ObjKey::new(1, 0, Namespace::Vol, name, v), o);
+                }
+            }
+            let objects = index.objects.len();
+            let heads = Heads::new();
+            // Before: D155's walk (the engine's pg_blocks, on the index).
+            let before = || {
+                let (t, mut longest, mut after, mut total) =
+                    (Instant::now(), Duration::ZERO, None::<ObjKey>, 0u64);
+                loop {
+                    let s = Instant::now();
+                    use std::ops::Bound;
+                    let lo = match &after {
+                        Some(k) => Bound::Excluded(k.clone()),
+                        None => Bound::Unbounded,
+                    };
+                    let mut last = None;
+                    let mut done = true;
+                    for (n, (k, o)) in index.objects.range((lo, Bound::Unbounded)).enumerate() {
+                        if n == SLICE {
+                            done = false;
+                            break;
+                        }
+                        total += o.block_count();
+                        last = Some(k.clone());
+                    }
+                    longest = longest.max(s.elapsed());
+                    if done {
+                        std::hint::black_box(total);
+                        return (t.elapsed(), longest);
+                    }
+                    after = last;
+                }
+            };
+            let after_walk = || {
+                let (t, mut longest, mut after) = (Instant::now(), Duration::ZERO, None);
+                let mut w = Walk::default();
+                loop {
+                    let s = Instant::now();
+                    let next = w.step(&index, 1, 0, after.as_ref(), SLICE, &heads);
+                    longest = longest.max(s.elapsed());
+                    match next {
+                        Some(k) => after = Some(k),
+                        None => {
+                            std::hint::black_box(w.branches());
+                            return (t.elapsed(), longest);
+                        }
+                    }
+                }
+            };
+            // The best of five of each.
+            let best = |f: &dyn Fn() -> (Duration, Duration)| {
+                (0..5).map(|_| f()).min().expect("five runs")
+            };
+            let (b, bl) = best(&before);
+            let (a, al) = best(&after_walk);
+            println!(
+                "| {chunks} | {shape} | {objects} | {:.1} ms | {:.1} ms | {:.2} ms | {:.2} ms |",
+                b.as_secs_f64() * 1e3,
+                a.as_secs_f64() * 1e3,
+                bl.as_secs_f64() * 1e3,
+                al.as_secs_f64() * 1e3
+            );
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let secs: f64 = std::env::var("HS_BENCH_SECS")
@@ -2370,6 +2490,7 @@ fn main() {
                 }
             }
         }
+        Some("space-walk") => space_walk(),
         _ => {
             eprintln!("usage: hyperstor-bench engine|raw <file> [size_gib] | mem | crc");
             std::process::exit(2);

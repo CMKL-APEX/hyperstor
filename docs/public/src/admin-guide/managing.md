@@ -394,6 +394,31 @@ out of a detached volume, such as a disk image.
 
 Deleting a volume or a snapshot moves it to [the trash](#the-trash).
 
+### Space
+
+```sh
+hyperstorctl space              # every pool: per tenant, per project, per volume
+hyperstorctl space --pool 1
+```
+
+Each volume's space is counted in bytes of one copy (a pool keeping 3
+copies takes 3 times as much raw space, shown as `COPIES`):
+
+- `HEAD`: the blocks the volume's head reads from its own branches;
+- `SNAPSHOTS`: the blocks only its snapshots hold (overwritten since a
+  snapshot), or that only its clones read through a snapshot: a clone's
+  shared blocks count to the volume it was cloned from, as `rbd du`
+  counts them;
+- `TRASH`: every block of a volume in the trash or being deleted, until
+  it is freed: deleting doesn't free space before the purge.
+
+The counts are at most 30 s old: each PG's primary counts its chunk
+versions every 30 s and tells the map service's leader, which holds
+them in memory, so a new leader has them again within a minute.
+Reports to a glidex directory send each tenant's `USED` summed over the
+pools as `volume_used_bytes`. A project moved to another tenant takes
+its counts along.
+
 ### Copying and moving between pools
 
 ```sh

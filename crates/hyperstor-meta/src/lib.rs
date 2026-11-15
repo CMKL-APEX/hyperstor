@@ -23,6 +23,7 @@ pub mod replica;
 pub mod s3keys;
 pub mod scrubs;
 pub mod settings;
+pub mod space;
 pub mod store;
 pub mod tenancy;
 pub mod tokens;
@@ -400,6 +401,9 @@ pub enum Admin {
         since: u64,
         reply: hyperstor_reactor::chan::OneSender<Result<PoolUsage, String>>,
     },
+    /// The space volumes use (20-tenants.md §24.4, D335): only the leader
+    /// has it.
+    Space(hyperstor_reactor::chan::OneSender<Result<space::SpaceView, String>>),
     /// The devices' load and drives as the leader holds them (D218), with
     /// the published map; only the leader has them.
     Perf(hyperstor_reactor::chan::OneSender<Result<(perf::Perf, ClusterMap), String>>),
@@ -927,6 +931,9 @@ pub struct Meta {
     /// Bumped with every change to `usage`, from the wall clock's
     /// nanoseconds, so a new leader's versions don't repeat an old one's.
     usage_version: Cell<u64>,
+    /// What each branch holds in each PG, as its primary reported it, and
+    /// the volumes' catalog (D335): the leader's, in memory only.
+    volume_space: RefCell<space::Space>,
     /// The devices' load and drives (D218): the leader's, in memory only.
     perf: RefCell<perf::Perf>,
     /// Nodes' port reports and the fabric reconciler's idle times
@@ -1150,6 +1157,7 @@ impl Meta {
             stuck: RefCell::new(BTreeMap::new()),
             usage: RefCell::new(BTreeMap::new()),
             usage_version: Cell::new(wall_nanos()),
+            volume_space: RefCell::new(space::Space::default()),
             perf: RefCell::new(perf::Perf::default()),
             fabric: RefCell::new(fabric::Fabric::default()),
             scrubs: RefCell::new(BTreeMap::new()),
@@ -1461,6 +1469,131 @@ impl Meta {
         Ok((version, Some(bytes)))
     }
 
+    /// Takes a primary's `PgSpace` (D335) and answers it: how many PGs the
+    /// leader holds from the device, and the heads when the device's are
+    /// another version.
+    pub fn pg_space(
+        &self,
+        device: u32,
+        full: bool,
+        heads: u64,
+        payload: &[u8],
+    ) -> (hyperstor_proto::Msg, Vec<u8>) {
+        use hyperstor_proto::{Code, Msg};
+        if !self.leads() {
+            return (
+                Msg::Error {
+                    code: Code::NotLeader,
+                    map_epoch: self.published.borrow().epoch,
+                    detail: self.leader_hint(),
+                },
+                Vec::new(),
+            );
+        }
+        let pgs = match hyperstor_proto::space::decode_report(payload) {
+            Ok(p) => p,
+            Err(e) => {
+                return (
+                    Msg::Error {
+                        code: Code::Invalid,
+                        map_epoch: self.published.borrow().epoch,
+                        detail: format!("bad space report: {e}"),
+                    },
+                    Vec::new(),
+                );
+            }
+        };
+        let mut s = self.volume_space.borrow_mut();
+        let known = s.note(device, full, pgs);
+        let (version, h) = s.heads_for(heads);
+        (
+            Msg::PgSpaceOk {
+                known,
+                heads: version,
+            },
+            h.to_vec(),
+        )
+    }
+
+    /// Forgets the primaries' space reports, as a new leader starts
+    /// without them (tests).
+    pub fn forget_space_reports(&self) {
+        self.volume_space.borrow_mut().forget_reports();
+    }
+
+    /// [`Admin::Space`]'s answer.
+    pub fn space_view(&self) -> Result<space::SpaceView, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let pools: BTreeMap<u32, u32> = self
+            .published
+            .borrow()
+            .pools
+            .iter()
+            .filter(|(id, _)| **id != hyperstor_map::META_POOL)
+            .map(|(id, p)| (*id, p.pg_count))
+            .collect();
+        Ok(self.volume_space.borrow().view(&pools))
+    }
+
+    /// The leader's catalog of volumes for the space counts (D335): every
+    /// `every`, every data pool's volumes, trash and deletes under way
+    /// included, and the branch records of lineages with clones or
+    /// rollbacks. Through a client of its own, connected to this member
+    /// (at `map_address`), new each time it gains the lead.
+    pub async fn space_catalog(self: Rc<Self>, every: Duration, map_address: SocketAddr) {
+        let mut client: Option<(u64, Rc<hyperstor_client::Client>)> = None;
+        loop {
+            sleep(every).await;
+            if !self.leads() {
+                continue;
+            }
+            let generation = self.lead_gen.get();
+            let c = match &client {
+                Some((g, c)) if *g == generation => c.clone(),
+                _ => match hyperstor_client::Client::connect(map_address, 0).await {
+                    Ok(c) => {
+                        client = Some((generation, c.clone()));
+                        c
+                    }
+                    Err(_) => continue,
+                },
+            };
+            let pools: Vec<u32> = self
+                .published
+                .borrow()
+                .pools
+                .keys()
+                .copied()
+                .filter(|&p| p != hyperstor_map::META_POOL)
+                .collect();
+            let read = async {
+                c.refresh_map().await?;
+                let mut volumes = Vec::new();
+                for p in pools {
+                    volumes.extend(c.list_volumes(p).await?);
+                }
+                let mut branches = HashMap::new();
+                for l in space::lineages_to_read(&volumes) {
+                    branches.insert(l, c.branches(l).await?);
+                }
+                Ok::<_, hyperstor_client::ClientError>((volumes, branches))
+            };
+            match read.await {
+                Ok((volumes, branches)) if self.leads() && self.lead_gen.get() == generation => {
+                    self.volume_space
+                        .borrow_mut()
+                        .set_catalog(volumes, branches);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("hyperstor-meta: the volumes' catalog for space wasn't read: {e}")
+                }
+            }
+        }
+    }
+
     /// The leader's view of the devices' load and drives (D218).
     pub fn perf(&self) -> perf::Perf {
         self.perf.borrow().clone()
@@ -1660,6 +1793,7 @@ impl Meta {
                     self.inconsistent.borrow_mut().clear();
                     self.usage.borrow_mut().clear();
                     self.bump_usage();
+                    self.volume_space.borrow_mut().forget_reports();
                     // Scrub records (D227) from the store, as the last
                     // leader wrote them.
                     let records = match &*self.scrub_store.borrow() {
@@ -3017,6 +3151,9 @@ impl Meta {
                 Admin::Uncommitted(reply) => {
                     let since = self.uncommitted.get().filter(|_| self.leads());
                     let _ = reply.send(since.map(|t| t.elapsed()));
+                }
+                Admin::Space(reply) => {
+                    let _ = reply.send(self.space_view());
                 }
                 Admin::PgUsage { pool, since, reply } => {
                     let _ = reply.send(self.pool_usage(pool, since));
@@ -4413,6 +4550,23 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                         let reply = meta.blocklist(ids).await;
                         let _ = tx.send(encode_frame(h.req, &reply, &[]).into());
                     });
+                    continue;
+                }
+                // Answered with a payload: the heads, when they changed (D335).
+                if let Ok(Msg::PgSpace {
+                    device,
+                    full,
+                    heads,
+                }) = msg
+                {
+                    let (reply, payload) =
+                        meta.pg_space(device, full, heads, &body[h.body_len as usize..]);
+                    if tx
+                        .send(encode_frame(h.req, &reply, &payload).into())
+                        .is_err()
+                    {
+                        return;
+                    }
                     continue;
                 }
                 let reply = meta.handle_with(msg, &body[h.body_len as usize..]);

@@ -153,7 +153,7 @@ export default function Volumes() {
       <ErrorText error={status.error ?? vols.error} />
       {notice && <p className="text-sm text-emerald-700 mb-2">{notice}</p>}
       <Table
-        head={["", "Id", "Name", "Size", "State", ...(realm ? [] : ["Realm"]), "Attached by", ""]}
+        head={["", "Id", "Name", "Size", "Used", "State", ...(realm ? [] : ["Realm"]), "Attached by", ""]}
         empty="No volumes in this pool."
       >
         {(vols.data ?? []).filter((v) => inScope(scope, v.tenant, v.project)).map((v) => (
@@ -170,6 +170,10 @@ export default function Volumes() {
               <td className={`${td} font-mono text-xs`}>{v.id}</td>
               <td className={td}>{v.name || "–"}</td>
               <td className={td}>{fmtBytes(v.size)}</td>
+              {/* One copy: its head's and its snapshots' bytes, from the leader (D335). */}
+              <td className={td} title={v.spaceKnown ? `head ${fmtBytes(v.headBytes)}, snapshots ${fmtBytes(v.snapshotBytes)}` : undefined}>
+                {v.spaceKnown ? fmtBytes(v.headBytes + v.snapshotBytes) : "–"}
+              </td>
               <td className={td}>
                 <Pill tone={v.state === "active" ? "ok" : "muted"}>{v.state}</Pill>
               </td>
@@ -208,7 +212,7 @@ export default function Volumes() {
             </tr>
             {open === v.id && (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={8}>
                   <Snapshots v={v} open={show} />
                 </td>
               </tr>

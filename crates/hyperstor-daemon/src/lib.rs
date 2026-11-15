@@ -32,6 +32,7 @@ mod kv;
 pub mod metrics;
 mod ports;
 mod shard_cell;
+pub mod space;
 use shard_cell::ReadKind;
 
 use hyperstor_client::rpc::{CALL_TIMEOUT, Conn, Frame, counter_of, read_request, writer};
@@ -219,6 +220,10 @@ pub struct NodeConfig {
     /// How often each device reports its load to the map service (D218);
     /// zero: `HS_PERF_MS` if set, else [`PERF_EVERY`]. Tests set it short.
     pub perf_every: Duration,
+    /// How often each primary walks its PGs and reports their bytes and
+    /// what each branch holds (D155, D335); zero: `HS_PG_USAGE_MS` if set,
+    /// else 30 s. Tests set it short.
+    pub usage_every: Duration,
     /// Test hook: devices whose commits take longer without holding their
     /// reactor (04-decisions.md D92, I199).
     pub commit_delays: Option<Arc<faults::CommitDelays>>,
@@ -464,6 +469,13 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                 .map_or(PERF_EVERY, Duration::from_millis),
             t => t,
         };
+        let usage_every = match cfg.usage_every {
+            Duration::ZERO => std::env::var("HS_PG_USAGE_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .map_or(Duration::from_secs(30), Duration::from_millis),
+            t => t,
+        };
         let opened = Opening(Some(opening.clone()));
         threads.push(
             std::thread::Builder::new()
@@ -573,12 +585,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().accept(TcpListener::from_std(l)));
                         }
                         spawn(st.clone().gauges());
-                        // Every 30 s (HS_PG_USAGE_MS for tests).
-                        let every = std::env::var("HS_PG_USAGE_MS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .map_or(Duration::from_secs(30), Duration::from_millis);
-                        spawn(st.clone().usage(every));
+                        spawn(st.clone().usage(usage_every));
                         *st.drive.borrow_mut() =
                             Some(drive::watch(sh.device_id, drive_path, cpu));
                         spawn(st.clone().perf(perf_every));
@@ -4784,10 +4791,17 @@ impl ShardState {
     /// copy of each PG it is primary of holds (D155): the PGs whose bytes
     /// changed, or all of them when the map service holds another number
     /// of them from this device (a new leader, a PG gone to another
-    /// primary) or the last report failed.
+    /// primary) or the last report failed. The same walk counts what each
+    /// branch holds, head and snapshot-only blocks apart (D335, D338),
+    /// reported the same way with `PgSpace`; its answer brings the heads
+    /// to lay chunk versions over when they changed.
     async fn usage(self: Rc<Self>, every: Duration) {
         let mut sent: HashMap<(u32, u32), u64> = HashMap::new();
         let mut full = true;
+        let mut sent_space: HashMap<(u32, u32), Vec<hyperstor_proto::space::BranchBlocks>> =
+            HashMap::new();
+        let mut full_space = true;
+        let mut heads: (u64, hyperstor_proto::space::Heads) = (0, HashMap::new());
         loop {
             sleep(every).await;
             if self.cut_off() {
@@ -4801,8 +4815,11 @@ impl ShardState {
                 .map(|(k, _)| *k)
                 .collect();
             let mut now = HashMap::with_capacity(mine.len());
+            let mut space = HashMap::with_capacity(mine.len());
             for (pool, pg) in mine {
-                now.insert((pool, pg), self.pg_bytes(pool, pg).await);
+                let (bytes, branches) = self.pg_walk(pool, pg, &heads.1).await;
+                now.insert((pool, pg), bytes);
+                space.insert((pool, pg), branches);
             }
             let pgs = now
                 .iter()
@@ -4822,6 +4839,34 @@ impl ShardState {
                 _ => true,
             };
             sent = now;
+            let changed: Vec<hyperstor_proto::space::PgBranches> = space
+                .iter()
+                .filter(|(k, b)| full_space || sent_space.get(k) != Some(b))
+                .map(|(&(pool, pg), b)| (pool, pg, b.clone()))
+                .collect();
+            let r = self
+                .client
+                .call_meta_with(
+                    &Msg::PgSpace {
+                        device: self.me,
+                        full: full_space,
+                        heads: heads.0,
+                    },
+                    &hyperstor_proto::space::encode_report(&changed),
+                )
+                .await;
+            full_space = match r {
+                Ok((Msg::PgSpaceOk { known, heads: v }, payload)) => {
+                    if v != heads.0
+                        && let Ok(h) = hyperstor_proto::space::decode_heads(&payload)
+                    {
+                        heads = (v, h);
+                    }
+                    known as usize != space.len()
+                }
+                _ => true,
+            };
+            sent_space = space;
         }
     }
 
@@ -4889,20 +4934,29 @@ impl ShardState {
         }
     }
 
-    /// The bytes this device's copy of a PG holds, summed a slice of the
-    /// index at a time so that I/O waits behind none of it for long.
-    async fn pg_bytes(&self, pool: u32, pg: u32) -> u64 {
-        let (mut blocks, mut after) = (0, None);
+    /// The bytes this device's copy of a PG holds (D155), and what each
+    /// branch holds in it (D335), walked a slice of the index at a time so
+    /// that I/O waits behind none of it for long.
+    async fn pg_walk(
+        &self,
+        pool: u32,
+        pg: u32,
+        heads: &hyperstor_proto::space::Heads,
+    ) -> (u64, Vec<hyperstor_proto::space::BranchBlocks>) {
+        let mut w = space::Walk::default();
+        let mut after = None;
         loop {
-            let (b, next) = self
-                .shard
-                .get()
-                .await
-                .pg_blocks(pool, pg, after.as_ref(), 4096);
-            blocks += b;
+            let next = w.step(
+                self.shard.get().await.index(),
+                pool,
+                pg,
+                after.as_ref(),
+                space::SLICE,
+                heads,
+            );
             match next {
                 Some(k) => after = Some(k),
-                None => return blocks * hyperstor_engine::BLOCK as u64,
+                None => return (w.blocks * hyperstor_engine::BLOCK as u64, w.branches()),
             }
             hyperstor_reactor::yield_now().await;
         }

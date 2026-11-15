@@ -1478,6 +1478,7 @@ dependencies = [
  "hyperstor-engine",
  "hyperstor-meta",
  "hyperstor-placement",
+ "hyperstor-proto",
  "hyperstor-reactor",
  "io-uring",
  "libc",
@@ -1644,6 +1645,7 @@ dependencies = [
  "hyperstor-s3",
  "libc",
  "openraft",
+ "rand 0.10.3",
  "redb",
  "rustls",
  "serde",
@@ -1709,6 +1711,7 @@ name = "hyperstor-proto"
 version = "0.1.0"
 dependencies = [
  "hyperstor-codec",
+ "rand 0.10.3",
  "thiserror 2.0.21",
 ]
 

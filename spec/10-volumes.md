@@ -97,9 +97,14 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
 
 ### 10.5 Space and QoS
 
-- Each volume reports allocated bytes for its head and the bytes held
-  only by its snapshots. Pools report used and free bytes, and enforce
-  the D27 thresholds.
+- Each volume reports, in bytes of one copy, its **head bytes** (the
+  blocks its head reads from branches it owns) and its **snapshot-only
+  bytes** (every other block of those branches: blocks newer versions
+  override, held by its snapshots, or read only by its clones through
+  a snapshot). They are counted by each PG's primary every 30 s, not
+  kept in the header (20-tenants.md §24.4, D335–D338): exact as of the
+  last walk. Pools report used and free bytes, and enforce the D27
+  thresholds.
 - **QoS:** a volume can have IOPS and bandwidth limits with a burst.
   They are enforced in two places:
   - the client library uses token buckets, which serve well-behaved
