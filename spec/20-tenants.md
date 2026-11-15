@@ -210,7 +210,10 @@ strict multi-tenancy without a cluster per customer.
   at `Hello` (D259), so the I/O path gains nothing; until the data
   path's mutual TLS (D25) authenticates `Hello`, it stops mistakes, not
   a host that lies. A host names itself with `--host`, its hostname by
-  default (D261). Built (I302). Why: shared compute stays the default,
+  default (D261). A change to a binding is answered once every storage
+  node that is up holds it, or can no longer serve by an older map, as a
+  blocklist is (06-metadata.md §9), so every attach after the answer is
+  decided by the new binding (I412). Built (I302). Why: shared compute stays the default,
   and strict separation is one setting per host for those who need it.
 - **Administration (D252).** Roles (19-administration.md §23.9.2) can be
   granted on a realm, as `role@realm` beside cluster-wide roles (D263);
