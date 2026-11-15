@@ -1,6 +1,6 @@
 //! `hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]]
 //!               [--json | -o json|yaml] COMMAND
-//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
+//!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R|default] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
 //!               [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge]
 //!               [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N]`
@@ -104,7 +104,7 @@
 //!   how long it is kept (0: forever; D112, D113);
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
-//!   reads it back and compares;
+//!   reads it back and compares, and says which networks it used;
 //! - `token create --role node|meta|mgmt|s3|metrics [--name N] [--ttl
 //!   SECS]`, `token list`, `token revoke --id ID`: join tokens (§23.4.2);
 //!   a `mgmt` token enrolls a management client named N, such as glidex
@@ -123,6 +123,11 @@
 //!   in whole 4 KiB blocks; `--sparse` skips zero blocks; with `--map`,
 //!   straight to the map service (any of its members), without the API
 //!   (D123);
+//! - `io-test`, `write-volume` and `read-volume` reach devices on the
+//!   data networks `--networks NAME[,NAME...]` names (their endpoints
+//!   there, D207), else on the `networks` line `hyperstor-install` writes
+//!   into `hyperstorctl.conf` (the host's client networks, D289), else at
+//!   the devices' addresses; `--networks none` uses the addresses (D335);
 //! - `drain --node N [--dry-run] [--wait SECS]`: takes every device of a
 //!   node out and follows its PGs as an operation; `--dry-run` lists what
 //!   would move and changes nothing;
@@ -230,7 +235,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -333,6 +338,9 @@ fn random_u64() -> u64 {
 struct Args {
     /// `device endpoints`: `NET=ADDR,...` or `none`.
     endpoints: Option<String>,
+    /// `io-test`, `write-volume`, `read-volume`: the data networks to
+    /// reach devices on, `NAME,...` or `none` (D335).
+    networks: Option<String>,
     /// `claim ...`: the claim's holder (D205).
     holder: Option<String>,
     /// `claim port`: storage leaves the port.
@@ -515,6 +523,7 @@ fn main() {
         pool: None,
         pg: None,
         mib: 16,
+        networks: None,
         wait: None,
         device: None,
         node: None,
@@ -678,6 +687,7 @@ fn main() {
             }
             "--deep" => a.deep = true,
             "--mib" => a.mib = u64::from(num(it.next())).max(1),
+            "--networks" => a.networks = Some(it.next().cloned().unwrap_or_default()),
             "--wait" => a.wait = Some(num(it.next())),
             "--device" => a.device = Some(num(it.next())),
             "--weight" => {
@@ -1238,6 +1248,17 @@ fn main() {
         // key, the API pinned to the root the token names.
         std::process::exit(enroll(&api_addr(api.clone()), &a));
     }
+    // Only the commands on the data path read them, so a bad line
+    // doesn't stop the others.
+    let moves_data = data_path || cmd == "io-test";
+    let networks = match data_networks(a.networks.as_deref(), conf("networks").as_deref()) {
+        Ok(n) => n,
+        Err(_) if !moves_data => Vec::new(),
+        Err(e) => {
+            eprintln!("hyperstorctl: {e}");
+            std::process::exit(2)
+        }
+    };
     if data_path && let Some(map) = a.map.clone() {
         // Straight to the data path: no API, no certificate.
         // The map service's members, any of which answers.
@@ -1247,7 +1268,7 @@ fn main() {
             .collect::<Result<_, _>>()
             .unwrap_or_else(|_| usage());
         std::process::exit(hyperstor_reactor::block_on(async move {
-            volume_io(map, &cmd, &a).await
+            volume_io(map, &cmd, &a, networks).await
         }));
     }
     if (cmd == "token create" || cmd == "port role") != a.role.is_some()
@@ -1333,7 +1354,6 @@ fn main() {
         .as_deref()
         .filter(|_| socket.is_none())
         .map(client_tls);
-
     // The API calls run on a small tokio runtime; io-test then runs the
     // client library on a reactor, after it.
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1386,11 +1406,12 @@ fn main() {
         Ok(Next::Follow(_)) => unreachable!("followed in manage"),
         Ok(Next::Members(_)) => unreachable!("only asked for the leader"),
         Ok(Next::IoTest { map, pool }) => {
-            hyperstor_reactor::block_on(async move { io_test(map, pool, a.mib).await })
+            let nets = networks;
+            hyperstor_reactor::block_on(async move { io_test(map, pool, a.mib, nets).await })
         }
         Ok(Next::VolumeIo { map }) => {
             let cmd = cmd.clone();
-            hyperstor_reactor::block_on(async move { volume_io(map, &cmd, &a).await })
+            hyperstor_reactor::block_on(async move { volume_io(map, &cmd, &a, networks).await })
         }
         Err(e) => {
             eprintln!("hyperstorctl: {api}: {}", error_text(&e));
@@ -4555,7 +4576,12 @@ const IO_PIECE: usize = 1 << 20;
 /// `--sparse` skips blocks of zeros, for a volume that reads zeros there.
 /// `read-volume`: `--size` bytes at `--offset` into `--out`. Both in whole
 /// 4 KiB blocks; a file's last block is padded with zeros (D123).
-async fn volume_io(meta: Vec<std::net::SocketAddr>, cmd: &str, a: &Args) -> i32 {
+async fn volume_io(
+    meta: Vec<std::net::SocketAddr>,
+    cmd: &str,
+    a: &Args,
+    networks: Vec<String>,
+) -> i32 {
     let fail = |m: String| {
         eprintln!("hyperstorctl: {m}");
         1
@@ -4580,6 +4606,7 @@ async fn volume_io(meta: Vec<std::net::SocketAddr>, cmd: &str, a: &Args) -> i32 
     };
     // Whoever finds the volume held knows a tool holds it (D153).
     cl.set_lease_label("hyperstorctl");
+    on_networks(&cl, networks);
     let vol = match cl.volume(id).await {
         Ok(Some(v)) => v,
         Ok(None) => return fail(format!("volume {id:032x}: no such volume")),
@@ -4888,6 +4915,23 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
 }
 
 /// Where and how `got`, read at byte `at`, differs from `want`, for
+/// Has `cl` reach devices on `networks` (D335), warning of names the
+/// map doesn't have, and says where it reaches them, for `io-test`'s
+/// report.
+fn on_networks(cl: &Client, networks: Vec<String>) -> String {
+    let map = cl.map();
+    let unknown = hyperstor_ctl::unknown_networks(&networks, map.networks.keys());
+    if !unknown.is_empty() {
+        eprintln!(
+            "hyperstorctl: the cluster has no network {}; devices are reached at their addresses there",
+            unknown.join(", ")
+        );
+    }
+    let on = hyperstor_ctl::networks_said(&networks);
+    cl.set_networks(networks);
+    on
+}
+
 /// `io-test`'s report: its length if short, the 4 KiB blocks that differ,
 /// the first byte that does, and what the first bad block holds instead:
 /// zeros, another block of what was written (`all`, from byte 0), or
@@ -4943,7 +4987,7 @@ fn mismatch(want: &[u8], got: &[u8], at: u64, all: &[u8]) -> String {
     out.join("; ")
 }
 
-async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
+async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64, networks: Vec<String>) -> i32 {
     let cl = match hyperstor_reactor::time::timeout(
         Duration::from_secs(5),
         Client::connect(meta, random_u64()),
@@ -4960,6 +5004,7 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
             return 3;
         }
     };
+    let on = on_networks(&cl, networks);
     let lineage = (u128::from(random_u64()) << 64) | u128::from(random_u64());
     let mut seed = random_u64() | 1;
     let mut data = vec![0u8; (mib << 20) as usize];
@@ -5016,7 +5061,7 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64) -> i32 {
     let r = t.elapsed();
     let rate = |d: Duration| mib as f64 / d.as_secs_f64().max(1e-9);
     println!(
-        "pool {pool}: wrote {mib} MiB in {:.0} ms ({:.0} MiB/s), read and verified in {:.0} ms ({:.0} MiB/s)",
+        "pool {pool}: wrote {mib} MiB in {:.0} ms ({:.0} MiB/s), read and verified in {:.0} ms ({:.0} MiB/s), {on}",
         w.as_secs_f64() * 1e3,
         rate(w),
         r.as_secs_f64() * 1e3,

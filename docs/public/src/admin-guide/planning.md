@@ -134,7 +134,9 @@ fast ones and keep the rest on the management network:
   again there: its nodes take the endpoints the map has for their
   devices, and restart with them.
 - Clients choose too: [`hyperstor-vhost --networks`](../reference/hyperstor-vhost.md)
-  for VM disks, and `hyperstor-s3 --networks`. The installer gives both
+  for VM disks, `hyperstor-s3 --networks`, and
+  [`hyperstorctl --networks`](../reference/hyperstorctl.md) for
+  `io-test` and the volume commands. The installer gives all three
   the networks the host's own storage nodes use; on a host without
   storage, or to choose others, install with `--client-networks
   NAME,...` (`none` for devices' addresses). A client on no network uses

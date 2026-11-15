@@ -1680,3 +1680,15 @@ providing a patched build meanwhile:
 | 295 | Installed by default on storage hosts, or only with an option (recommended) | Only with an option | D333 |
 | 296 | When Ubuntu updates util-linux: let apt replace it and warn (recommended); hold the package; or rebuild on the host from an apt hook | Replace and warn | D334 |
 
+## hyperstorctl on the cluster's networks (2026-11-15)
+
+`hyperstorctl io-test` and the volume commands reached devices at their
+addresses, so on the pilot they measured 1 GbE while VM disks and S3
+used 100 GbE (#325). Asked how they should pick networks by default,
+with options (the installer writes the host's client networks into
+`hyperstorctl.conf`, recommended; detect from the map's subnets and the
+host's addresses; both), the owner chose the installer's line:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 297 | Where `hyperstorctl`'s volume commands take their default networks from: the installer's `networks` line in `hyperstorctl.conf` (recommended); detected from the map; the line, else detected | The installer's line | D335 |
