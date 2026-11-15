@@ -1621,11 +1621,14 @@ spec = ["19-administration.md §23.4", "D29"]
 status = "planned"
 
 [[milestone.item]]
-what = "Other tools see Hyperstor's devices: a libblkid prober (TYPE hyperstor, the format version, the cluster id as UUID, device-N as label, checked by CRC32C), built into Ubuntu's own libblkid per release by scripts/build-libblkid-deb.sh and installed with hyperstor-install --libblkid-deb; the host check says whether libblkid knows them and warns once an update replaced the build"
-spec = ["19-administration.md §23.4.1", "D332", "D333", "D334", "I403"]
+what = "Other tools see Hyperstor's devices: a libblkid prober (TYPE hyperstor, the format version, the cluster id as UUID, device-N as label, checked by CRC32C), built into Ubuntu's own libblkid per release by scripts/build-libblkid-deb.sh and installed with hyperstor-install --libblkid-deb as a copy of the library beside Ubuntu's package, removed by an apt hook when Ubuntu updates libblkid1; the host check says whether libblkid knows them, warns once an update replaced the build, and warns on apt's unmet dependencies on libblkid1"
+spec = ["19-administration.md §23.4.1", "D332", "D333", "D334", "D344", "I403", "I414"]
 status = "done"
 tests = [
     "hyperstor_install::tests::the_patched_libblkid_is_named_and_checked",
+    "hyperstor_install::tests::apt_s_state_with_the_patched_package_is_reported",
+    "hyperstor_install::tests::the_libblkid_copy_goes_when_ubuntu_updates_libblkid1",
+    "hyperstor_install::tests::uninstall_removes_the_libblkid_copy_and_its_hook",
 ]
 
 [[milestone]]

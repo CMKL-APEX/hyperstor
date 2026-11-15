@@ -1719,3 +1719,17 @@ records, where an offer's pin comes from, and what `GetSpace` sends:
 | 304 | Whether the map service refuses changes to what a trusted directory owns (rename, realm, move, delete of linked tenants and projects), or only the UI hides them | Refused, reason `from_directory`, for every caller; the feed's own path exempt | D342 |
 | 305 | Where an offer's pin comes from in the web UI: typed; or mgmt's own certificate, with another pasted if need be | mgmt's own, with “Use another” | D343 |
 | 306 | Whether `GetSpace` may leave out the row of each volume | Yes: `skip_volumes`, default every row | I413 |
+
+## The patched libblkid and apt on Ubuntu 26.04 (#384, 2026-11-16)
+
+On Ubuntu 26.04, util-linux's packages pin libblkid1 and each other
+exactly, so D333's patched libblkid1 package left apt with unmet
+dependencies. Asked with options (install the whole util-linux set,
+through a local apt repository, recommended first; the library as a copy
+in `/usr/local/lib`, with an apt hook removing it when Ubuntu updates
+libblkid1), and asked about a symlink or update-alternatives, which
+`ldconfig` undoes, the owner chose the copy:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 307 | How the patched libblkid is installed: util-linux's whole set at `+hyperstor1`, through a local apt repository; or the library alone as a copy the loader finds first, with an apt hook removing it when Ubuntu's libblkid1 changes (recommended after the comparison) | The copy, with the hook | D344 |

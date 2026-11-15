@@ -1112,8 +1112,9 @@ fn check(root: &Path, s: &Settings) -> bool {
             }
         }
     }
-    // libblkid (D332, D334): whether lsblk, blkid, wipefs and mkfs know a
-    // hyperstor device, and whether an update replaced the build that did.
+    // libblkid (D332, D334, D344): whether lsblk, blkid, wipefs and mkfs
+    // know a hyperstor device, whether an update replaced the copy that
+    // did, and whether apt is whole.
     if let Some((version, _)) = libblkid_installed() {
         let knows = Command::new("blkid").arg("-k").output().is_ok_and(|o| {
             String::from_utf8_lossy(&o.stdout)
@@ -1123,16 +1124,81 @@ fn check(root: &Path, s: &Settings) -> bool {
         let marked = under(root, &format!("/{LIBBLKID_MARK}")).exists();
         let (l, d) = libblkid_state(knows, &version, marked);
         note(l, "libblkid", d);
+        let unmet = Command::new("apt-get")
+            .args(["-o", "Debug::NoLocking=true", "check"])
+            .output()
+            .ok()
+            .filter(|o| !o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout).into_owned()
+                    + &String::from_utf8_lossy(&o.stderr)
+            });
+        if let Some((l, d)) = libblkid_apt_state(&version, unmet.as_deref()) {
+            note(l, "libblkid", d);
+        }
     }
     worst == Level::Fail
 }
 
-/// What the patched libblkid's version adds to Ubuntu's (D332): apt
-/// takes Ubuntu's next util-linux over it (D334).
+/// What the patched build's version adds to Ubuntu's (D332). Installers
+/// before D344 installed the package itself; one still installed is put
+/// back to Ubuntu's.
 const LIBBLKID_SUFFIX: &str = "+hyperstor1";
-/// Written when the installer installs the patched libblkid, with the
-/// version: the host check then warns once an update has replaced it.
+/// Written when the installer installs the patched library: Ubuntu's
+/// libblkid1 version it was built from, then the copy's path. The host
+/// check then warns once an update has replaced it, and the apt hook
+/// reads it (D344).
 const LIBBLKID_MARK: &str = "etc/hyperstor/libblkid";
+/// The patched library's copy goes in this directory's `<triplet>/`,
+/// which the loader searches before Ubuntu's (D344).
+const LIBBLKID_COPY_DIR: &str = "/usr/local/lib";
+/// Removes the copy once Ubuntu's libblkid1 is another version (D344).
+const LIBBLKID_HOOK: &str = "/usr/local/lib/hyperstor/libblkid-hook";
+/// Runs the hook after every dpkg run of apt's.
+const LIBBLKID_APT_CONF: &str = "/etc/apt/apt.conf.d/80hyperstor-libblkid";
+
+/// The apt configuration that runs the hook; a missing hook (removed by
+/// hand) or a failing one never fails apt.
+fn libblkid_apt_conf() -> String {
+    format!(
+        "// Written by hyperstor-install (D344): removes Hyperstor's copy of\n\
+         // libblkid once Ubuntu's libblkid1 is no longer the version it was\n\
+         // built from.\n\
+         DPkg::Post-Invoke {{ \"if [ -x {LIBBLKID_HOOK} ]; then {LIBBLKID_HOOK} || true; fi\"; }};\n"
+    )
+}
+
+/// The hook: `mark` holds the version the copy was built from and the
+/// copy's path. Ubuntu's libblkid1 at another version (a util-linux
+/// update) removes the copy, its link and the mark's path line, so
+/// Ubuntu's library, with its fixes, is the one loaded; the host check
+/// then warns (D334).
+fn libblkid_hook(mark: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+# Written by hyperstor-install (D344). Run by apt after dpkg: removes
+# Hyperstor's copy of libblkid once Ubuntu's libblkid1 is no longer the
+# version the copy was built from.
+mark={mark}
+[ -r "$mark" ] || exit 0
+built=$(sed -n 1p "$mark")
+copy=$(sed -n 2p "$mark")
+[ -n "$copy" ] && [ -e "$copy" ] || exit 0
+now=$(dpkg-query -W -f='${{Version}}' libblkid1 2>/dev/null)
+now=${{now%{LIBBLKID_SUFFIX}}}
+[ -n "$now" ] && [ "$now" = "$built" ] && exit 0
+rm -f "$copy"
+link="$(dirname "$copy")/libblkid.so.1"
+[ -L "$link" ] && rm -f "$link"
+printf '%s\n' "$built" > "$mark"
+ldconfig
+msg="libblkid1 is now ${{now:-gone}}, not $built: removed Hyperstor's copy of libblkid; lsblk, wipefs and mkfs see Hyperstor's devices as blank until hyperstor-install install --libblkid-deb DIR installs the build for it"
+echo "hyperstor: $msg" >&2
+logger -t hyperstor "$msg" 2>/dev/null || true
+exit 0
+"#
+    )
+}
 
 /// libblkid1's installed version and dpkg's architecture; `None` off a
 /// Debian-family host.
@@ -1148,8 +1214,17 @@ fn libblkid_installed() -> Option<(String, String)> {
     ))
 }
 
-fn libblkid_patched(version: &str) -> bool {
-    version.ends_with(LIBBLKID_SUFFIX)
+/// The patched library, taken out of its build, to install as a copy
+/// beside Ubuntu's (D344).
+struct LibblkidCopy {
+    /// Ubuntu's libblkid1 version it was built from.
+    version: String,
+    /// The patched package an installer before D344 installed, put back
+    /// to Ubuntu's `version`.
+    old_package: Option<String>,
+    /// Where the copy goes: `/usr/local/lib/<triplet>/libblkid.so.1.N.N`.
+    copy: String,
+    lib: Vec<u8>,
 }
 
 /// The patched package's file for Ubuntu's libblkid1 `version` (no epoch
@@ -1181,6 +1256,71 @@ fn libblkid_state(knows: bool, version: &str, marked: bool) -> (Level, String) {
             ),
         )
     }
+}
+
+/// The host check's line on apt, when it has one: the package an
+/// installer before D344 put in place, or apt's unmet dependencies on
+/// util-linux's packages (`unmet` is `apt-get check`'s output when it
+/// failed). On Ubuntu 26.04 util-linux's packages pin libblkid1 exactly,
+/// so the patched package left apt unable to install anything (#384).
+fn libblkid_apt_state(version: &str, unmet: Option<&str>) -> Option<(Level, String)> {
+    let base = version.strip_suffix(LIBBLKID_SUFFIX);
+    let names = unmet.map(|u| {
+        u.lines()
+            .filter(|l| l.contains("libblkid1"))
+            .filter_map(|l| l.split(':').next())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect::<Vec<_>>()
+    });
+    match (base, unmet) {
+        (Some(base), Some(_)) => Some((
+            Level::Warn,
+            format!(
+                "apt has unmet dependencies on libblkid1 {version}{}: apt-get installs nothing until Ubuntu's {base} is back; install --libblkid-deb DIR puts it back and installs the library beside it (D344)",
+                names
+                    .filter(|n| !n.is_empty())
+                    .map_or(String::new(), |n| format!(" ({})", n.join(", ")))
+            ),
+        )),
+        (Some(base), None) => Some((
+            Level::Info,
+            format!(
+                "libblkid1 {version} is the package an earlier installer put in place; install --libblkid-deb DIR puts Ubuntu's {base} back and installs the library beside it (D344)"
+            ),
+        )),
+        (None, Some(_)) if names.as_ref().is_some_and(|n| !n.is_empty()) => Some((
+            Level::Warn,
+            format!(
+                "apt has unmet dependencies on libblkid1 ({}): see apt-get check",
+                names.unwrap_or_default().join(", ")
+            ),
+        )),
+        _ => None,
+    }
+}
+
+/// The library in a build of libblkid1 unpacked at `tree`: its path, the
+/// multiarch directory it is in (`x86_64-linux-gnu`) and its file name
+/// (`libblkid.so.1.1.0`). Ubuntu ships it in `usr/lib/<triplet>/`, or in
+/// `lib/<triplet>/` on releases before /usr was merged.
+fn libblkid_in(tree: &Path) -> Option<(PathBuf, String, String)> {
+    for top in ["usr/lib", "lib"] {
+        for d in fs::read_dir(tree.join(top)).into_iter().flatten().flatten() {
+            let triplet = d.file_name().to_string_lossy().into_owned();
+            if !triplet.contains("-linux-") {
+                continue;
+            }
+            for f in fs::read_dir(d.path()).into_iter().flatten().flatten() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                let is_file = f.file_type().is_ok_and(|t| t.is_file());
+                if is_file && name.starts_with("libblkid.so.1.") {
+                    return Some((f.path(), triplet, name));
+                }
+            }
+        }
+    }
+    None
 }
 
 fn free_gib(p: &Path) -> u64 {
@@ -3964,16 +4104,20 @@ fn install(
         }
         println!();
     }
-    // The patched libblkid (D332, D333), found before anything changes.
+    // The patched libblkid (D332, D333, D344), taken out of its build
+    // before anything changes.
     let libblkid = libblkid_from.map(|dir| {
         if !real {
             return None;
         }
-        let (version, arch) = libblkid_installed()
+        let (installed, arch) = libblkid_installed()
             .unwrap_or_else(|| fail("--libblkid-deb: dpkg doesn't list libblkid1 on this host"));
-        if libblkid_patched(&version) {
-            return Some((version, None));
-        }
+        // A package an installer before D344 put in place is built from
+        // Ubuntu's version without the suffix; Ubuntu's goes back below.
+        let version = installed
+            .strip_suffix(LIBBLKID_SUFFIX)
+            .unwrap_or(&installed)
+            .to_string();
         let deb = Path::new(&dir).join(libblkid_deb(&version, &arch));
         if !deb.is_file() {
             fail(&format!(
@@ -3981,7 +4125,24 @@ fn install(
                 deb.display()
             ));
         }
-        Some((version, Some(deb)))
+        let tree = std::env::temp_dir().join(format!("hyperstor-libblkid-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tree);
+        if !run("dpkg-deb", &["-x", &deb.to_string_lossy(), &tree.to_string_lossy()]) {
+            fail(&format!("dpkg-deb -x {} failed", deb.display()));
+        }
+        let found = libblkid_in(&tree);
+        let lib = found.as_ref().and_then(|(p, _, _)| fs::read(p).ok());
+        let _ = fs::remove_dir_all(&tree);
+        let (Some((_, triplet, name)), Some(lib)) = (found, lib) else {
+            fail(&format!("--libblkid-deb: {} holds no libblkid.so.1", deb.display()));
+        };
+        let copy = format!("{LIBBLKID_COPY_DIR}/{triplet}/{name}");
+        Some(LibblkidCopy {
+            old_package: (installed != version).then_some(installed),
+            version,
+            copy,
+            lib,
+        })
     });
     let mut changed: Vec<String> = Vec::new();
 
@@ -3999,12 +4160,47 @@ fn install(
     // 1b. The patched libblkid (D332), when asked for; a host installed
     // into a scratch root has no packages to change.
     match libblkid {
-        Some(Some((version, deb))) => {
-            if let Some(deb) = deb {
-                if !run("dpkg", &["-i", &deb.to_string_lossy()]) {
-                    fail(&format!("dpkg -i {} failed", deb.display()));
+        Some(Some(c)) => {
+            // Ubuntu's package back in place of one an installer before
+            // D344 installed: on 26.04 util-linux's packages pin it exactly,
+            // so apt installs nothing until it is (#384).
+            if let Some(old) = &c.old_package {
+                let want = format!("libblkid1={}", c.version);
+                if run(
+                    "apt-get",
+                    &["install", "-y", "-q", "--allow-downgrades", &want],
+                ) {
+                    changed.push(format!("libblkid1 {old} -> {}", c.version));
+                } else {
+                    eprintln!(
+                        "hyperstor-install: warning: couldn't put Ubuntu's libblkid1 {} back (apt-get install --allow-downgrades {want}); the copy is installed beside {old}",
+                        c.version
+                    );
                 }
-                changed.push(format!("libblkid1 {version}{LIBBLKID_SUFFIX}"));
+            }
+            let mut lib_changed = converge(&under(root, &c.copy), &c.lib, 0o644);
+            // The mark first: the hook reads it to know the copy is ours.
+            let mark = under(root, &format!("/{LIBBLKID_MARK}"));
+            lib_changed |= converge(
+                &mark,
+                format!("{}\n{}\n", c.version, c.copy).as_bytes(),
+                0o644,
+            );
+            for (path, content, mode) in [
+                (
+                    LIBBLKID_HOOK,
+                    libblkid_hook(&format!("/{LIBBLKID_MARK}")),
+                    0o755,
+                ),
+                (LIBBLKID_APT_CONF, libblkid_apt_conf(), 0o644),
+            ] {
+                if converge(&under(root, path), content.as_bytes(), mode) {
+                    changed.push(path.to_string());
+                }
+            }
+            if lib_changed {
+                changed.push(c.copy.clone());
+                run("ldconfig", &[]);
                 // udevd probes disks in its own process, with the library it
                 // loaded when it started: restart it, then have it probe this
                 // host's devices again (the cluster file's and those added),
@@ -4015,11 +4211,6 @@ fn install(
                 }
                 run("udevadm", &["settle", "-t", "30"]);
             }
-            let mark = under(root, &format!("/{LIBBLKID_MARK}"));
-            if let Some(d) = mark.parent() {
-                let _ = fs::create_dir_all(d);
-            }
-            let _ = fs::write(&mark, format!("{version}\n"));
         }
         Some(None) => println!("--libblkid-deb: only on the host itself (not with --root)"),
         None => {}
@@ -5324,6 +5515,38 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
     if fs::remove_dir_all(under(root, UI_DIR)).is_ok() {
         removed.push(UI_DIR.to_string());
     }
+    // The libblkid copy and its hook (D344): Ubuntu's library is loaded
+    // again. The mark goes too, so the host check doesn't warn.
+    let mark = under(root, &format!("/{LIBBLKID_MARK}"));
+    let copy = fs::read_to_string(&mark)
+        .ok()
+        .and_then(|m| m.lines().nth(1).map(str::to_string))
+        .filter(|c| c.starts_with(&format!("{LIBBLKID_COPY_DIR}/")));
+    let mut libblkid_removed = false;
+    if let Some(copy) = copy {
+        let path = under(root, &copy);
+        if fs::remove_file(&path).is_ok() {
+            removed.push(copy.clone());
+            libblkid_removed = true;
+        }
+        let link = path.with_file_name("libblkid.so.1");
+        if fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()) {
+            let _ = fs::remove_file(&link);
+        }
+    }
+    for p in [
+        LIBBLKID_APT_CONF,
+        LIBBLKID_HOOK,
+        &format!("/{LIBBLKID_MARK}"),
+    ] {
+        if fs::remove_file(under(root, p)).is_ok() {
+            removed.push(p.to_string());
+        }
+    }
+    if real && libblkid_removed {
+        let _ = run("ldconfig", &[]);
+        let _ = run("systemctl", &["restart", "systemd-udevd"]);
+    }
     let dropin = under(root, tailscale::DROPIN);
     if tailscale::ours(&dropin) && fs::remove_file(&dropin).is_ok() {
         removed.push(tailscale::DROPIN.to_string());
@@ -5362,8 +5585,6 @@ mod tests {
             libblkid_deb("1:2.41.3-3ubuntu2.2", "arm64"),
             "libblkid1_2.41.3-3ubuntu2.2+hyperstor1_arm64.deb"
         );
-        assert!(libblkid_patched("2.39.3-9ubuntu6.5+hyperstor1"));
-        assert!(!libblkid_patched("2.39.3-9ubuntu6.5"));
         assert_eq!(
             libblkid_state(true, "2.39.3-9ubuntu6.5+hyperstor1", true).0,
             Level::Ok
@@ -5377,6 +5598,132 @@ mod tests {
         let (l, d) = libblkid_state(false, "2.39.3-9ubuntu6.5", false);
         assert_eq!(l, Level::Info);
         assert!(d.contains("--libblkid-deb"), "{d}");
+    }
+
+    /// #384, D344: the package an earlier installer put in place, and
+    /// apt's unmet dependencies on 26.04, as `apt-get check` reports them.
+    #[test]
+    fn apt_s_state_with_the_patched_package_is_reported() {
+        let unmet = "Reading package lists...\n\
+            The following packages have unmet dependencies:\n \
+            libfdisk1 : Depends: libblkid1 (= 2.41.3-3ubuntu2.2) but 2.41.3-3ubuntu2.2+hyperstor1 is installed\n \
+            mount : PreDepends: libblkid1 (= 2.41.3-3ubuntu2.2) but 2.41.3-3ubuntu2.2+hyperstor1 is installed\n\
+            E: Unmet dependencies. Try 'apt --fix-broken install' with no packages (or specify a solution).\n";
+        let (l, d) = libblkid_apt_state("2.41.3-3ubuntu2.2+hyperstor1", Some(unmet)).unwrap();
+        assert_eq!(l, Level::Warn);
+        assert!(d.contains("(libfdisk1, mount)"), "{d}");
+        assert!(d.contains("Ubuntu's 2.41.3-3ubuntu2.2 is back"), "{d}");
+        // 24.04: the old package, apt whole.
+        let (l, d) = libblkid_apt_state("2.39.3-9ubuntu6.5+hyperstor1", None).unwrap();
+        assert_eq!(l, Level::Info);
+        assert!(d.contains("puts Ubuntu's 2.39.3-9ubuntu6.5 back"), "{d}");
+        // Ubuntu's package and the copy: nothing to say, unless apt is
+        // broken over libblkid1 anyway.
+        assert!(libblkid_apt_state("2.41.3-3ubuntu2.2", None).is_none());
+        assert!(libblkid_apt_state("2.41.3-3ubuntu2.2", Some("E: other\n")).is_none());
+        let (l, _) = libblkid_apt_state("2.41.3-3ubuntu2.2", Some(unmet)).unwrap();
+        assert_eq!(l, Level::Warn);
+    }
+
+    /// D344: the library is found in the build, and the apt hook keeps
+    /// the copy while Ubuntu's libblkid1 is the version it was built from
+    /// (or the old patched package of it), and removes it, with its link,
+    /// once an update changes that.
+    #[test]
+    fn the_libblkid_copy_goes_when_ubuntu_updates_libblkid1() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let t = tempfile::tempdir().unwrap();
+        let tree = t.path().join("tree/usr/lib/x86_64-linux-gnu");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join("libblkid.so.1.1.0"), b"elf").unwrap();
+        symlink("libblkid.so.1.1.0", tree.join("libblkid.so.1")).unwrap();
+        let (path, triplet, name) = libblkid_in(&t.path().join("tree")).unwrap();
+        assert_eq!(
+            (triplet.as_str(), name.as_str()),
+            ("x86_64-linux-gnu", "libblkid.so.1.1.0")
+        );
+        assert_eq!(fs::read(path).unwrap(), b"elf");
+        assert!(libblkid_in(t.path()).is_none());
+
+        // A host: the copy, its link as ldconfig makes it, and the mark.
+        let lib = t.path().join("local/x86_64-linux-gnu");
+        fs::create_dir_all(&lib).unwrap();
+        let copy = lib.join("libblkid.so.1.1.0");
+        let link = lib.join("libblkid.so.1");
+        let mark = t.path().join("libblkid");
+        let hook = t.path().join("hook");
+        fs::write(&hook, libblkid_hook(&mark.to_string_lossy())).unwrap();
+        // dpkg-query answers $VERSION; ldconfig and logger do nothing.
+        let bin = t.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for (n, body) in [
+            ("dpkg-query", "printf '%s' \"$VERSION\""),
+            ("ldconfig", "true"),
+            ("logger", "true"),
+        ] {
+            let f = bin.join(n);
+            fs::write(&f, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&f, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+        let hook_with = |version: &str| {
+            let st = Command::new("sh")
+                .arg(&hook)
+                .env("PATH", &path)
+                .env("VERSION", version)
+                .output()
+                .unwrap();
+            assert!(st.status.success(), "{st:?}");
+        };
+        fs::write(&copy, b"elf").unwrap();
+        symlink("libblkid.so.1.1.0", &link).unwrap();
+        fs::write(&mark, format!("2.41.3-3ubuntu2.2\n{}\n", copy.display())).unwrap();
+        hook_with("2.41.3-3ubuntu2.2");
+        hook_with("2.41.3-3ubuntu2.2+hyperstor1");
+        assert!(copy.exists() && link.exists());
+        hook_with("2.41.3-3ubuntu2.3");
+        assert!(!copy.exists());
+        assert!(fs::symlink_metadata(&link).is_err(), "the link stays");
+        assert_eq!(fs::read_to_string(&mark).unwrap(), "2.41.3-3ubuntu2.2\n");
+        // Nothing left to remove: nothing happens.
+        hook_with("2.41.3-3ubuntu2.4");
+        assert_eq!(fs::read_to_string(&mark).unwrap(), "2.41.3-3ubuntu2.2\n");
+        // apt runs it, and never fails over it.
+        let conf = libblkid_apt_conf();
+        assert!(
+            conf.contains(&format!("then {LIBBLKID_HOOK} || true; fi")),
+            "{conf}"
+        );
+    }
+
+    /// D344: uninstall removes the copy, its link, the hook and the mark.
+    #[test]
+    fn uninstall_removes_the_libblkid_copy_and_its_hook() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path();
+        let copy = "/usr/local/lib/x86_64-linux-gnu/libblkid.so.1.1.0";
+        for (p, c) in [
+            (copy, "elf".to_string()),
+            (LIBBLKID_HOOK, libblkid_hook("/etc/hyperstor/libblkid")),
+            (LIBBLKID_APT_CONF, libblkid_apt_conf()),
+            (
+                &format!("/{LIBBLKID_MARK}") as &str,
+                format!("2.41.3-3ubuntu2.2\n{copy}\n"),
+            ),
+        ] {
+            let f = under(r, p);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(f, c).unwrap();
+        }
+        let link = under(r, "/usr/local/lib/x86_64-linux-gnu/libblkid.so.1");
+        symlink("libblkid.so.1.1.0", &link).unwrap();
+        uninstall(r, false, &Settings::defaults());
+        for p in [copy, LIBBLKID_HOOK, LIBBLKID_APT_CONF] {
+            assert!(!under(r, p).exists(), "{p} left");
+        }
+        assert!(!under(r, &format!("/{LIBBLKID_MARK}")).exists());
+        assert!(fs::symlink_metadata(&link).is_err());
     }
 
     #[test]
