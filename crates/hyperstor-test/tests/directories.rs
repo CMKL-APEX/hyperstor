@@ -2,7 +2,8 @@
 //! against glidex-trust's fake directory: an offer redeemed once at
 //! hyperstor-mgmt, the directory's realm and tenant made, the feed's
 //! projects made, renamed, deleted (one holding a volume kept, unlinked)
-//! and moved between its tenants, reports with storage counts, the
+//! and moved between its tenants, what it owns refused to commands here
+//! while the feed still changes it, reports with storage counts, the
 //! operator tenant, and the trust ended from either side.
 
 use glidex_trust::fake::FakeDirectory;
@@ -160,6 +161,50 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
         project(&c, "acme", "web-app").is_none().then_some(())
     });
     let _ = web;
+
+    // What the directory owns is refused here, by any command (D342):
+    // its tenant's name, realm and deletion, its projects' names, moves
+    // and deletion. A local project in its tenant is ours.
+    let acme_s = acme_id.to_string();
+    let api_p = api.to_string();
+    let local = tenant_id(&c, "local").unwrap().to_string();
+    for args in [
+        &["tenant", "rename", "--tenant", &acme_s, "--name", "mine"][..],
+        &["tenant", "delete", "--tenant", &acme_s],
+        &["realm", "tenant", "--tenant", &acme_s, "--realm", "default"],
+        &["project", "rename", "--project", &api_p, "--name", "mine"],
+        &["project", "delete", "--project", &api_p],
+        &["project", "move", "--project", &api_p, "--to", &local],
+    ] {
+        let r = c.ctl(args).expect(1);
+        assert!(
+            r.has("from_directory") && r.has("change it there"),
+            "{args:?}: {}",
+            r.out
+        );
+    }
+    let here = c
+        .ctl(&[
+            "project", "create", "--tenant", &acme_s, "--name", "here", "--json",
+        ])
+        .ok();
+    let here: serde_json::Value = serde_json::from_str(&here.out).unwrap();
+    let here = here["project"]["id"].as_u64().unwrap().to_string();
+    c.ctl(&[
+        "project",
+        "rename",
+        "--project",
+        &here,
+        "--name",
+        "here-too",
+    ])
+    .ok();
+    c.ctl(&["project", "delete", "--project", &here]).ok();
+    // The feed still renames the tenant, and back.
+    dir.add_tenant("t1", "acme-two");
+    wait_for("the feed's rename", 30, || tenant_id(&c, "acme-two"));
+    dir.add_tenant("t1", "acme");
+    wait_for("the feed's rename back", 30, || tenant_id(&c, "acme"));
 
     // A volume in a project; the directory deletes the project: kept,
     // unlinked.
