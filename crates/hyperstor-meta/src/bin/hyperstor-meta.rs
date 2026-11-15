@@ -457,6 +457,13 @@ fn main() {
         hyperstor_reactor::spawn(meta.clone().scrub_writer(scrub_every));
         // A recovered PG is scrubbed once clean a minute (D230).
         hyperstor_reactor::spawn(meta.clone().recovery_scrubs(Duration::from_secs(60)));
+        // The volumes' catalog for the space counts (D335), every 30 s
+        // (HS_SPACE_CATALOG_MS for tests).
+        let space_every = std::env::var("HS_SPACE_CATALOG_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .map_or(Duration::from_secs(30), Duration::from_millis);
+        hyperstor_reactor::spawn(meta.clone().space_catalog(space_every, addr));
         if let Some(api) = api {
             let (tx, rx) = hyperstor_reactor::chan::channel();
             hyperstor_reactor::spawn(meta.clone().admin(rx, addr));

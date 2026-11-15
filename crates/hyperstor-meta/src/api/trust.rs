@@ -1142,6 +1142,15 @@ impl TrustService for Api {
                 c.volume_gib = b.div_ceil(1 << 30);
             }
         }
+        // The bytes they use, trash included, one copy (D339; D313's 0
+        // until the counters existed): the leader's counts, which this
+        // call needs anyway (mgmt asks the leader).
+        let view = self.space().await?;
+        for (owner, b) in super::space::used_by_tenant(&view, &t) {
+            if let Some(c) = counts.get_mut(&owner) {
+                c.volume_used_bytes = b;
+            }
+        }
         // Buckets and their objects' bytes.
         let crate::BucketDone::List(buckets) = self
             .bucket_op(crate::BucketOp::List { tenant: None })

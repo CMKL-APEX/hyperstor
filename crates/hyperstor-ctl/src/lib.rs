@@ -894,15 +894,19 @@ fn dash(s: &str) -> &str {
 
 pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
     let mut out = format!(
-        "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  {:<20}  ATTACHED BY\n",
-        "ID", "NAME", "SIZE", "STATE", "TENANT", "REALM", "PROJECT"
+        "{:<32}  {:<20} {:>14}  {:>14}  {:>14}  {:<8}  {:>6}  {:<12}  {:<20}  ATTACHED BY\n",
+        "ID", "NAME", "SIZE", "HEAD", "SNAPSHOTS", "STATE", "TENANT", "REALM", "PROJECT"
     );
+    // From the leader (D335); "-" from another member.
+    let bytes = |known: bool, b: u64| if known { b.to_string() } else { "-".into() };
     for v in &r.volumes {
         out.push_str(&format!(
-            "{:<32}  {:<20} {:>14}  {:<8}  {:>6}  {:<12}  {:<20}  {}\n",
+            "{:<32}  {:<20} {:>14}  {:>14}  {:>14}  {:<8}  {:>6}  {:<12}  {:<20}  {}\n",
             v.id,
             v.name,
             v.size,
+            bytes(v.space_known, v.head_bytes),
+            bytes(v.space_known, v.snapshot_bytes),
             v.state,
             // None (D258).
             if v.tenant == 0 {
@@ -919,6 +923,70 @@ pub fn volumes_text(r: &pb::ListVolumesResponse) -> String {
             } else {
                 &v.attached_by
             }
+        ));
+    }
+    out
+}
+
+/// The space volumes use (D335): per tenant, then per project, in each
+/// pool, then the volumes; bytes are one copy, with the pool's copies.
+pub fn volume_space_text(r: &pb::GetSpaceResponse) -> String {
+    let mut out = String::new();
+    if !r.complete {
+        out.push_str(
+            "(not every PG has reported to this leader yet, or its catalog of volumes isn't read: counts are short)\n",
+        );
+    }
+    let header = |what: &str| {
+        format!(
+            "{:>5} {:>6}  {:<32} {:>7} {:>14} {:>14} {:>14} {:>14}\n",
+            "POOL", "COPIES", what, "VOLUMES", "HEAD", "SNAPSHOTS", "TRASH", "USED"
+        )
+    };
+    let row = |name: &str, v: &pb::SpaceRow| {
+        format!(
+            "{:>5} {:>6}  {:<32} {:>7} {:>14} {:>14} {:>14} {:>14}\n",
+            v.pool,
+            v.copies,
+            dash(name),
+            v.volumes,
+            v.head_bytes,
+            v.snapshot_bytes,
+            v.trash_bytes,
+            v.used_bytes
+        )
+    };
+    out.push_str(&header("TENANT"));
+    for t in &r.tenants {
+        out.push_str(&row(&t.tenant_name, t));
+    }
+    out.push('\n');
+    out.push_str(&header("PROJECT"));
+    for p in &r.projects {
+        out.push_str(&row(&p.project_name, p));
+    }
+    out.push('\n');
+    out.push_str(&format!(
+        "{:<32}  {:<20} {:>5}  {:<8} {:>14} {:>14} {:>14}  PROJECT\n",
+        "VOLUME", "NAME", "POOL", "STATE", "HEAD", "SNAPSHOTS", "USED"
+    ));
+    for v in &r.volumes {
+        out.push_str(&format!(
+            "{:<32}  {:<20} {:>5}  {:<8} {:>14} {:>14} {:>14}  {}\n",
+            v.volume,
+            v.name,
+            v.pool,
+            v.state,
+            v.head_bytes,
+            v.snapshot_bytes,
+            v.used_bytes,
+            dash(&v.project_name)
+        ));
+    }
+    for u in &r.unattributed {
+        out.push_str(&format!(
+            "pool {}: {} bytes no volume owns yet (a delete's last steps, or a volume newer than the leader's catalog)\n",
+            u.pool, u.used_bytes
         ));
     }
     out
@@ -982,6 +1050,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     ("ClusterService.DeletePool", "pool delete"),
     ("ClusterService.ListVolumes", "volumes"),
+    ("ClusterService.GetSpace", "space"),
     ("ClusterService.CreateVolume", "create-volume"),
     ("ClusterService.DeleteVolume", "delete-volume"),
     ("ClusterService.ExpandVolume", "expand-volume"),

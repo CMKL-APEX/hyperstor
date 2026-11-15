@@ -15,6 +15,7 @@
 use hyperstor_codec::{Dec, DecodeError, Enc, crc32c};
 
 pub mod perf;
+pub mod space;
 use thiserror::Error;
 
 pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
@@ -569,6 +570,24 @@ pub enum Msg {
     PgUsageOk {
         known: u32,
     },
+    /// Primary `device` to map service: what each branch holds in the PGs
+    /// it is primary of (20-tenants.md §24.4, D335), in the payload
+    /// ([`space::encode_report`]): the PGs whose counts changed, or all of
+    /// them if `full` (the map service then drops the device's others).
+    /// `heads` is the version of the heads the device walked with. A map
+    /// service from before it answers an error.
+    PgSpace {
+        device: u32,
+        full: bool,
+        heads: u64,
+    },
+    /// Answer to `PgSpace`: how many PGs the map service now holds from
+    /// `device`, and the version of its heads; when that isn't the
+    /// device's, the payload holds them ([`space::encode_heads`]).
+    PgSpaceOk {
+        known: u32,
+        heads: u64,
+    },
     /// Storage node to map service: `device`'s data region, and how much
     /// of it is free, every few seconds (04-decisions.md D156). Not kept
     /// in the map.
@@ -870,6 +889,8 @@ mod kind {
     pub const DEVICE_FORMAT: u16 = 94;
     pub const DRIVE_STATE: u16 = 95;
     pub const DRIVE_STATE_OK: u16 = 96;
+    pub const PG_SPACE: u16 = 97;
+    pub const PG_SPACE_OK: u16 = 98;
     pub const ERROR: u16 = 99;
 }
 
@@ -982,6 +1003,8 @@ impl Msg {
             Msg::PgUsage { .. } => PG_USAGE,
             Msg::PerfReport { .. } => PERF_REPORT,
             Msg::PgUsageOk { .. } => PG_USAGE_OK,
+            Msg::PgSpace { .. } => PG_SPACE,
+            Msg::PgSpaceOk { .. } => PG_SPACE_OK,
             Msg::Fetch { .. } => FETCH,
             Msg::FetchOk { .. } => FETCH_OK,
             Msg::FetchPart { .. } => FETCH_PART,
@@ -1029,6 +1052,7 @@ impl Msg {
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
                 | Msg::PgUsageOk { .. }
+                | Msg::PgSpaceOk { .. }
                 | Msg::LeaderStateOk { .. }
                 | Msg::StuckStateOk { .. }
                 | Msg::DriveStateOk { .. }
@@ -1352,6 +1376,16 @@ impl Msg {
             }
             Msg::PgUsageOk { known } => {
                 e.u32(*known);
+            }
+            Msg::PgSpace {
+                device,
+                full,
+                heads,
+            } => {
+                e.u32(*device).bool(*full).u64(*heads);
+            }
+            Msg::PgSpaceOk { known, heads } => {
+                e.u32(*known).u64(*heads);
             }
             Msg::PerfReport { report } => report.encode(e),
             Msg::LeaderState => {}
@@ -1729,6 +1763,15 @@ impl Msg {
                 pgs: d.seq(16, |d| Ok((d.u32()?, d.u32()?, d.u64()?)))?,
             },
             PG_USAGE_OK => Msg::PgUsageOk { known: d.u32()? },
+            PG_SPACE => Msg::PgSpace {
+                device: d.u32()?,
+                full: d.bool()?,
+                heads: d.u64()?,
+            },
+            PG_SPACE_OK => Msg::PgSpaceOk {
+                known: d.u32()?,
+                heads: d.u64()?,
+            },
             PERF_REPORT => Msg::PerfReport {
                 report: perf::PerfReport::decode(&mut d)?,
             },
@@ -2766,6 +2809,12 @@ mod tests {
                 pgs: vec![(1, 2, 4096), (1, 3, 0)],
             },
             Msg::PgUsageOk { known: 2 },
+            Msg::PgSpace {
+                device: 2000,
+                full: true,
+                heads: 7,
+            },
+            Msg::PgSpaceOk { known: 2, heads: 8 },
             Msg::PerfReport {
                 report: perf::PerfReport {
                     device: 1001,

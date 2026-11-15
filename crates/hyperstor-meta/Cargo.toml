@@ -56,6 +56,7 @@ tracing-core = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+rand.workspace = true
 tracing = "0.1"
 
 [lints]

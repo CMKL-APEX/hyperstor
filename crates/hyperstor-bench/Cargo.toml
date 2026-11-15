@@ -14,6 +14,7 @@ hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-daemon = { path = "../hyperstor-daemon" }
 hyperstor-meta = { path = "../hyperstor-meta" }
+hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 io-uring.workspace = true
 libc.workspace = true
