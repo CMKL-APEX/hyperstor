@@ -55,7 +55,8 @@ fn add(row: &mut pb::SpaceRow, v: &VolumeSpace) {
 }
 
 /// The rows of `view` for the volumes `keep` passes (by their resolved
-/// tenant and project), and the unattributed bytes if `whole`.
+/// tenant and project), each volume's too if `volumes`, and the
+/// unattributed bytes if `whole`.
 pub(super) fn rows(
     view: &SpaceView,
     tenancy: &Tenancy,
@@ -63,6 +64,7 @@ pub(super) fn rows(
     pool: u32,
     keep: impl Fn(u32, u32, u32) -> bool,
     whole: bool,
+    volumes: bool,
 ) -> pb::GetSpaceResponse {
     let copies = |p: u32| map.pools.get(&p).map_or(0, |p| u32::from(p.size));
     let mut out = pb::GetSpaceResponse {
@@ -91,16 +93,18 @@ pub(super) fn rows(
             },
             ..Default::default()
         };
-        let mut row = pb::SpaceRow {
-            project,
-            project_name: tenancy.project_label(project),
-            volume: format!("{:032x}", v.id),
-            name: v.name.clone(),
-            state: state_name(v.state).into(),
-            ..base.clone()
-        };
-        add(&mut row, v);
-        out.volumes.push(row);
+        if volumes {
+            let mut row = pb::SpaceRow {
+                project,
+                project_name: tenancy.project_label(project),
+                volume: format!("{:032x}", v.id),
+                name: v.name.clone(),
+                state: state_name(v.state).into(),
+                ..base.clone()
+            };
+            add(&mut row, v);
+            out.volumes.push(row);
+        }
         add(
             projects
                 .entry((v.pool, tenant, project))
@@ -176,7 +180,7 @@ mod tests {
         let mut map = ClusterMap::default();
         map.pools.insert(1, crate::replicated_pool(1, "p", 3, 8));
         let t = Tenancy::default();
-        let r = rows(&view, &t, &map, 0, |_, _, _| true, true);
+        let r = rows(&view, &t, &map, 0, |_, _, _| true, true, true);
         assert_eq!(r.volumes.len(), 3);
         assert_eq!(r.tenants.len(), 2);
         let t5 = &r.tenants[0];
@@ -193,9 +197,15 @@ mod tests {
         );
         assert_eq!(t5.copies, 3);
         assert_eq!(r.unattributed[0].used_bytes, 4096);
-        let only6 = rows(&view, &t, &map, 0, |t, _, _| t == 6, false);
+        let only6 = rows(&view, &t, &map, 0, |t, _, _| t == 6, false, true);
         assert_eq!(only6.volumes.len(), 1);
         assert!(only6.unattributed.is_empty());
+        // Without volume rows (skip_volumes, I411): the same sums.
+        let sums = rows(&view, &t, &map, 0, |_, _, _| true, true, false);
+        assert!(sums.volumes.is_empty());
+        assert_eq!(sums.projects, r.projects);
+        assert_eq!(sums.tenants, r.tenants);
+        assert_eq!(sums.unattributed, r.unattributed);
         assert_eq!(used_by_tenant(&view, &t), [(5, 120), (6, 2)].into());
     }
 }

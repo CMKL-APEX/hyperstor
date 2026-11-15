@@ -1178,6 +1178,9 @@ message ListVolumesResponse {
 message GetSpaceRequest {
   // 0: every data pool.
   uint32 pool = 1;
+  // Leave out the row of each volume: the sums per project and tenant
+  // alone, which a page of tenants needs (I411). Default: every row.
+  bool skip_volumes = 2 [json_name = "skip_volumes"];
 }
 
 // Space in one pool, of a volume, a project or a tenant (D335–D339), in
@@ -1214,7 +1217,7 @@ message SpaceRow {
 }
 
 message GetSpaceResponse {
-  // One per volume the caller reaches.
+  // One per volume the caller reaches; none with `skip_volumes`.
   repeated SpaceRow volumes = 1;
   // Per (pool, project), summed from its volumes.
   repeated SpaceRow projects = 2;

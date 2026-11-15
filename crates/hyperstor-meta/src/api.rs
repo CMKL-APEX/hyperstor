@@ -3280,6 +3280,7 @@ impl ClusterService for Api {
             req.pool,
             |tenant, project, _| scope.container(tenant, project),
             scope.whole(),
+            !req.skip_volumes,
         )
         .into())
     }

@@ -401,7 +401,8 @@ function TenantsTab() {
   const can = useCan();
   const list = usePoll(async () => (await tenants.listTenants({})).tenants, 5000);
   const realmList = usePoll(() => realms.listRealms({}), 5000);
-  const space = usePoll(() => cluster.getSpace({ pool: 0 }), 10000);
+  // The sums per tenant and project, without a row per volume (I411).
+  const space = usePoll(() => cluster.getSpace({ pool: 0, skipVolumes: true }), 10000);
   const [dialog, setDialog] = useState<TenantDialog | null>(null);
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
