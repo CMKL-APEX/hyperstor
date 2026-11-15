@@ -18,10 +18,11 @@ export default async function globalSetup() {
   }
   const ui = join(here, "..", "ui", "dist");
   // Primaries report their PGs' usage every half second (D155), and
-  // devices their load (D218).
+  // devices their load (D218); the leader reads its catalog of volumes
+  // for space (D335), and mgmt pulls directories' feeds (D306), as often.
   const child = spawn(bin, ["--ui", ui], {
     stdio: ["pipe", "pipe", "inherit"],
-    env: { ...process.env, HS_PG_USAGE_MS: "500", HS_PERF_MS: "500" },
+    env: { ...process.env, HS_PG_USAGE_MS: "500", HS_PERF_MS: "500", HS_SPACE_CATALOG_MS: "500", HS_TRUST_POLL_MS: "500" },
   });
   const line = await new Promise<string>((resolve, reject) => {
     const rl = createInterface({ input: child.stdout! });
