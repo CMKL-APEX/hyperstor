@@ -11,7 +11,8 @@ service's hosts, on port 8852. Installed with `--ui` (see
 [Installation](installation.md#building)), it serves the web UI: an
 overview, nodes and devices (take out, bring in, drain, weights), pools
 and a grid of their PGs, volumes with their snapshots and clones, the
-trash, operations, the map service's members, security (people and
+trash, operations, the map service's members, tenancy (realms, tenants
+and projects, glidex directories and offers), security (people and
 roles, API tokens, join tokens, certificates) and the audit log. Each
 action acts as the person logged in, and shows its `hyperstorctl`
 command. Without `--ui`, a built-in dashboard only shows: health with
@@ -460,8 +461,57 @@ The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
 - **Placements**: the pools new buckets go in, `default` unless S3's
   `LocationConstraint` names another. Buckets keep the pools they were
   made in.
-- **Realms** are listed; they are made and changed with `hyperstorctl
-  realm` ([Realms](installation.md#realms)).
+- **Realms** are listed; they are made and changed on the
+  [Tenancy](#tenancy) page or with `hyperstorctl realm`
+  ([Realms](installation.md#realms)).
+
+## Tenancy
+
+The web UI's **Tenancy** page manages what `hyperstorctl realm`,
+`tenant`, `project` and `admission` do. It is one of the cluster's
+pages: pick *Whole cluster* in the header's realm picker to see it.
+Each action shows its command, and what needs a login of the last 10
+minutes asks for one.
+
+- **Realms**: each realm with its tenants, the pools that list it, the
+  hosts and management clients bound to it. Storage administrators make
+  and delete realms (type the realm's name to delete it; `default`
+  always exists) and choose the realms that may use each pool (none
+  ticked: every realm). Security administrators bind hosts and
+  management clients to realms; ticking none unbinds them, as `--realm
+  any` does. A host not bound yet is named as it names itself
+  (`--host`, its hostname by default).
+- **Tenants & projects**: a tree of realms, their tenants and the
+  tenants' projects, each with the space its volumes use (one copy:
+  what heads read, what only snapshots hold, and what is in the trash;
+  see [Space](#space)). Storage administrators make, rename and delete
+  tenants and projects (type the name to delete), and move a project to
+  another tenant: the move runs as an operation, followed on the page
+  until it ends. Security administrators put a tenant in another realm.
+  A tenant number used before records shows under its realm, to be
+  named.
+- **Records from a glidex directory** carry a badge naming the
+  directory, with a link to the tenant's or project's page there. Their
+  names and which tenant a project belongs to come from the directory,
+  so they are changed there, not here; a local project of such a tenant
+  is managed here as any other.
+- **Directories**, for security administrators: each trusted directory
+  with its realm, when its feed last answered and changed, and how long
+  it may go unheard before its people are refused (change it; 0 is the
+  default, an hour); its tenants, the operator tenant (make one, or
+  clear it), and ending the trust in a tenant (its records stay,
+  unlinked). **Offers**: make one for a directory's tenant, and revoke
+  an open one. An offer needs the SHA-256 of the certificate mgmt
+  serves at the address the directory reaches it by; the browser can't
+  read it, so paste it (`openssl s_client -connect HOST:PORT </dev/null
+  | openssl x509 -noout -fingerprint -sha256`, or use `hyperstorctl
+  admission offer`, which reads it). The offer's token is shown once:
+  copy it and pass it only to that tenant's administrator.
+
+People with only `viewer`, `operator` or `storage-admin` see the
+Realms and Tenants tabs with what their role allows; someone with only
+`security-admin` sees the Directories tab, and needs a read role too to
+see realms and tenants.
 
 ## VM disks
 
