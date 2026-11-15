@@ -948,8 +948,28 @@ pub struct Meta {
     /// that writes them: a write waits for the group, so not on the
     /// reactor. `None` without Raft: the records stay in memory.
     scrub_store: RefCell<Option<ScrubStore>>,
-    /// When each PG's primary was last asked to scrub it now (D229, D230).
-    scrub_asked: RefCell<HashMap<(u32, u32), Instant>>,
+    /// When each PG's primary was last asked to scrub it now (D229, D230),
+    /// and whether deep.
+    scrub_asked: RefCell<HashMap<(u32, u32), (Instant, bool)>>,
+}
+
+/// Whether to ask PG `k`'s primary to scrub it now (`deep` or light),
+/// given what it was last asked (D229, D230), and if so notes the ask: not
+/// again within [`SCRUB_ASK_AGAIN`], unless deep after only light. A light
+/// ask doesn't stand for a deep one, but a deep scrub counts as light too.
+fn ask_scrub_now(
+    asked: &mut HashMap<(u32, u32), (Instant, bool)>,
+    k: (u32, u32),
+    deep: bool,
+    at: Instant,
+) -> bool {
+    let again = asked.get(&k).is_none_or(|(t, was_deep)| {
+        at.duration_since(*t) >= SCRUB_ASK_AGAIN || (deep && !*was_deep)
+    });
+    if again {
+        asked.insert(k, (at, deep));
+    }
+    again
 }
 
 /// How long before a primary is asked again to scrub a PG it was asked
@@ -1283,15 +1303,7 @@ impl Meta {
             let mut asked = self.scrub_asked.borrow_mut();
             pending
                 .into_iter()
-                .filter(|k| {
-                    let again = asked
-                        .get(k)
-                        .is_none_or(|t| now.duration_since(*t) >= SCRUB_ASK_AGAIN);
-                    if again {
-                        asked.insert(*k, now);
-                    }
-                    again
-                })
+                .filter(|k| ask_scrub_now(&mut asked, *k, deep, now))
                 .collect()
         };
         if !ask.is_empty() {
@@ -1381,14 +1393,9 @@ impl Meta {
             let at = Instant::now();
             let mut asked = self.scrub_asked.borrow_mut();
             ask.retain(|k| {
-                let again = asked
-                    .get(k)
-                    .is_none_or(|t| at.duration_since(*t) >= SCRUB_ASK_AGAIN);
-                if again {
-                    asked.insert(*k, at);
-                    if let Some(d) = due.get_mut(k) {
-                        d.1 += 1;
-                    }
+                let again = ask_scrub_now(&mut asked, *k, false, at);
+                if again && let Some(d) = due.get_mut(k) {
+                    d.1 += 1;
                 }
                 again
             });
@@ -4718,6 +4725,22 @@ pub fn valid_class(c: &str) -> bool {
 mod tests {
     use super::*;
     use hyperstor_placement::Domain;
+
+    /// D229: a PG asked to scrub isn't asked again for a while, unless deep
+    /// after only light; a light ask finds a deep one standing for it.
+    #[test]
+    fn a_deep_scrub_is_asked_for_after_a_light_one() {
+        let mut asked = HashMap::new();
+        let (k, t) = ((1, 7), Instant::now());
+        assert!(ask_scrub_now(&mut asked, k, false, t));
+        assert!(!ask_scrub_now(&mut asked, k, false, t));
+        assert!(ask_scrub_now(&mut asked, k, true, t));
+        assert!(!ask_scrub_now(&mut asked, k, true, t));
+        assert!(!ask_scrub_now(&mut asked, k, false, t));
+        let later = t + SCRUB_ASK_AGAIN;
+        assert!(ask_scrub_now(&mut asked, k, false, later));
+        assert!(ask_scrub_now(&mut asked, (1, 8), true, t));
+    }
 
     /// Hosts that join (19-administration.md §23.4.2) are added down, get the
     /// next node number, grow `.meta`, and get their node back when they
