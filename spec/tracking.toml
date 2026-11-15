@@ -1940,11 +1940,12 @@ tests = [
 
 [[milestone.item]]
 what = "Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean"
-spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "D229", "D230", "I267"]
+spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "D229", "D230", "I267", "I411"]
 status = "done"
 tests = [
     "manage::a_scrub_started_now_finishes_as_an_operation",
     "cluster::a_scrub_asked_for_runs_now",
+    "cluster::a_deep_scrub_asked_after_a_light_one_runs_now",
     "cluster::recovered_pgs_are_scrubbed",
 ]
 

@@ -5777,6 +5777,58 @@ fn a_scrub_asked_for_runs_now() {
     }
 }
 
+/// D229: a deep scrub asked for right after a light one of the same PGs
+/// runs now. The map service once kept only when it last asked each PG,
+/// so the deep ask waited 10 minutes behind the light one (pilot,
+/// 2026-11-15).
+#[test]
+fn a_deep_scrub_asked_after_a_light_one_runs_now() {
+    let c = Cluster::start_with(
+        4,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+    );
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, pattern(9, 8 * CHUNK as usize))
+                .await
+                .unwrap();
+            wait_backfilled(&cl).await;
+        })
+    })
+    .join()
+    .unwrap();
+    let until_done = |deep: bool, since: u64| {
+        let t = std::time::Instant::now();
+        loop {
+            let (done, total) = c.scrub_now(POOL, deep, since);
+            if done == total {
+                return;
+            }
+            assert!(
+                t.elapsed().as_secs() < 20,
+                "deep {deep}: {done} of {total} scrubbed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    until_done(false, unix_now());
+    // Records of scrubs start after this second.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let since = unix_now();
+    until_done(true, since);
+    let r = c.scrub_records();
+    for (k, rec) in r.iter().filter(|(k, _)| k.0 == POOL) {
+        assert!(rec.deep_at() >= since, "PG {k:?}: {rec:?}");
+    }
+}
+
 /// D230: after a node is back, every PG whose members changed is
 /// light-scrubbed, with the hole check, once clean for the settling time.
 #[test]
