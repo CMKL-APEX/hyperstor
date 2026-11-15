@@ -206,7 +206,7 @@ port on its own NUMA node.
   nodes reach others on (`--client-networks auto`), or the ones named;
   a host without storage nodes names them. Why: clients on the slower
   network would cap VM disks and S3 after storage moved.
-- **And `hyperstorctl` with them (D335).** The installer writes the
+- **And `hyperstorctl` with them (D340).** The installer writes the
   same networks into `hyperstorctl.conf`; `io-test`, `write-volume` and
   `read-volume` use them unless `--networks` names others (`none`:
   devices' addresses). Why: a test of the storage path should measure

@@ -153,6 +153,7 @@ impl Rig {
                     io_timeout: Duration::ZERO,
                     read_timeout: Duration::ZERO,
                     perf_every: Duration::ZERO,
+                    usage_every: Duration::ZERO,
                     commit_delays: None,
                     pings: None,
                     older: None,

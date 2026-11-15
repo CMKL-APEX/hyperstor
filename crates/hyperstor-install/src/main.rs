@@ -3070,7 +3070,7 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
 }
 
 /// D289: the networks this host's clients (`hyperstor-vhost`,
-/// `hyperstor-s3`, and `hyperstorctl`'s volume commands, D335) reach
+/// `hyperstor-s3`, and `hyperstorctl`'s volume commands, D340) reach
 /// storage on: `auto` takes the networks its storage nodes reach others
 /// on, in order (D207), so the host's clients take the paths its storage
 /// does.
@@ -3090,7 +3090,7 @@ fn client_networks(s: &Settings, p: &Plan) -> Vec<String> {
     }
 }
 
-/// `hyperstorctl.conf`'s `networks A,B` line, or nothing (D335): the
+/// `hyperstorctl.conf`'s `networks A,B` line, or nothing (D340): the
 /// volume commands reach storage where the host's other clients do.
 fn ctl_networks(s: &Settings, p: &Plan) -> String {
     let names = client_networks(s, p);
@@ -3211,7 +3211,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
     }
     if p.meta.is_none() {
         // A storage host's `hyperstorctl` takes its clients' networks too
-        // (D335); written even empty, so a line no longer true goes.
+        // (D340); written even empty, so a line no longer true goes.
         out.push((
             "/etc/hyperstor/hyperstorctl.conf".to_string(),
             ctl_networks(s, p),
@@ -6334,7 +6334,7 @@ mod tests {
         assert!(!Settings::defaults().save().contains("client_networks"));
     }
 
-    /// D335: `hyperstorctl.conf` names the host's client networks, on a
+    /// D340: `hyperstorctl.conf` names the host's client networks, on a
     /// map service host after its API lines, and alone on a storage host,
     /// where it is written even empty so a line no longer true goes.
     #[test]

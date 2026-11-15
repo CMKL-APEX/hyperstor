@@ -72,10 +72,23 @@ the writer (D42), so it is the right unit of trust.
 
 ### 24.4 Accounting, quotas and trash
 
-- **Space** is counted per `(pool, tenant)` in meta from the counters
-  the header objects already keep (10-volumes.md §10.5): head bytes,
-  snapshot-only bytes, and bytes in the trash (19-administration.md
-  §23.9.3). Buckets and filesystems add their own counters in
+- **Space** is counted per volume, and summed per `(pool, project)`
+  and per `(pool, tenant)` when read (D335–D339; built, #364): head
+  bytes, snapshot-only bytes (10-volumes.md §10.5), and every byte of
+  volumes in the trash or being deleted (19-administration.md §23.9.3).
+  Headers keep no counters. Every 30 s each PG's primary walks its copy
+  of the PG, a slice of 4,096 objects at a time (D155's walk), lays each
+  chunk's versions over each other as heads read them (08-engine.md
+  §7.2), and tells the map service's leader what each branch of each
+  lineage holds and how much of it its volume's head reads. The leader
+  keeps the latest report of each PG in memory, by PG, so a PG that
+  changes primary is never counted twice, and reads the volumes' headers
+  every 30 s to give each branch its volume. Branch → volume → project
+  → tenant is resolved when read, so a project's counts follow it to
+  another tenant (§24.9.1) and a new leader has them again after one
+  report from each primary. Bytes are logical (one copy), shown beside
+  the pool's copies; a clone's shared blocks count to the volume it was
+  cloned from (D336). Buckets and filesystems add their own counters in
   `hyperstor-kv`: a bucket's objects and bytes are counted exactly, per
   range, by the writes themselves (D257, 25-kv-ranges.md §28.9).
 - **Quotas** are per `(pool, tenant)`: a soft limit that warns and a
@@ -86,7 +99,10 @@ the writer (D42), so it is the right unit of trust.
   against the tenant until purged, so a tenant can't exceed its quota
   by deleting and recreating.
 - **Metering** (glidex metering.md) reads the per-tenant counters from
-  the cluster API; nothing is sampled on the reactors for it.
+  the cluster API (`GetSpace`), and reports to a glidex directory send
+  each tenant's as `volume_used_bytes` (glidex D85); nothing is sampled
+  on the reactors for it beyond the 30 s walk primaries already made
+  for D155 (its cost: 02-benchmarks.md, 2026-11-15).
 
 Why per pool: the pools differ in media and protection, so a byte in
 the NVMe replicated pool and a byte in the HDD EC pool are not the same

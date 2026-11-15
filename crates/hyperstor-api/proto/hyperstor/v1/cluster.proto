@@ -198,6 +198,12 @@ service ClusterService {
   // Read.
   rpc ListVolumes(ListVolumesRequest) returns (ListVolumesResponse);
 
+  // The space volumes use (20-tenants.md §24.4, D335–D339): per volume,
+  // and summed per project and per tenant in each pool, in logical bytes
+  // (one copy), from the primaries' counts of at most 30 s ago. The
+  // leader's to answer. Read.
+  rpc GetSpace(GetSpaceRequest) returns (GetSpaceResponse);
+
   // Creates a volume (04-decisions.md D77). Write.
   rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
 
@@ -1151,6 +1157,12 @@ message Volume {
   uint32 project = 10;
   // In lists: the project as `tenant/project`, by names; empty for none.
   string project_name = 11 [json_name = "project_name"];
+  // In lists, from the leader (D335): bytes its head reads from its own
+  // branches, and bytes held only by its snapshots (or its clones through
+  // them), one copy; space_known is false on a member that doesn't lead.
+  uint64 head_bytes = 12 [json_name = "head_bytes"];
+  uint64 snapshot_bytes = 13 [json_name = "snapshot_bytes"];
+  bool space_known = 14 [json_name = "space_known"];
 }
 
 message ListVolumesRequest {
@@ -1161,6 +1173,60 @@ message ListVolumesRequest {
 
 message ListVolumesResponse {
   repeated Volume volumes = 1;
+}
+
+message GetSpaceRequest {
+  // 0: every data pool.
+  uint32 pool = 1;
+}
+
+// Space in one pool, of a volume, a project or a tenant (D335–D339), in
+// logical bytes: one copy, whatever the pool's copies (`copies`).
+message SpaceRow {
+  uint32 pool = 1;
+  // The pool's copies (replicated) or k + m (EC).
+  uint32 copies = 2;
+  // 0: none, in realm "default".
+  uint32 tenant = 3;
+  string tenant_name = 4 [json_name = "tenant_name"];
+  // 0 in tenant rows.
+  uint32 project = 5;
+  // `tenant/project`, by names; empty for none.
+  string project_name = 6 [json_name = "project_name"];
+  // Volumes not in the trash: those in volume rows' state.
+  uint32 volumes = 7;
+  // Bytes heads read from their own volumes' branches, of volumes not in
+  // the trash.
+  uint64 head_bytes = 8 [json_name = "head_bytes"];
+  // Bytes held only by snapshots (and clones through them), of volumes
+  // not in the trash.
+  uint64 snapshot_bytes = 9 [json_name = "snapshot_bytes"];
+  // Every byte of volumes in the trash or being deleted: counted until
+  // freed (D337).
+  uint64 trash_bytes = 10 [json_name = "trash_bytes"];
+  // head_bytes + snapshot_bytes + trash_bytes.
+  uint64 used_bytes = 11 [json_name = "used_bytes"];
+  // Volume rows: the volume's id (32 hexadecimal digits), name and state
+  // ("active", "trashed" or "deleting").
+  string volume = 12;
+  string name = 13;
+  string state = 14;
+}
+
+message GetSpaceResponse {
+  // One per volume the caller reaches.
+  repeated SpaceRow volumes = 1;
+  // Per (pool, project), summed from its volumes.
+  repeated SpaceRow projects = 2;
+  // Per (pool, tenant), summed from its projects.
+  repeated SpaceRow tenants = 3;
+  // For the cluster's own roles: bytes no volume owns yet (a delete's
+  // last steps, or a volume newer than the leader's catalog), by pool, as
+  // rows with only pool, copies and used_bytes.
+  repeated SpaceRow unattributed = 4;
+  // False until every PG has reported to this leader and its catalog of
+  // volumes has been read: the counts are then short.
+  bool complete = 5;
 }
 
 message CreateVolumeRequest {

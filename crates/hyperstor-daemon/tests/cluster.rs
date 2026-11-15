@@ -55,6 +55,10 @@ enum MetaCmd {
     Formats(std::sync::mpsc::Sender<(std::collections::BTreeMap<u32, u8>, Vec<u32>)>),
     /// The map the map service has published.
     Published(std::sync::mpsc::Sender<ClusterMap>),
+    /// The leader's space counts (D335).
+    Space(std::sync::mpsc::Sender<Result<hyperstor_meta::space::SpaceView, String>>),
+    /// Forgets the primaries' space reports, as a new leader would.
+    ForgetSpace,
     /// Splits a pool to the PG count given (D187).
     Split(
         u32,
@@ -69,6 +73,9 @@ thread_local! {
     static FIRST_FORMAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Devices that run as `hyperstord --no-discard` names them (D275).
     static NO_DISCARD: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// How often [`Cluster::start`]'s primaries walk their PGs and its map
+    /// service reads its catalog of volumes (D335); zero: the defaults.
+    static SPACE_EVERY: std::cell::Cell<std::time::Duration> = const { std::cell::Cell::new(std::time::Duration::ZERO) };
 }
 
 /// A node's listener, on a port held for the cluster's lifetime: a
@@ -177,6 +184,8 @@ struct Cluster {
     kv: KvJobs,
     /// How often devices report their load (D218); zero: the default.
     perf_every: std::time::Duration,
+    /// How often primaries walk their PGs for space (D155, D335).
+    usage_every: std::time::Duration,
 }
 
 impl Cluster {
@@ -394,6 +403,7 @@ impl Cluster {
         map.ensure_meta_pool();
         map.recompute();
         let (meta_tx, mut meta_rx) = channel::<MetaCmd>();
+        let space = SPACE_EVERY.with(|s| s.get());
         let meta_thread = std::thread::spawn(move || {
             block_on(async move {
                 let meta = hyperstor_meta::Meta::with_lease(map, lease);
@@ -404,6 +414,9 @@ impl Cluster {
                 ));
                 spawn(meta.clone().liveness(down_after));
                 spawn(meta.clone().publisher());
+                if !space.is_zero() {
+                    spawn(meta.clone().space_catalog(space, meta_addr));
+                }
                 while let Some(cmd) = meta_rx.recv().await {
                     match cmd {
                         MetaCmd::Stop => break,
@@ -416,6 +429,10 @@ impl Cluster {
                         MetaCmd::Inconsistent(tx) => {
                             let _ = tx.send(meta.inconsistent.borrow().clone());
                         }
+                        MetaCmd::Space(tx) => {
+                            let _ = tx.send(meta.space_view());
+                        }
+                        MetaCmd::ForgetSpace => meta.forget_space_reports(),
                         MetaCmd::Perf(tx) => {
                             let _ = tx.send(meta.perf());
                         }
@@ -479,6 +496,7 @@ impl Cluster {
                     io_timeout: std::time::Duration::ZERO,
                     read_timeout: std::time::Duration::ZERO,
                     perf_every,
+                    usage_every: SPACE_EVERY.with(|s| s.get()),
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
@@ -545,6 +563,7 @@ impl Cluster {
             stray_grace: grace,
             kv,
             perf_every,
+            usage_every: SPACE_EVERY.with(|s| s.get()),
         }
     }
 
@@ -585,6 +604,7 @@ impl Cluster {
             io_timeout: self.io_timeout,
             read_timeout: self.read_timeout,
             perf_every: self.perf_every,
+            usage_every: self.usage_every,
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
@@ -9017,4 +9037,286 @@ fn data_whose_crcs_disagree_is_refused_at_every_way_in() {
     })
     .join()
     .unwrap();
+}
+
+/// What each volume uses, recounted through the engine's own reads (D335,
+/// D338): every block of every version of the branches it owns, each
+/// version asked alone, and the blocks its head reads from them.
+/// (head blocks, snapshot-only blocks) by volume, and whether a clone
+/// holds blocks of its own and a volume was rolled back to a new branch.
+async fn space_recount(
+    cl: &std::rc::Rc<Client>,
+) -> (std::collections::BTreeMap<u128, (u64, u64)>, bool, bool) {
+    use hyperstor_client::volume::Volume;
+    let vols: Vec<Volume> = cl.list_volumes(POOL).await.unwrap();
+    let mut out = std::collections::BTreeMap::new();
+    let (mut clone_own, mut rolled) = (false, false);
+    for v in &vols {
+        let records = cl.branches(v.lineage).await.unwrap();
+        let mut own: Vec<u32> = records
+            .iter()
+            .filter(|r| r.volume == v.id)
+            .map(|r| r.branch)
+            .chain(std::iter::once(v.branch))
+            .chain((v.lineage == v.id).then_some(0))
+            .collect();
+        own.sort_unstable();
+        own.dedup();
+        let top = vols
+            .iter()
+            .filter(|w| w.lineage == v.lineage)
+            .map(|w| w.head_epoch)
+            .max()
+            .unwrap();
+        let held = |s: &[(u32, u64)]| s.iter().filter(|x| x.0 != u32::MAX).count() as u64;
+        let mut total = 0;
+        for &b in &own {
+            for e in 0..=top {
+                total += held(
+                    &cl.sources(POOL, v.lineage, &[(b, e, e)], 0, v.size)
+                        .await
+                        .unwrap(),
+                );
+            }
+        }
+        let head = cl
+            .sources(POOL, v.lineage, &v.layers(), 0, v.size)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|x| x.0 != u32::MAX && own.contains(&x.0))
+            .count() as u64;
+        clone_own |= v.lineage != v.id && total > 0;
+        rolled |= v.lineage == v.id && v.branch != 0;
+        out.insert(v.id, (head, total - head));
+    }
+    (out, clone_own, rolled)
+}
+
+/// Volumes written and overwritten, snapshots taken and deleted, clones
+/// made and flattened, rollbacks (in place and to a new branch), the
+/// trash, restores and purges, with storage nodes stopped and restarted
+/// and the leader forgetting the reports, as a new one would: once the
+/// primaries have reported, the leader's counts are a recount's, and
+/// nothing is left that no volume owns (20-tenants.md §24.4, D335–D338).
+#[test]
+fn space_counts_match_a_recount() {
+    SPACE_EVERY.with(|s| s.set(std::time::Duration::from_millis(200)));
+    for seed in 0..3 {
+        space_counts(seed);
+    }
+}
+
+fn space_counts(seed: u64) {
+    use hyperstor_client::volume::VolumeState;
+    let mut c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let size = 4 * CHUNK as u64;
+    let mut stopped: Option<usize> = None;
+    // What the recounts saw, so the run is known to have covered it:
+    // volumes, snapshot-only bytes, clones' own bytes.
+    let (mut most, mut snap_only, mut cloned, mut rolled) = (0, false, false, false);
+    for phase in 0..8 {
+        // Writes most, then snapshots, clones and rollbacks, the trash.
+        const MIX: [u8; 20] = [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5, 6, 6, 6, 7, 8, 9, 9, 3];
+        let ops: Vec<(u8, u64)> = (0..20)
+            .map(|_| (MIX[rng.random_range(0..MIX.len())], rng.random()))
+            .collect();
+        std::thread::spawn(move || {
+            block_on(async move {
+                let cl = Client::connect(meta, 100 + phase).await.unwrap();
+                if phase == 0 {
+                    // Each kind at least once, whatever the dice say: a
+                    // volume written between two snapshots, rolled back to
+                    // the first (a new branch, the old one kept for the
+                    // second), and a clone of the second, written to.
+                    let v = cl.create_volume(POOL, size, None, "first").await.unwrap();
+                    let a = cl.attach(v.id).await.unwrap();
+                    a.write(0, pattern(1, 64 * 4096)).await.unwrap();
+                    a.detach().await.unwrap();
+                    let s1 = cl.snapshot(v.id, "s1").await.unwrap();
+                    let a = cl.attach(v.id).await.unwrap();
+                    a.write(32 * 4096, pattern(2, 64 * 4096)).await.unwrap();
+                    a.detach().await.unwrap();
+                    let s2 = cl.snapshot(v.id, "s2").await.unwrap();
+                    cl.rollback(v.id, s1.epoch).await.unwrap();
+                    let k = cl.clone_snapshot(v.id, s2.epoch, "k", None).await.unwrap();
+                    let a = cl.attach(k.id).await.unwrap();
+                    a.write(CHUNK as u64, pattern(3, 16 * 4096)).await.unwrap();
+                    a.detach().await.unwrap();
+                }
+                for (op, r) in ops {
+                    let mut rng = SmallRng::seed_from_u64(r);
+                    let vols = cl.list_volumes(POOL).await.unwrap();
+                    let active: Vec<_> = vols
+                        .iter()
+                        .filter(|v| v.state == VolumeState::Active)
+                        .collect();
+                    let pick = |l: &[&hyperstor_client::volume::Volume], rng: &mut SmallRng| {
+                        (!l.is_empty()).then(|| l[rng.random_range(0..l.len())].clone())
+                    };
+                    let snapped: Vec<_> = active
+                        .iter()
+                        .copied()
+                        .filter(|v| {
+                            v.snapshots
+                                .iter()
+                                .any(|s| !s.deleting && s.trashed_unix == 0)
+                        })
+                        .collect();
+                    let snap_of = |v: &hyperstor_client::volume::Volume, rng: &mut SmallRng| {
+                        let s: Vec<_> = v
+                            .snapshots
+                            .iter()
+                            .filter(|s| !s.deleting && s.trashed_unix == 0)
+                            .collect();
+                        s[rng.random_range(0..s.len())].epoch
+                    };
+                    // Refusals (a snapshot in use, an attached volume) are
+                    // part of the game: only what is done is counted.
+                    match op {
+                        0 if vols.len() < 8 || active.is_empty() => {
+                            cl.create_volume(POOL, size, None, &format!("v{r}"))
+                                .await
+                                .unwrap();
+                        }
+                        0..=3 => {
+                            if let Some(v) = pick(&active, &mut rng) {
+                                let a = cl.attach(v.id).await.unwrap();
+                                for _ in 0..rng.random_range(1..4) {
+                                    let blocks = rng.random_range(1..96u64);
+                                    let at = rng.random_range(0..size / 4096 - blocks) * 4096;
+                                    a.write(at, pattern(r, (blocks * 4096) as usize))
+                                        .await
+                                        .unwrap();
+                                }
+                                a.detach().await.unwrap();
+                            }
+                        }
+                        4 => {
+                            if let Some(v) = pick(&active, &mut rng) {
+                                let _ = cl.snapshot(v.id, &format!("s{r}")).await;
+                            }
+                        }
+                        5 => {
+                            if let Some(v) = pick(&snapped, &mut rng) {
+                                let e = snap_of(&v, &mut rng);
+                                let _ = cl.delete_snapshot(v.id, e).await;
+                            }
+                        }
+                        6 => {
+                            if let Some(v) = pick(&snapped, &mut rng) {
+                                let e = snap_of(&v, &mut rng);
+                                if rng.random_bool(0.5) {
+                                    let _ =
+                                        cl.clone_snapshot(v.id, e, &format!("k{r}"), None).await;
+                                } else {
+                                    let _ = cl.rollback(v.id, e).await;
+                                }
+                            }
+                        }
+                        7 => {
+                            let clones: Vec<_> = active
+                                .iter()
+                                .copied()
+                                .filter(|v| !v.chain.is_empty())
+                                .collect();
+                            if let Some(v) = pick(&clones, &mut rng) {
+                                let _ = cl.flatten(v.id).await;
+                            }
+                        }
+                        8 => {
+                            if let Some(v) = pick(&active, &mut rng) {
+                                let _ = cl.trash_volume(v.id, false).await;
+                            }
+                        }
+                        _ => {
+                            let trashed: Vec<_> = vols
+                                .iter()
+                                .filter(|v| v.state == VolumeState::Trashed)
+                                .collect();
+                            if let Some(v) = pick(&trashed, &mut rng) {
+                                if rng.random_bool(0.5) {
+                                    let _ = cl.restore_volume(v.id, None).await;
+                                } else {
+                                    let _ = cl.purge_volume(v.id).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+        })
+        .join()
+        .unwrap();
+        // A failover between phases: a storage node stopped (its PGs get
+        // other primaries) or back, or the leader's reports forgotten.
+        match (phase % 3, stopped) {
+            (0, None) => {
+                let n = rng.random_range(0..3usize);
+                c.kill(n);
+                stopped = Some(n);
+            }
+            (1, Some(n)) => {
+                c.restart(n);
+                stopped = None;
+            }
+            _ => assert!(c.meta_tx.send(MetaCmd::ForgetSpace).is_ok()),
+        }
+        let (want, clone_own, rolled_back) = std::thread::spawn(move || {
+            block_on(async move {
+                let cl = Client::connect(meta, 200 + phase).await.unwrap();
+                // The map's primaries after a stop or a restart.
+                let t = std::time::Instant::now();
+                loop {
+                    cl.refresh_map().await.unwrap();
+                    let m = cl.map();
+                    let down = m.nodes.values().filter(|n| !n.up).count();
+                    let ok = m.pgs.values().all(|p| {
+                        p.primary()
+                            .and_then(|d| m.devices.get(&d))
+                            .is_some_and(|d| m.nodes.get(&d.node).is_some_and(|n| n.up))
+                    });
+                    if ok && down == stopped.map_or(0, |_| 1) {
+                        break;
+                    }
+                    assert!(t.elapsed().as_secs() < 60, "the map didn't settle");
+                    hyperstor_reactor::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                space_recount(&cl).await
+            })
+        })
+        .join()
+        .unwrap();
+        let t = std::time::Instant::now();
+        loop {
+            let (tx, rx) = std::sync::mpsc::channel();
+            assert!(c.meta_tx.send(MetaCmd::Space(tx)).is_ok());
+            let view = rx.recv().unwrap().unwrap();
+            let got: std::collections::BTreeMap<u128, (u64, u64)> = view
+                .volumes
+                .iter()
+                .map(|v| (v.id, (v.head_bytes / 4096, v.snapshot_bytes / 4096)))
+                .collect();
+            if got == want && view.unattributed.is_empty() && view.complete {
+                most = most.max(want.len());
+                snap_only |= want.values().any(|(_, s)| *s > 0);
+                cloned |= clone_own;
+                rolled |= rolled_back;
+                break;
+            }
+            assert!(
+                t.elapsed().as_secs() < 30,
+                "seed {seed} phase {phase}: counts {got:?} unattributed {:?} complete {}, recount {want:?}",
+                view.unattributed,
+                view.complete
+            );
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+    assert!(
+        most >= 3 && snap_only && cloned && rolled,
+        "seed {seed} covered too little: {most} volumes, snapshot-only {snap_only}, clones {cloned}, rollbacks {rolled}"
+    );
 }

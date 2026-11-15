@@ -332,7 +332,7 @@ fn cluster_file_install_across_hosts() {
 /// storage host's installer gives `hyperstord` its devices' endpoints on
 /// network `fast` (a second loopback address here) and the network, and
 /// the nodes replicate to each other there. `hyperstorctl io-test
-/// --networks fast` reaches them there too (D335).
+/// --networks fast` reaches them there too (D340).
 #[test]
 fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     let _one = one_at_a_time();
@@ -470,7 +470,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     // 16 chunks over 32 PGs, so every node is a replica of some.
     let want: std::collections::BTreeSet<u16> = (0..3).map(|n| base + 8 + n).collect();
     let seen = established_on([127, 0, 0, 2]);
-    // D335: hyperstorctl on network `fast` reaches every node at its
+    // D340: hyperstorctl on network `fast` reaches every node at its
     // endpoint there, the primaries of the PGs it writes.
     let (code, out, used) = ctl_sockets(&["io-test", "--mib", "64", "--networks", "fast"]);
     assert_eq!(code, Some(0), "{out}");

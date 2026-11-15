@@ -189,6 +189,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
+| Space each volume uses, head and snapshot-only bytes apart (each chunk's versions laid over each other in D155's 30 s walk on each primary), summed per project and per tenant in each pool when read, trash and deletes counted until freed, clones' shared blocks to their parent; GetSpace, ListVolumes' rows, hyperstorctl space and volumes, the UI's volumes; reports to glidex directories send volume_used_bytes from them | Done |
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
 | Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
 | Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
@@ -196,7 +197,7 @@ covered by tests that run on every change.
 | Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hyperstorctl tenant` and `project` | Done |
 | Roles on a tenant or a project (`role@tenant:NAME`, `role@project:TENANT/NAME`): mgmt names them with the realms a call reaches, and the map service shows and changes only their volumes, buckets, keys and projects | Done |
 | Moving a project to another tenant, of the same realm or another, as an operation: checks first, buckets renamed with their table ids kept, then the project's record; resumed after a failover, undone if it can't finish; moved projects' tenants in the map for storage nodes' host checks; `hyperstorctl project move` | Done |
-| Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool | Planned |
+| Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool | In progress |
 | Two-level fair share in the reactors: tenants share each priority class by weight, then volumes within a tenant | Planned |
 
 ## HS18: Pools and devices at run time

@@ -163,6 +163,46 @@ impl BlockMap {
         }
     }
 
+    /// The logical blocks mapped, as a bit set: bit `b % 64` of word
+    /// `b / 64` for block `b`, into `out` (cleared first, as long as the
+    /// last block mapped needs). What the space walk lays over each other
+    /// (20-tenants.md §24.4, D338).
+    pub fn bits(&self, out: &mut Vec<u64>) {
+        out.clear();
+        match self {
+            BlockMap::Runs(m) => {
+                let Some((&lb, r)) = m.iter().next_back() else {
+                    return;
+                };
+                out.resize((lb + r.len()).div_ceil(64) as usize, 0);
+                for (&lb, r) in m {
+                    let (mut b, end) = (lb, lb + r.len());
+                    while b < end {
+                        let (w, bit) = ((b / 64) as usize, b % 64);
+                        let n = (64 - bit).min(end - b);
+                        let mask = if n == 64 {
+                            u64::MAX
+                        } else {
+                            ((1u64 << n) - 1) << bit
+                        };
+                        out[w] |= mask;
+                        b += n;
+                    }
+                }
+            }
+            BlockMap::Dense(v, _) => {
+                out.reserve(v.len().div_ceil(64));
+                for slots in v.chunks(64) {
+                    let mut w = 0u64;
+                    for (i, s) in slots.iter().enumerate() {
+                        w |= u64::from((*s >> 32) as u32 != HOLE) << i;
+                    }
+                    out.push(w);
+                }
+            }
+        }
+    }
+
     /// Every mapping as runs (logical start, physical start, CRCs), in
     /// logical order, maximal (adjacent logical and physical blocks merged).
     pub fn runs(&self) -> Vec<(u64, u64, Vec<u32>)> {

@@ -1680,6 +1680,20 @@ providing a patched build meanwhile:
 | 295 | Installed by default on storage hosts, or only with an option (recommended) | Only with an option | D333 |
 | 296 | When Ubuntu updates util-linux: let apt replace it and warn (recommended); hold the package; or rebuild on the host from an apt hook | Replace and warn | D334 |
 
+## Space counters (#364), decided (2026-11-15)
+
+The survey for #364 found that headers keep no space counters, though
+§24.4 and §10.5 said they did, and proposed three designs (extend
+D155's walk; sums the engine keeps up to date; deltas on the write path
+into `.meta`), recommending the first. The owner decided:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 297 | How space is counted: D155's 30 s walk per (lineage, branch), the leader per PG in memory, attributed when read (recommended); sums the engine keeps; or deltas on the write path | D155's walk | D335 |
+| 298 | A clone's shared blocks: to the branch that holds them, the parent (recommended, as `rbd du`); or to the clone as well | To the parent | D336 |
+| 299 | The trash, deletes under way and branches a rollback leaves: count until freed (recommended); or not | Count until freed | D337 |
+| 300 | §10.5's split of head and snapshot-only bytes: exact, by laying versions in the walk; or the cheaper "written since the newest snapshot" | Exact, now, with the walk's cost measured | D338 |
+| 301 | Raw or logical bytes; how old counts may be; whether D155's PG bytes keep every namespace | Logical, beside the pool's copies; 30 s; unchanged | D339 |
 ## hyperstorctl on the cluster's networks (2026-11-15)
 
 `hyperstorctl io-test` and the volume commands reached devices at their
@@ -1691,4 +1705,4 @@ host's addresses; both), the owner chose the installer's line:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 297 | Where `hyperstorctl`'s volume commands take their default networks from: the installer's `networks` line in `hyperstorctl.conf` (recommended); detected from the map; the line, else detected | The installer's line | D335 |
+| 302 | Where `hyperstorctl`'s volume commands take their default networks from: the installer's `networks` line in `hyperstorctl.conf` (recommended); detected from the map; the line, else detected | The installer's line | D340 |
