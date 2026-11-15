@@ -266,8 +266,14 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
     assert!(tenant_id(&c, "acme").is_some());
 
     // Audited: the offers, the redeem and its refusals, the feed's
-    // changes, the ends; never a secret.
-    let audit = c.audit().join("\n");
+    // changes, the ends; never a secret. mgmt tells the map service that
+    // the directory knows (EndToldDirectory) only after the directory
+    // answers, so the directory can drop the cluster before that's
+    // audited: wait for it.
+    let audit = wait_for("the end told audited", 30, || {
+        let a = c.audit().join("\n");
+        a.contains("EndToldDirectory").then_some(a)
+    });
     for op in [
         "CreateOffer",
         "RedeemOffer",
