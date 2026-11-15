@@ -2149,10 +2149,12 @@ fn an_empty_node_is_refilled_without_flapping() {
         .filter(|l| l.contains(" down (") || l.contains(" up ("))
         .collect();
     // Only node 2 comes back, and no one flaps (I187), except a node that
-    // held its reactor past the peer timeout since the kill: the engine's
-    // I/O is synchronous on the reactor (I200), and a runner's shared disk
-    // took 1.2–1.8 s for one call during the refill, so that node was
-    // rightly timed out. Pings drowned by backfill hold no reactor.
+    // held its reactor long enough to be timed out since the kill: the
+    // engine's I/O is synchronous on the reactor (I200), and a runner's
+    // shared disk took 1.2–1.8 s for one call during the refill. Peers
+    // ping every 100 ms, so a hold of 500 ms or more can leave a node
+    // silent past the 600 ms peer timeout (a 589 ms hold did). Pings
+    // drowned by backfill hold no reactor.
     let held = |n: u32| {
         let skip = node_before.get(n as usize).copied().unwrap_or(0);
         c.node_log(n)
@@ -2160,7 +2162,7 @@ fn an_empty_node_is_refilled_without_flapping() {
             .skip(skip)
             .filter_map(|l| l.split("reactor held ").nth(1))
             .filter_map(|r| r.split(" ms").next()?.parse::<u64>().ok())
-            .any(|ms| ms >= 600)
+            .any(|ms| ms >= 500)
     };
     let unexplained: Vec<&str> = changes
         .iter()
@@ -2177,7 +2179,7 @@ fn an_empty_node_is_refilled_without_flapping() {
     assert!(
         changes.first() == Some(&"hyperstor-meta: node 2 up (heartbeats again)")
             && unexplained.is_empty(),
-        "only node 2 comes back; no one flaps: {changes:?}, not explained by a reactor held 600 ms or more: {unexplained:?}"
+        "only node 2 comes back; no one flaps: {changes:?}, not explained by a reactor held 500 ms or more: {unexplained:?}"
     );
     // So any flapping warning left is from before the kill.
     assert!(settled(&status), "{status}");
