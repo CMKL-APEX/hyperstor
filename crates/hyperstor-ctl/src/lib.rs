@@ -1963,8 +1963,79 @@ pub fn parse_http(raw: &[u8]) -> Result<(u16, serde_json::Value), String> {
     ))
 }
 
+/// The data networks the volume commands reach devices on (D340):
+/// `--networks NAME,...|none` if given, else the `networks` line
+/// `hyperstor-install` writes into `hyperstorctl.conf` (the host's
+/// client networks, D289), else none: devices' addresses.
+pub fn data_networks(flag: Option<&str>, conf: Option<&str>) -> Result<Vec<String>, String> {
+    let (given, from) = match (flag, conf) {
+        (Some(f), _) => (f, "--networks"),
+        (None, Some(c)) => (c, "the networks line of hyperstorctl.conf"),
+        (None, None) => return Ok(Vec::new()),
+    };
+    if given == "none" {
+        return Ok(Vec::new());
+    }
+    let names: Vec<String> = given.split(',').map(|n| n.trim().to_string()).collect();
+    if names
+        .iter()
+        .any(|n| n.is_empty() || n == "none" || n.contains(char::is_whitespace))
+    {
+        return Err(format!("{from}: NAME[,NAME...] or none, not {given:?}"));
+    }
+    Ok(names)
+}
+
+/// The names in `networks` that aren't among the cluster's `known`.
+pub fn unknown_networks<'a>(
+    networks: &[String],
+    known: impl Iterator<Item = &'a String> + Clone,
+) -> Vec<String> {
+    networks
+        .iter()
+        .filter(|n| !known.clone().any(|k| k == *n))
+        .cloned()
+        .collect()
+}
+
+/// Where the volume commands reach devices, for `io-test`'s report.
+pub fn networks_said(networks: &[String]) -> String {
+    match networks {
+        [] => "at the devices' addresses".to_string(),
+        [one] => format!("on network {one}"),
+        many => format!("on networks {}", many.join(", ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_volume_commands_networks_come_from_the_flag_then_the_conf() {
+        use super::{data_networks, networks_said, unknown_networks};
+        let v = |x: &[&str]| x.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(data_networks(None, None), Ok(vec![]));
+        assert_eq!(data_networks(None, Some("fast")), Ok(v(&["fast"])));
+        assert_eq!(
+            data_networks(Some("ib,fast"), Some("fast")),
+            Ok(v(&["ib", "fast"]))
+        );
+        assert_eq!(data_networks(Some("none"), Some("fast")), Ok(vec![]));
+        assert_eq!(data_networks(None, Some("none")), Ok(vec![]));
+        let e = data_networks(Some("fast,,ib"), None).unwrap_err();
+        assert!(e.starts_with("--networks:"), "{e}");
+        let e = data_networks(None, Some("a b")).unwrap_err();
+        assert!(e.contains("hyperstorctl.conf"), "{e}");
+        assert!(data_networks(Some(""), None).is_err());
+        let known = v(&["fast", "slow"]);
+        assert_eq!(
+            unknown_networks(&v(&["fast", "ib"]), known.iter()),
+            v(&["ib"])
+        );
+        assert_eq!(networks_said(&[]), "at the devices' addresses");
+        assert_eq!(networks_said(&v(&["fast"])), "on network fast");
+        assert_eq!(networks_said(&v(&["ib", "fast"])), "on networks ib, fast");
+    }
+
     #[test]
     fn buckets_are_named_tenant_slash_bucket() {
         use super::{pb, s3_buckets_text};

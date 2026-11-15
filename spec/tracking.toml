@@ -1455,14 +1455,16 @@ spec = ["26-networks.md §29.10", "D211", "D212", "G50", "G51"]
 status = "planned"
 
 [[milestone.item]]
-what = "Networks set on a running cluster (also on the web UI's Networks page), and nodes serving the endpoints the map has for their devices"
-spec = ["26-networks.md §29.3", "26-networks.md §29.5", "D284", "D285", "D289", "I337", "I338", "I347"]
+what = "Networks set on a running cluster (also on the web UI's Networks page), nodes serving the endpoints the map has for their devices, and a host's clients (VM disks, S3, hyperstorctl's volume commands) on its storage's networks"
+spec = ["26-networks.md §29.3", "26-networks.md §29.5", "D284", "D285", "D289", "D340", "I337", "I338", "I347", "I410"]
 status = "done"
 tests = [
     "hyperstor_map::network_tests::networks_are_set_and_removed_unless_endpoints_are_on_them",
     "hyperstor_install::tests::a_node_serves_its_devices_endpoints_from_the_map",
     "manage::a_running_cluster_takes_a_network_and_its_node_serves_endpoints_on_it",
     "hyperstor_install::tests::clients_take_the_networks_of_the_hosts_storage",
+    "hyperstor_install::tests::hyperstorctl_takes_the_hosts_client_networks",
+    "hyperstor_ctl::tests::the_volume_commands_networks_come_from_the_flag_then_the_conf",
     "browser::networks_are_set_a_device_s_endpoints_too_and_ports_are_shown",
 ]
 

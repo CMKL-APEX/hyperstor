@@ -3069,12 +3069,13 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
     }
 }
 
-/// D289: ` --networks A,B` for this host's clients (`hyperstor-vhost`,
-/// `hyperstor-s3`), or nothing: `auto` takes the networks its storage
-/// nodes reach others on, in order (D207), so the host's clients take the
-/// paths its storage does.
-fn networks_arg(s: &Settings, p: &Plan) -> String {
-    let names: Vec<String> = match s.client_networks.as_str() {
+/// D289: the networks this host's clients (`hyperstor-vhost`,
+/// `hyperstor-s3`, and `hyperstorctl`'s volume commands, D340) reach
+/// storage on: `auto` takes the networks its storage nodes reach others
+/// on, in order (D207), so the host's clients take the paths its storage
+/// does.
+fn client_networks(s: &Settings, p: &Plan) -> Vec<String> {
+    match s.client_networks.as_str() {
         "none" => Vec::new(),
         "auto" => {
             let mut v: Vec<String> = Vec::new();
@@ -3086,7 +3087,23 @@ fn networks_arg(s: &Settings, p: &Plan) -> String {
             v
         }
         names => names.split(',').map(str::to_string).collect(),
-    };
+    }
+}
+
+/// `hyperstorctl.conf`'s `networks A,B` line, or nothing (D340): the
+/// volume commands reach storage where the host's other clients do.
+fn ctl_networks(s: &Settings, p: &Plan) -> String {
+    let names = client_networks(s, p);
+    if names.is_empty() {
+        String::new()
+    } else {
+        format!("networks {}\n", names.join(","))
+    }
+}
+
+/// ` --networks A,B` for this host's clients, or nothing (D289).
+fn networks_arg(s: &Settings, p: &Plan) -> String {
+    let names = client_networks(s, p);
     if names.is_empty() {
         String::new()
     } else {
@@ -3192,6 +3209,15 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             0o644,
         ));
     }
+    if p.meta.is_none() {
+        // A storage host's `hyperstorctl` takes its clients' networks too
+        // (D340); written even empty, so a line no longer true goes.
+        out.push((
+            "/etc/hyperstor/hyperstorctl.conf".to_string(),
+            ctl_networks(s, p),
+            0o644,
+        ));
+    }
     if let Some(listen) = &p.meta {
         out.extend([
             (
@@ -3206,8 +3232,9 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             (
                 "/etc/hyperstor/hyperstorctl.conf".to_string(),
                 format!(
-                    "api {}\ntls /etc/hyperstor/pki\nsocket /run/hyperstor-meta/api.sock\n",
-                    p.api
+                    "api {}\ntls /etc/hyperstor/pki\nsocket /run/hyperstor-meta/api.sock\n{}",
+                    p.api,
+                    ctl_networks(s, p)
                 ),
                 0o644,
             ),
@@ -6305,6 +6332,43 @@ mod tests {
         t.apply(&s.save());
         assert_eq!(t.client_networks, "ib");
         assert!(!Settings::defaults().save().contains("client_networks"));
+    }
+
+    /// D340: `hyperstorctl.conf` names the host's client networks, on a
+    /// map service host after its API lines, and alone on a storage host,
+    /// where it is written even empty so a line no longer true goes.
+    #[test]
+    fn hyperstorctl_takes_the_hosts_client_networks() {
+        let conf = |s: &Settings, p: &Plan| {
+            files(s, p)
+                .into_iter()
+                .find(|x| x.0 == "/etc/hyperstor/hyperstorctl.conf")
+                .unwrap()
+                .1
+        };
+        let mut s = Settings::defaults();
+        s.all_in_one = true;
+        let mut p = plan(Path::new("/nonexistent"), &s, None);
+        assert!(!conf(&s, &p).contains("networks"), "{}", conf(&s, &p));
+        p.nodes[0].networks = vec!["fast".into(), "ib".into()];
+        let c = conf(&s, &p);
+        assert!(
+            c.starts_with("api ") && c.ends_with("\nnetworks fast,ib\n"),
+            "{c}"
+        );
+        s.client_networks = "none".into();
+        assert!(!conf(&s, &p).contains("networks"));
+
+        let cluster = "cluster 9\nnode 0 rack 0 10.0.0.1:9100\nnode 1 rack 1 10.0.0.2:9100\n\
+                       pool 1 vol replicated size 2 min 1 pgs 8 domain host\n";
+        let mut s = Settings::defaults();
+        s.role = "storage".into();
+        s.node = Some(0);
+        s.map = "10.0.0.9:8849".into();
+        let mut p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
+        assert_eq!(conf(&s, &p), "");
+        p.nodes[0].networks = vec!["fast".into()];
+        assert_eq!(conf(&s, &p), "networks fast\n");
     }
 
     #[test]

@@ -331,7 +331,8 @@ fn cluster_file_install_across_hosts() {
 /// Endpoints from the cluster file (26-networks.md §29.5, D207): each
 /// storage host's installer gives `hyperstord` its devices' endpoints on
 /// network `fast` (a second loopback address here) and the network, and
-/// the nodes replicate to each other there.
+/// the nodes replicate to each other there. `hyperstorctl io-test
+/// --networks fast` reaches them there too (D340).
 #[test]
 fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     let _one = one_at_a_time();
@@ -434,19 +435,86 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
             String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
         )
     };
+    // A hyperstorctl run, and the endpoints on network `fast` it held
+    // connections to while it ran.
+    let ctl_sockets = |args: &[&str]| {
+        let mut child = Command::new(bin.join("hyperstorctl"))
+            .env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
+            .args(["--api", &api, "--tls", pki.to_str().unwrap()])
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut used = std::collections::BTreeSet::new();
+        while child.try_wait().unwrap().is_none() {
+            used.extend(remote_ports_of(child.id(), [127, 0, 0, 2]));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let o = child.wait_with_output().unwrap();
+        (
+            o.status.code(),
+            String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
+            used,
+        )
+    };
     let (code, out) = ctl(&["status", "--wait", "30"]);
     assert_eq!(code, Some(0), "{out}");
-    let (code, out) = ctl(&["io-test", "--mib", "64"]);
+    // At the devices' addresses (and whatever the host's own
+    // hyperstorctl.conf says, kept out by `none`).
+    let (code, out, used) = ctl_sockets(&["io-test", "--mib", "64", "--networks", "none"]);
     assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("at the devices' addresses"), "{out}");
+    assert!(used.is_empty(), "{used:?}");
     // Sessions to every node's endpoint, from the primaries replicating:
     // 16 chunks over 32 PGs, so every node is a replica of some.
     let want: std::collections::BTreeSet<u16> = (0..3).map(|n| base + 8 + n).collect();
     let seen = established_on([127, 0, 0, 2]);
+    // D340: hyperstorctl on network `fast` reaches every node at its
+    // endpoint there, the primaries of the PGs it writes.
+    let (code, out, used) = ctl_sockets(&["io-test", "--mib", "64", "--networks", "fast"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("on network fast"), "{out}");
+    // A network the cluster doesn't have: warned, the addresses used.
+    let (code, out, _) = ctl_sockets(&["io-test", "--mib", "1", "--networks", "ib"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("the cluster has no network ib"), "{out}");
     for p in &mut procs {
         let _ = p.kill();
         let _ = p.wait();
     }
     assert!(want.is_subset(&seen), "{want:?} not all in {seen:?}");
+    assert!(
+        want.is_subset(&used),
+        "hyperstorctl's endpoints {used:?}, not all of {want:?}"
+    );
+}
+
+/// The remote ports on `ip` (IPv4) of process `pid`'s TCP connections:
+/// its sockets' inodes, found in /proc/net/tcp.
+fn remote_ports_of(pid: u32, ip: [u8; 4]) -> std::collections::BTreeSet<u16> {
+    let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+        return Default::default();
+    };
+    let inodes: std::collections::BTreeSet<String> = fds
+        .filter_map(|f| std::fs::read_link(f.ok()?.path()).ok())
+        .filter_map(|l| {
+            let l = l.to_string_lossy().into_owned();
+            Some(l.strip_prefix("socket:[")?.strip_suffix(']')?.to_string())
+        })
+        .collect();
+    let want = format!("{:08X}", u32::from_le_bytes(ip));
+    std::fs::read_to_string("/proc/net/tcp")
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            let (addr, port) = f.get(2)?.split_once(':')?;
+            (addr == want && inodes.contains(*f.get(9)?))
+                .then(|| u16::from_str_radix(port, 16).ok())?
+        })
+        .collect()
 }
 
 /// The local ports of established TCP connections on `ip` (IPv4), from

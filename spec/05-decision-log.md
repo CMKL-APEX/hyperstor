@@ -1694,3 +1694,15 @@ into `.meta`), recommending the first. The owner decided:
 | 299 | The trash, deletes under way and branches a rollback leaves: count until freed (recommended); or not | Count until freed | D337 |
 | 300 | §10.5's split of head and snapshot-only bytes: exact, by laying versions in the walk; or the cheaper "written since the newest snapshot" | Exact, now, with the walk's cost measured | D338 |
 | 301 | Raw or logical bytes; how old counts may be; whether D155's PG bytes keep every namespace | Logical, beside the pool's copies; 30 s; unchanged | D339 |
+## hyperstorctl on the cluster's networks (2026-11-15)
+
+`hyperstorctl io-test` and the volume commands reached devices at their
+addresses, so on the pilot they measured 1 GbE while VM disks and S3
+used 100 GbE (#325). Asked how they should pick networks by default,
+with options (the installer writes the host's client networks into
+`hyperstorctl.conf`, recommended; detect from the map's subnets and the
+host's addresses; both), the owner chose the installer's line:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 302 | Where `hyperstorctl`'s volume commands take their default networks from: the installer's `networks` line in `hyperstorctl.conf` (recommended); detected from the map; the line, else detected | The installer's line | D340 |
