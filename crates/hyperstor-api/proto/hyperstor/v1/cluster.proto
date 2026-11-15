@@ -1179,7 +1179,7 @@ message GetSpaceRequest {
   // 0: every data pool.
   uint32 pool = 1;
   // Leave out the row of each volume: the sums per project and tenant
-  // alone, which a page of tenants needs (I411). Default: every row.
+  // alone, which a page of tenants needs (I412). Default: every row.
   bool skip_volumes = 2 [json_name = "skip_volumes"];
 }
 

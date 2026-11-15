@@ -474,7 +474,7 @@ mod tests {
     use super::*;
 
     /// Reads of the `Read` group that security administrators make too,
-    /// as the schema puts them in `secure` as well (I411): the realms
+    /// as the schema puts them in `secure` as well (I412): the realms
     /// and tenants whose hosts, clients and realms they bind.
     const SECURE_READS: &[&str] = &["RealmService.ListRealms", "TenantService.ListTenants"];
 

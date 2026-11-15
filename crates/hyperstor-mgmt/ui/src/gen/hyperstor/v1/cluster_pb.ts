@@ -5952,7 +5952,7 @@ export type GetSpaceRequest = Message<"hyperstor.v1.GetSpaceRequest"> & {
 
   /**
    * Leave out the row of each volume: the sums per project and tenant
-   * alone, which a page of tenants needs (I411). Default: every row.
+   * alone, which a page of tenants needs (I412). Default: every row.
    *
    * @generated from field: bool skip_volumes = 2 [json_name = "skip_volumes"];
    */
@@ -5972,7 +5972,7 @@ export type GetSpaceRequestJson = {
 
   /**
    * Leave out the row of each volume: the sums per project and tenant
-   * alone, which a page of tenants needs (I411). Default: every row.
+   * alone, which a page of tenants needs (I412). Default: every row.
    *
    * @generated from field: bool skip_volumes = 2 [json_name = "skip_volumes"];
    */

@@ -1939,11 +1939,12 @@ tests = [
 
 [[milestone.item]]
 what = "Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean"
-spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "D229", "D230", "I267"]
+spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "D229", "D230", "I267", "I411"]
 status = "done"
 tests = [
     "manage::a_scrub_started_now_finishes_as_an_operation",
     "cluster::a_scrub_asked_for_runs_now",
+    "cluster::a_deep_scrub_asked_after_a_light_one_runs_now",
     "cluster::recovered_pgs_are_scrubbed",
 ]
 
@@ -2003,7 +2004,7 @@ tests = [
 
 [[milestone.item]]
 what = "The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once, pin from mgmt's own certificate); a directory's records refused to every caller; GetSpace without volume rows"
-spec = ["19-administration.md §23.7", "20-tenants.md §24.8", "20-tenants.md §24.9", "D303", "D306", "D324", "D327", "D341", "D342", "D343", "I411"]
+spec = ["19-administration.md §23.7", "20-tenants.md §24.8", "20-tenants.md §24.9", "D303", "D306", "D324", "D327", "D341", "D342", "D343", "I412"]
 status = "done"
 tests = [
     "browser::tenancy_realms_are_made_bound_and_deleted",
