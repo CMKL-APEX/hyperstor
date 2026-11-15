@@ -96,14 +96,21 @@ type RealmDialog =
 function RealmsTab() {
   const can = useCan();
   const list = usePoll(() => realms.listRealms({}), 5000);
-  const status = usePoll(() => cluster.getStatus({}), 0);
   const [dialog, setDialog] = useState<RealmDialog | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
   const all = list.data?.realms ?? [];
   const names = all.map((r) => r.name);
-  const pools = (status.data?.pools ?? []).filter((p) => p.id !== 0);
+  // Every pool, from the realms' lists and those open to every realm:
+  // ListRealms alone, which security administrators read too (I411).
+  const poolNames = new Map<number, string>();
+  for (const r of all) r.poolIds.forEach((id, i) => poolNames.set(id, r.pools[i] ?? ""));
+  list.data?.openPoolIds.forEach((id, i) => poolNames.set(id, list.data?.openPools[i] ?? ""));
+  const pools = [...poolNames.entries()]
+    .filter(([id]) => id !== 0)
+    .sort(([a], [b]) => a - b)
+    .map(([id, name]) => ({ id, name }));
   // Each host's and pool's realms, from the realms that name them.
   const hosts = new Map<string, string[]>();
   for (const r of all) for (const h of r.hosts) hosts.set(h, [...(hosts.get(h) ?? []), r.name]);
@@ -153,7 +160,6 @@ function RealmsTab() {
         <Cli cmd="realm list" />
       </Card>
       <Card title="Pools' realms">
-        <ErrorText error={status.error} />
         <Table head={["Pool", "Realms that may use it", ""]}>
           {pools.map((p) => {
             const rs = poolRealms(p.id);
@@ -401,8 +407,10 @@ function TenantsTab() {
   const can = useCan();
   const list = usePoll(async () => (await tenants.listTenants({})).tenants, 5000);
   const realmList = usePoll(() => realms.listRealms({}), 5000);
-  // The sums per tenant and project, without a row per volume (I411).
-  const space = usePoll(() => cluster.getSpace({ pool: 0, skipVolumes: true }), 10000);
+  // The sums per tenant and project, without a row per volume (I411);
+  // space is a read role's, not a security administrator's.
+  const reads = can("read");
+  const space = usePoll(async () => (reads ? await cluster.getSpace({ pool: 0, skipVolumes: true }) : null), 10000);
   const [dialog, setDialog] = useState<TenantDialog | null>(null);
   const [name, setName] = useState("");
   const [target, setTarget] = useState("");
@@ -985,14 +993,18 @@ function DirectoriesTab() {
 
 export default function Tenancy() {
   const can = useCan();
-  const tabs = [...(can("read") ? (["Realms", "Tenants & projects"] as const) : []), ...(can("secure") ? (["Directories"] as const) : [])];
+  // Security administrators read realms and tenants too (I411).
+  const tabs = [
+    ...(can("read") || can("secure") ? (["Realms", "Tenants & projects"] as const) : []),
+    ...(can("secure") ? (["Directories"] as const) : []),
+  ];
   const [tab, setTab] = useState<string>(tabs[0] ?? "");
   if (tabs.length === 0)
     return (
       <Card title="Tenancy">
         <p className="text-sm text-slate-600">
-          Realms and tenants are read with viewer, operator or storage-admin; glidex directories are managed by security
-          administrators.
+          Realms, tenants and glidex directories are read with a role: viewer, operator, storage-admin or
+          security-admin.
         </p>
       </Card>
     );

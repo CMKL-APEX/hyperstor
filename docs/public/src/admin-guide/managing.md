@@ -87,7 +87,7 @@ role adds to the one before, except the last:
 | `viewer` | Read: status, PGs, volumes, snapshots, the trash, operations, members |
 | `operator` | Also take devices out and in, add and remove devices, set weights, classes and fullness thresholds, drain nodes, cancel operations, take snapshots, restore from the trash |
 | `storage-admin` | Also create, change and delete pools, volumes, snapshots and clones, roll volumes back, purge the trash and set its grace, add and remove members |
-| `security-admin` | People and their roles, join tokens, certificates, map backups and the audit log; nothing else |
+| `security-admin` | People and their roles, join tokens, certificates, map backups and the audit log; reads realms and tenants, to bind hosts and clients and trust directories; nothing else |
 
 **Roles in a realm.** With [realms](installation.md#realms), give a
 realm's administrators their roles in it alone: `storage-admin@acme`,
@@ -509,9 +509,9 @@ minutes asks for one.
   copy it and pass it only to that tenant's administrator.
 
 People with only `viewer`, `operator` or `storage-admin` see the
-Realms and Tenants tabs with what their role allows; someone with only
-`security-admin` sees the Directories tab, and needs a read role too to
-see realms and tenants.
+Realms and Tenants tabs with what their role allows; security
+administrators see them too, and the Directories tab. Space is shown
+to the read roles.
 
 ## VM disks
 

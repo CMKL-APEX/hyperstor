@@ -460,7 +460,7 @@ repository (`glidex-auth`) and taken as a pinned git dependency, as
   | `viewer` | read everything except secrets and audit |
   | `operator` | viewer, plus drain, out, in, snapshots, operations, restore from trash |
   | `storage-admin` | operator, plus pools, volumes, exports, QoS, purge |
-  | `security-admin` | users, roles, tokens, site policies, certificates, audit |
+  | `security-admin` | users, roles, tokens, site policies, certificates, audit; reads realms and tenants (D341) |
 
   Storage and security are separate roles so no one administers data
   and covers their own tracks by default; a site may grant both.

@@ -10,7 +10,8 @@
 //!   in, cancels operations, takes snapshots and restores from the trash
 //!   (D114); `storage-admin` also manages volumes, members and S3
 //!   placements; `security-admin` manages people, tokens, S3 keys,
-//!   certificates and backups, and reads the audit log, and nothing else.
+//!   certificates and backups, and reads the audit log, realms and
+//!   tenants (D341), and nothing else.
 //! - Step-up: what is hard to undo (deleting volumes, snapshots and
 //!   members, rolling a volume back, tokens, S3 keys, revocations, backups, people's
 //!   roles) needs a login of the last 10 minutes.
@@ -472,6 +473,11 @@ pub fn allowed(
 mod tests {
     use super::*;
 
+    /// Reads of the `Read` group that security administrators make too,
+    /// as the schema puts them in `secure` as well (I411): the realms
+    /// and tenants whose hosts, clients and realms they bind.
+    const SECURE_READS: &[&str] = &["RealmService.ListRealms", "TenantService.ListTenants"];
+
     fn can(e: &Engine<Hyperstor>, roles: &[&str], action: &str, age: i64) -> bool {
         let roles: Vec<String> = roles.iter().map(|r| r.to_string()).collect();
         allowed(e, "ann", &roles, action, "pam", age).allowed
@@ -484,9 +490,10 @@ mod tests {
         let e = engine();
         for (name, group, _) in ACTIONS {
             let want = |roles: &[&str]| match group {
-                Group::Read => roles
-                    .iter()
-                    .any(|r| matches!(*r, "viewer" | "operator" | "storage-admin")),
+                Group::Read => roles.iter().any(|r| {
+                    matches!(*r, "viewer" | "operator" | "storage-admin")
+                        || (*r == "security-admin" && SECURE_READS.contains(name))
+                }),
                 Group::Operate => roles
                     .iter()
                     .any(|r| matches!(*r, "operator" | "storage-admin")),
@@ -724,6 +731,11 @@ mod tests {
                 .find(|l| l.contains(&format!("action \"{name}\" ")))
                 .unwrap_or_else(|| panic!("{name} isn't in the schema"));
             assert!(line.contains(&format!("Action::\"{g}\"")), "{name}: {line}");
+            assert_eq!(
+                line.contains("Action::\"secure\""),
+                *group == Group::Secure || SECURE_READS.contains(name),
+                "{name}: {line}"
+            );
             assert_eq!(
                 line.contains("Action::\"step-up\""),
                 *step_up,

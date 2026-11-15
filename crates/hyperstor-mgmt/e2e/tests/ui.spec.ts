@@ -766,6 +766,34 @@ test("tenancy: a viewer sees realms and tenants with no actions", async ({ page 
     await expect(page.getByRole("button", { name: b, exact: true })).toHaveCount(0);
 });
 
+test("tenancy: a security administrator alone reads realms and tenants", async ({ page }) => {
+  // bob: security-admin, and no read role (I411).
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("checkbox", { name: "viewer" }).uncheck();
+  await page.getByRole("checkbox", { name: "security-admin" }).check();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("security-admin");
+  await expect(page.getByTestId("person-bob")).not.toContainText("viewer");
+  await page.getByRole("button", { name: "Log out" }).click();
+  await logIn(page, "bob");
+  await tenancy(page, "Realms");
+  await expect(page.getByTestId("tenancy-realm-acme")).toBeVisible();
+  await expect(page.getByTestId("tenancy-pool-1")).toBeVisible();
+  // Hosts and clients are theirs to bind; realms and pools aren't.
+  await expect(page.getByRole("button", { name: "Bind a host" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create realm" })).toHaveCount(0);
+  await expect(page.getByTestId("tenancy-pool-1").getByRole("button", { name: "Change" })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Tenants & projects" }).click();
+  await expect(page.getByTestId("tree-tenant-lab")).toBeVisible();
+  await expect(page.getByTestId("tree-tenant-lab").getByRole("button", { name: "Realm", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create tenant" })).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Directories" }).click();
+  await expect(page.getByTestId("directory-uni")).toBeVisible();
+});
+
 test("tenancy: ending a directory's trust unlinks its records", async ({ page }) => {
   await logIn(page, "ann");
   await tenancy(page, "Directories");

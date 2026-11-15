@@ -1706,3 +1706,12 @@ host's addresses; both), the owner chose the installer's line:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 302 | Where `hyperstorctl`'s volume commands take their default networks from: the installer's `networks` line in `hyperstorctl.conf` (recommended); detected from the map; the line, else detected | The installer's line | D340 |
+
+## The Tenancy page's questions (2026-11-15)
+
+Building the web UI's Tenancy page (I411) raised what a security
+administrator alone may read:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 303 | Whether `security-admin` reads realms and tenants (`ListRealms`, `ListTenants`), which it changes but couldn't read without a read role | Yes | D341 |
