@@ -200,7 +200,7 @@ mod tests {
         let only6 = rows(&view, &t, &map, 0, |t, _, _| t == 6, false, true);
         assert_eq!(only6.volumes.len(), 1);
         assert!(only6.unattributed.is_empty());
-        // Without volume rows (skip_volumes, I412): the same sums.
+        // Without volume rows (skip_volumes, I413): the same sums.
         let sums = rows(&view, &t, &map, 0, |_, _, _| true, true, false);
         assert!(sums.volumes.is_empty());
         assert_eq!(sums.projects, r.projects);

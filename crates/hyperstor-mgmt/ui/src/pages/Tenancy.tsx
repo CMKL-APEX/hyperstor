@@ -9,7 +9,7 @@
 //   each uses (GetSpace, D335); create, rename, delete, a tenant's realm
 //   (security administrators, D250), and a project's move to another
 //   tenant, a long operation (D303). What a glidex directory owns (names
-//   and membership of linked records) is read-only here (I412).
+//   and membership of linked records) is read-only here (I413).
 // - Directories (security administrators): the trusted directories, their
 //   feed's age and staleness limit (D324), the operator tenant, ending a
 //   trust; offers, whose token is shown once and never kept (D306).
@@ -103,7 +103,7 @@ function RealmsTab() {
   const all = list.data?.realms ?? [];
   const names = all.map((r) => r.name);
   // Every pool, from the realms' lists and those open to every realm:
-  // ListRealms alone, which security administrators read too (I412).
+  // ListRealms alone, which security administrators read too (I413).
   const poolNames = new Map<number, string>();
   for (const r of all) r.poolIds.forEach((id, i) => poolNames.set(id, r.pools[i] ?? ""));
   list.data?.openPoolIds.forEach((id, i) => poolNames.set(id, list.data?.openPools[i] ?? ""));
@@ -407,7 +407,7 @@ function TenantsTab() {
   const can = useCan();
   const list = usePoll(async () => (await tenants.listTenants({})).tenants, 5000);
   const realmList = usePoll(() => realms.listRealms({}), 5000);
-  // The sums per tenant and project, without a row per volume (I412);
+  // The sums per tenant and project, without a row per volume (I413);
   // space is a read role's, not a security administrator's.
   const reads = can("read");
   const space = usePoll(async () => (reads ? await cluster.getSpace({ pool: 0, skipVolumes: true }) : null), 10000);
@@ -1041,7 +1041,7 @@ function DirectoriesTab() {
 
 export default function Tenancy() {
   const can = useCan();
-  // Security administrators read realms and tenants too (I412).
+  // Security administrators read realms and tenants too (I413).
   const tabs = [
     ...(can("read") || can("secure") ? (["Realms", "Tenants & projects"] as const) : []),
     ...(can("secure") ? (["Directories"] as const) : []),

@@ -340,7 +340,10 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s
 - A host is unbound until bound: `hyperstorctl realm host --host hv-1
   --realm acme` lets hv-1's `hyperstor-vhost` and `hyperstor-ublk`
   attach only acme's tenants' volumes (add `default` for the others).
-  Hosts are named by `--host`, their hostname unless set. Until the data
+  Hosts are named by `--host`, their hostname unless set. The command
+  returns once every storage node has the new binding, so every attach
+  after it follows the binding; with a slow node that takes up to 1.25
+  map leases (`--lease-ms`, under a second by default). Until the data
   path has mutual TLS, a host could give another name: a binding stops
   mistakes, not a hostile host.
 - Realms share the drives' time: a realm that must not feel another's

@@ -783,7 +783,7 @@ test("tenancy: a viewer sees realms and tenants with no actions", async ({ page 
 });
 
 test("tenancy: a security administrator alone reads realms and tenants", async ({ page }) => {
-  // bob: security-admin, and no read role (I412).
+  // bob: security-admin, and no read role (I413).
   await logIn(page, "ann");
   await page.getByRole("link", { name: "Security" }).click();
   await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();

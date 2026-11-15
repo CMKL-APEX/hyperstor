@@ -3323,20 +3323,33 @@ impl Meta {
                     projects,
                     reply,
                 } => {
-                    let r = if self.leads() {
+                    if self.leads() {
                         let (hosts, tenants) = realms.map_view();
                         let projects = if hosts.is_empty() {
                             Default::default()
                         } else {
                             projects
                         };
-                        let mut map = self.map.borrow_mut();
-                        map.set_realm_view(hosts, tenants, projects);
-                        Ok(map.epoch)
+                        let (changed, epoch) = {
+                            let mut map = self.map.borrow_mut();
+                            let changed = map.set_realm_view(hosts, tenants, projects);
+                            (changed, map.epoch)
+                        };
+                        // Storage nodes decide attaches by the bindings in
+                        // their map (D259): answered once each holds the
+                        // change, or can no longer serve by an older map, so
+                        // no attach is decided the old way after the answer.
+                        let me = self.clone();
+                        hyperstor_reactor::spawn(async move {
+                            let r = me.published_by(epoch).await;
+                            if r.is_ok() && changed {
+                                me.held_by_nodes(epoch).await;
+                            }
+                            let _ = reply.send(r.map(|()| epoch));
+                        });
                     } else {
-                        Err(self.not_leader())
-                    };
-                    self.reply_published(reply, r, |e| e);
+                        let _ = reply.send(Err(self.not_leader()));
+                    }
                 }
                 Admin::ClaimPort {
                     port,
@@ -4061,6 +4074,16 @@ impl Meta {
             }
             sleep(Duration::from_millis(5)).await;
         }
+        self.held_by_nodes(epoch).await;
+        Msg::BlocklistOk { map_epoch: epoch }
+    }
+
+    /// Returns once every storage node that is up holds the published map
+    /// `epoch` (it answered its push), or has lost its map lease: a node
+    /// renews its lease only with a map at least as new as the one the
+    /// leader has published (`hyperstord`'s heartbeat), so after 1.25
+    /// leases none decides by an older map. Whether it was held by all.
+    async fn held_by_nodes(&self, epoch: u64) -> bool {
         let until = Instant::now() + self.lease + self.lease / 4;
         loop {
             let held = {
@@ -4071,12 +4094,14 @@ impl Meta {
                     .filter(|d| p.nodes.get(&d.node).is_some_and(|n| n.up))
                     .all(|d| acked.get(&d.id).is_some_and(|e| *e >= epoch))
             };
-            if held || Instant::now() >= until {
-                break;
+            if held {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
             }
             sleep(Duration::from_millis(5)).await;
         }
-        Msg::BlocklistOk { map_epoch: epoch }
     }
 
     async fn conn(&self, addr: SocketAddr) -> Result<hyperstor_rpc::Conn, hyperstor_rpc::RpcError> {
@@ -6547,6 +6572,100 @@ mod tests {
             refuse.set(false);
             assert!(e.starts_with(NOT_PUBLISHED), "{e}");
             assert!(t.elapsed() < 4 * lease + Duration::from_secs(3));
+        });
+    }
+
+    /// D259: a change to the hosts' realm bindings is answered once every
+    /// storage node that is up holds the map that has it, or has lost its
+    /// map lease, as a blocklist is, since nodes decide attaches by their
+    /// own map; an unchanged view is answered at once.
+    #[test]
+    fn realm_bindings_are_answered_once_nodes_hold_them() {
+        use hyperstor_reactor::chan::{channel, oneshot};
+        use hyperstor_reactor::time::sleep;
+        use replica::{Leading, ToReactor};
+        let lease = Duration::from_millis(200);
+        let (commits, committed) = tokio::sync::mpsc::unbounded_channel::<replica::Commit>();
+        let m = Meta::replicated(map(), lease, commits);
+        hyperstor_reactor::block_on(async move {
+            let (tx, rx) = channel();
+            hyperstor_reactor::spawn(m.clone().follow(rx));
+            tx.send(ToReactor::Applied(Box::new(m.published.borrow().clone())))
+                .unwrap();
+            tx.send(ToReactor::Leader(Leading::Me)).unwrap();
+            sleep(lease + lease / 2).await;
+            assert!(m.may_change_roles());
+            let (admin, requests) = channel();
+            hyperstor_reactor::spawn(m.clone().admin(requests, "127.0.0.1:1".parse().unwrap()));
+            hyperstor_reactor::spawn(m.clone().publisher());
+            let up: Vec<u32> = {
+                let p = m.published.borrow();
+                p.devices
+                    .values()
+                    .filter(|d| p.nodes.get(&d.node).is_some_and(|n| n.up))
+                    .map(|d| d.id)
+                    .collect()
+            };
+            assert!(!up.is_empty(), "no storage node up to wait for");
+            let committed = Rc::new(RefCell::new(committed));
+            // Commits every change; the test's devices answer no pushes.
+            let c2 = committed.clone();
+            hyperstor_reactor::spawn(async move {
+                loop {
+                    if let Ok(c) = c2.borrow_mut().try_recv() {
+                        let _ = c.reply.send(Ok(()));
+                    }
+                    sleep(Duration::from_millis(5)).await;
+                }
+            });
+            let bind = |realms: Vec<u32>| {
+                let mut r = realms::Realms::default();
+                r.hosts.insert("hv".into(), realms);
+                let (reply, rx) = oneshot();
+                admin
+                    .send(Admin::SyncRealms {
+                        realms: r,
+                        projects: Default::default(),
+                        reply,
+                    })
+                    .ok()
+                    .unwrap();
+                rx
+            };
+            // No node acknowledges the map: answered after 1.25 leases.
+            let t = Instant::now();
+            let epoch = bind(vec![1]).recv().await.unwrap().unwrap();
+            assert!(t.elapsed() >= lease + lease / 4, "{:?}", t.elapsed());
+            assert_eq!(m.published.borrow().host_realms["hv"], vec![1]);
+            // Every node acknowledges it: answered as soon as they do.
+            let rx = bind(vec![1, 2]);
+            let answer = Rc::new(RefCell::new(None));
+            let a = answer.clone();
+            hyperstor_reactor::spawn(async move {
+                *a.borrow_mut() = rx.recv().await;
+            });
+            while m.published.borrow().epoch <= epoch {
+                sleep(Duration::from_millis(5)).await;
+            }
+            sleep(Duration::from_millis(20)).await;
+            assert!(
+                answer.borrow().is_none(),
+                "answered before the nodes held it"
+            );
+            let now = m.published.borrow().epoch;
+            let t = Instant::now();
+            for d in &up {
+                m.acked.borrow_mut().insert(*d, now);
+            }
+            while answer.borrow().is_none() {
+                sleep(Duration::from_millis(5)).await;
+            }
+            assert!(t.elapsed() < lease / 2, "{:?}", t.elapsed());
+            assert_eq!(answer.borrow_mut().take().unwrap(), Ok(now));
+            // Unchanged: answered at once.
+            let t = Instant::now();
+            assert_eq!(bind(vec![1, 2]).recv().await.unwrap(), Ok(now));
+            assert!(t.elapsed() < lease / 2, "{:?}", t.elapsed());
         });
     }
 
