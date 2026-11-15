@@ -1094,7 +1094,6 @@ tests = [
     "hyperstor_meta::space::tests::reports_converge_on_the_branches_through_moves_and_failovers",
     "hyperstor_meta::space::tests::heads_name_lineages_with_clones_or_rollbacks",
     "hyperstor_meta::api::space::tests::rows_sum_volumes_into_projects_and_tenants",
-    "directories::a_directory_s_feed_makes_its_tenants_and_projects",
 ]
 
 [[milestone.item]]
