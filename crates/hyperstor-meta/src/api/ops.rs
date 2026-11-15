@@ -832,14 +832,18 @@ impl Runner {
     /// set to `purge`, a purge of its oldest item, one at a time per pool,
     /// skipping an item whose purge failed in the last hour. A pool set
     /// to `keep` (the default) keeps its trash and stays full. `busy` has
-    /// the purge last started for each pool and when the pool last had a
-    /// purge running: the next waits 10 s, two device reports, so the
-    /// space a purge freed is counted first. The purge started is followed
-    /// by its target, as its item leaves the trash before it finishes.
+    /// the purge last started for each pool and when this purger first saw
+    /// it finished: the next waits 10 s from then, two device reports, so
+    /// the space a purge freed is counted first. The wait starts when the
+    /// finish is seen, not when the purge was last seen running, since a
+    /// pass can take longer than 10 s, or return early when listing the
+    /// trash fails, while the purge's deletes keep the devices busy. The
+    /// purge started is followed by its target, as its item leaves the
+    /// trash before it finishes.
     async fn purge_for_full(
         &self,
         settings: Option<&Arc<crate::settings::Settings>>,
-        busy: &mut std::collections::BTreeMap<u32, (std::time::Instant, String)>,
+        busy: &mut std::collections::BTreeMap<u32, (String, Option<std::time::Instant>)>,
     ) {
         let Some(settings) = settings else {
             return;
@@ -870,15 +874,19 @@ impl Runner {
                 .iter()
                 .find(|(_, (v, e))| running.contains(&purge_target(*v, *e)))
             {
-                busy.insert(pool, (std::time::Instant::now(), purge_target(*v, *e)));
+                busy.insert(pool, (purge_target(*v, *e), None));
                 continue;
             }
-            if let Some((t, target)) = busy.get_mut(&pool) {
+            if let Some((target, finished)) = busy.get_mut(&pool) {
                 if running.contains(target) {
-                    *t = std::time::Instant::now();
+                    *finished = None;
                     continue;
                 }
-                if t.elapsed() < Duration::from_secs(10) {
+                if finished
+                    .get_or_insert_with(std::time::Instant::now)
+                    .elapsed()
+                    < Duration::from_secs(10)
+                {
                     continue;
                 }
             }
@@ -906,10 +914,7 @@ impl Runner {
                         .map(|i| i.tenant()),
                 )
                 .await;
-            busy.insert(
-                pool,
-                (std::time::Instant::now(), purge_target(volume, epoch)),
-            );
+            busy.insert(pool, (purge_target(volume, epoch), None));
         }
     }
 
