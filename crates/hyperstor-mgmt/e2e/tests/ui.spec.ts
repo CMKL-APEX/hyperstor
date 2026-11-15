@@ -1,6 +1,7 @@
 // The web UI in a browser against a real cluster (global-setup.ts): the
 // first administrator's claim, roles, the pages and their actions,
-// tokens shown once, single sign-on, and logging out. In order: one
+// tokens shown once, single sign-on, logging out, and tenancy (realms,
+// tenants, projects, and a fake glidex directory's records and offers). In order: one
 // cluster, its people and volumes carry over.
 import { expect, test, type Page } from "@playwright/test";
 
@@ -489,7 +490,7 @@ test("someone without roles sees nothing to do", async ({ page }) => {
 
 test("single sign-on with the identity provider", async ({ page }) => {
   await page.goto(`${url()}/volumes`);
-  await page.getByRole("button", { name: /Sign in with/ }).click();
+  await page.getByRole("button", { name: "Sign in with your identity provider" }).click();
   await expect(page.getByTestId("whoami")).toContainText(process.env.HS_SSO!);
   // Back where the login began.
   await expect(page).toHaveURL(/\/volumes$/);
@@ -532,7 +533,7 @@ test("a browser holds two accounts and switches between them", async ({ page }) 
   await page.getByRole("menuitem", { name: "Add another account" }).click();
   // The login page, with ann's account to continue as.
   await expect(page.getByTestId("held-accounts")).toContainText("Continue as ann");
-  await page.getByRole("button", { name: /Sign in with/ }).click();
+  await page.getByRole("button", { name: "Sign in with your identity provider" }).click();
   await expect(page.getByTestId("whoami")).toContainText(process.env.HS_SSO!);
   await page.getByRole("button", { name: "Accounts" }).click();
   await expect(page.getByTestId("account-ann")).toBeVisible();
@@ -547,4 +548,278 @@ test("a browser holds two accounts and switches between them", async ({ page }) 
   await page.getByRole("menuitem", { name: "Sign out of all accounts" }).click();
   await expect(page.getByLabel("Username")).toBeVisible();
   await expect(page.getByTestId("held-accounts")).toHaveCount(0);
+});
+
+/** The tenancy page's tab `name`. */
+async function tenancy(page: Page, tab: string) {
+  await page.getByRole("link", { name: "Tenancy" }).click();
+  await page.getByRole("tab", { name: tab }).click();
+}
+
+/** A delete confirmed by typing `name`: refused until it is typed. */
+async function typedDelete(page: Page, name: string) {
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("button", { name: "Delete" })).toBeDisabled();
+  await dialog.getByLabel("Confirm name").fill(name);
+  await dialog.getByRole("button", { name: "Delete" }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
+test("tenancy: realms are made, bound and deleted", async ({ page }) => {
+  await logIn(page, "ann");
+  await tenancy(page, "Realms");
+  await expect(page.getByTestId("tenancy-realm-default")).toContainText("can't be deleted");
+  await expect(page.getByTestId("tenancy-realm-default").getByRole("button", { name: "Delete" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Create realm" }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel(/^Name/).fill("ui-realm");
+  await dialog.getByLabel(/Description/).fill("made in the browser");
+  await expect(dialog).toContainText("hyperstorctl realm create --name ui-realm --description 'made in the browser'");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  const realm = page.getByTestId("tenancy-realm-ui-realm");
+  await expect(realm).toContainText("made in the browser");
+  // A pool listed for it, then for every realm again.
+  await page.getByTestId("tenancy-pool-1").getByRole("button", { name: "Change" }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("checkbox", { name: "realm ui-realm" }).check();
+  await expect(dialog).toContainText("hyperstorctl realm pool --pool 1 --realm ui-realm");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  // Its volumes of other realms keep it from being ui-realm's alone: the
+  // server's reason shows.
+  await expect(dialog.getByRole("alert")).toContainText("pool_in_use");
+  await dialog.getByRole("checkbox", { name: "realm default" }).check();
+  await dialog.getByRole("checkbox", { name: "realm acme" }).check();
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId("tenancy-pool-1")).toContainText("ui-realm");
+  await expect(realm).toContainText("vol");
+  // The realm can't go while a pool names it: the server's reason shows.
+  await realm.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByLabel("Confirm name").fill("ui-realm");
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  await page.getByTestId("tenancy-pool-1").getByRole("button", { name: "Change" }).click();
+  dialog = page.getByRole("dialog");
+  for (const r of ["ui-realm", "default", "acme"]) await dialog.getByRole("checkbox", { name: `realm ${r}` }).uncheck();
+  await expect(dialog).toContainText("hyperstorctl realm pool --pool 1 --realm any");
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("tenancy-pool-1")).toContainText("every realm");
+  // A host and a management client bound, then unbound (any, D327).
+  for (const [what, name] of [
+    ["host", "ui-host"],
+    ["client", "ui-client"],
+  ]) {
+    await page.getByRole("button", { name: what === "host" ? "Bind a host" : "Bind a client" }).click();
+    dialog = page.getByRole("dialog");
+    await dialog.getByLabel(what === "host" ? /^Host/ : /^Client/).fill(name);
+    await dialog.getByRole("checkbox", { name: "realm ui-realm" }).check();
+    await expect(dialog).toContainText(`hyperstorctl realm ${what} --${what} ${name} --realm ui-realm`);
+    await dialog.getByRole("button", { name: "Save" }).click();
+    const row = page.getByTestId(`tenancy-${what}-${name}`);
+    await expect(row).toContainText("ui-realm");
+    await expect(realm).toContainText(name);
+    await row.getByRole("button", { name: "Unbind" }).click();
+    await expect(page.getByRole("dialog")).toContainText(`--realm any`);
+    await page.getByRole("dialog").getByRole("button", { name: "Unbind" }).click();
+    await expect(row).toHaveCount(0);
+  }
+  // Deleted once nothing names it, after its name is typed.
+  await realm.getByRole("button", { name: "Delete" }).click();
+  await typedDelete(page, "ui-realm");
+  await expect(realm).toHaveCount(0);
+});
+
+test("tenancy: tenants and projects are made, renamed, moved and deleted", async ({ page }) => {
+  await logIn(page, "ann");
+  await tenancy(page, "Tenants & projects");
+  // lab's volumes count to it and its projects (D335).
+  await expect(page.getByTestId("space-tenant-lab")).toContainText("head", { timeout: 30_000 });
+  await expect(page.getByTestId("space-project-lab-web")).toContainText("head");
+  // acme's tenant 7, used before records, may be named.
+  await expect(page.getByTestId("tree-bare-7")).toBeVisible();
+  await page.getByRole("button", { name: "Create tenant" }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel(/^Name/).fill("ui-t");
+  await expect(dialog).toContainText("hyperstorctl tenant create --name ui-t");
+  await dialog.getByRole("button", { name: "Create" }).click();
+  await expect(page.getByTestId("tree-project-ui-t-default")).toBeVisible();
+  await page.getByTestId("tree-tenant-ui-t").getByRole("button", { name: "Rename" }).click();
+  await page.getByRole("dialog").getByLabel("New name").fill("ui-t2");
+  await page.getByRole("dialog").getByRole("button", { name: "Rename" }).click();
+  const tenant = page.getByTestId("tree-tenant-ui-t2");
+  await expect(tenant).toBeVisible();
+  // A default project keeps its name and tenant.
+  await expect(page.getByTestId("tree-project-ui-t2-default").getByRole("button")).toHaveCount(0);
+  await tenant.getByRole("button", { name: "New project" }).click();
+  await page.getByRole("dialog").getByLabel(/^Name/).fill("ui-p");
+  await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
+  await page.getByTestId("tree-project-ui-t2-ui-p").getByRole("button", { name: "Rename" }).click();
+  await page.getByRole("dialog").getByLabel("New name").fill("ui-p2");
+  await page.getByRole("dialog").getByRole("button", { name: "Rename" }).click();
+  // Moved to lab, as an operation followed here (D303).
+  await page.getByTestId("tree-project-ui-t2-ui-p2").getByRole("button", { name: "Move" }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByLabel("To tenant").selectOption({ label: "lab (realm default)" });
+  await expect(dialog).toContainText(/hyperstorctl project move --project \d+ --to \d+/);
+  await dialog.getByRole("button", { name: "Move" }).click();
+  await expect(page.getByTestId(/^tenancy-op-/)).toContainText("done", { timeout: 30_000 });
+  await expect(page.getByTestId("tree-project-lab-ui-p2")).toBeVisible();
+  await expect(page.getByTestId("tree-project-ui-t2-ui-p2")).toHaveCount(0);
+  await page.getByTestId("tree-project-lab-ui-p2").getByRole("button", { name: "Delete" }).click();
+  await typedDelete(page, "ui-p2");
+  await expect(page.getByTestId("tree-project-lab-ui-p2")).toHaveCount(0);
+  // In another realm, a tenant can't be deleted: the reason shows.
+  await tenant.getByRole("button", { name: "Realm", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByRole("combobox").selectOption("acme");
+  await expect(dialog).toContainText(/hyperstorctl realm tenant --tenant \d+ --realm acme/);
+  await dialog.getByRole("button", { name: "Move" }).click();
+  await expect(dialog).toHaveCount(0);
+  await tenant.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByLabel("Confirm name").fill("ui-t2");
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  await tenant.getByRole("button", { name: "Realm", exact: true }).click();
+  await page.getByRole("dialog").getByRole("combobox").selectOption("default");
+  await page.getByRole("dialog").getByRole("button", { name: "Move" }).click();
+  await tenant.getByRole("button", { name: "Delete" }).click();
+  await typedDelete(page, "ui-t2");
+  await expect(tenant).toHaveCount(0);
+});
+
+test("tenancy: a directory's records are read-only, offers are shown once and revoked", async ({ page }) => {
+  // ui-e2e-cluster's fake directory uni: its tenant physics and project
+  // optics, made by its feed.
+  await logIn(page, "ann");
+  await tenancy(page, "Tenants & projects");
+  const physics = page.getByTestId("tree-tenant-physics");
+  await expect(physics).toContainText("from directory uni");
+  await expect(physics.getByRole("link", { name: "open in glidex" })).toHaveAttribute("href", /\/tenants\/t1$/);
+  for (const b of ["Rename", "Realm", "Delete"]) await expect(physics.getByRole("button", { name: b, exact: true })).toHaveCount(0);
+  const optics = page.getByTestId("tree-project-physics-optics");
+  await expect(optics.getByRole("link", { name: "open in glidex" })).toHaveAttribute("href", /\/projects\/p1$/);
+  await expect(optics.getByRole("button")).toHaveCount(0);
+  // The directory: its realm, feed and staleness limit (D324).
+  await page.getByRole("tab", { name: "Directories" }).click();
+  const uni = page.getByTestId("directory-uni");
+  await expect(uni).toContainText("realm uni");
+  await expect(uni).toContainText("feed fresh");
+  await expect(page.getByTestId("staleness-uni")).toContainText("60 minutes");
+  await page.getByTestId("staleness-uni").getByRole("button", { name: "Change" }).click();
+  await page.getByRole("dialog").getByLabel(/^Minutes/).fill("30");
+  await expect(page.getByRole("dialog")).toContainText("--minutes 30");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("staleness-uni")).toContainText("30 minutes");
+  // The operator tenant, named then cleared.
+  await page.getByTestId("trusted-physics").getByRole("button", { name: "Make operator" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Make operator" }).click();
+  await expect(page.getByTestId("operator-tenant")).toContainText("physics");
+  await page.getByTestId("operator-tenant").getByRole("button", { name: "Clear" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Clear" }).click();
+  await expect(page.getByTestId("operator-tenant")).toContainText("none");
+  // An offer: its token shown once, never kept by the page.
+  const issuer = ((await uni.locator("span.font-medium").first().textContent()) ?? "").trim();
+  await page.getByRole("button", { name: "Make an offer" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel(/^glidex tenant/).fill("chem");
+  await dialog.getByLabel(/^Directory/).fill(issuer);
+  // The pin is mgmt's own certificate's, from mgmt (D343).
+  await expect(dialog.getByLabel("Pin")).toHaveValue(/^[0-9a-f]{64}$/);
+  const pin = await dialog.getByLabel("Pin").inputValue();
+  await expect(dialog).toContainText(`hyperstorctl admission offer --tenant chem --directory ${issuer} --url https://`);
+  await dialog.getByRole("button", { name: "Make" }).click();
+  await expect(page.getByTestId("offer-made")).toContainText(pin);
+  const secret = page.getByRole("dialog").getByLabel("offer token");
+  await expect(secret).toHaveAttribute("type", "password");
+  const token = await secret.inputValue();
+  expect(token).toMatch(/^gxo_/);
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  const offer = page.getByTestId("offer-chem");
+  await expect(offer).toContainText("open");
+  expect(await page.content()).not.toContain(token);
+  expect(page.url()).not.toContain(token);
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }));
+  expect(stored).not.toContain(token);
+  await offer.getByRole("button", { name: "Revoke" }).click();
+  await expect(page.getByRole("dialog")).toContainText("hyperstorctl admission revoke --id");
+  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await expect(offer).toContainText("revoked");
+  await expect(offer.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+  // Another pin, pasted, is the offer's instead.
+  await page.getByRole("button", { name: "Make an offer" }).click();
+  await dialog.getByLabel(/^glidex tenant/).fill("bio");
+  await dialog.getByLabel(/^Directory/).fill(issuer);
+  await dialog.getByRole("button", { name: "Use another" }).click();
+  await dialog.getByLabel(/^SHA-256/).fill("AB:".repeat(31) + "AB");
+  await expect(dialog).toContainText(`--pin ${"AB:".repeat(31)}AB`);
+  await dialog.getByRole("button", { name: "Make" }).click();
+  await expect(page.getByTestId("offer-made")).toContainText("ab".repeat(32));
+  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await page.getByTestId("offer-bio").getByRole("button", { name: "Revoke" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+  await expect(page.getByTestId("offer-bio")).toContainText("revoked");
+});
+
+test("tenancy: a viewer sees realms and tenants with no actions", async ({ page }) => {
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("checkbox", { name: "viewer" }).check();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("viewer");
+  await page.getByRole("button", { name: "Log out" }).click();
+  await logIn(page, "bob");
+  await tenancy(page, "Realms");
+  await expect(page.getByTestId("tenancy-realm-acme")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Directories" })).toHaveCount(0);
+  for (const b of ["Create realm", "Delete", "Change", "Unbind", "Bind a host", "Bind a client"])
+    await expect(page.getByRole("button", { name: b, exact: true })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Tenants & projects" }).click();
+  await expect(page.getByTestId("tree-tenant-lab")).toBeVisible();
+  for (const b of ["Create tenant", "New project", "Rename", "Realm", "Move", "Delete", "Name it"])
+    await expect(page.getByRole("button", { name: b, exact: true })).toHaveCount(0);
+});
+
+test("tenancy: a security administrator alone reads realms and tenants", async ({ page }) => {
+  // bob: security-admin, and no read role (I413).
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("checkbox", { name: "viewer" }).uncheck();
+  await page.getByRole("checkbox", { name: "security-admin" }).check();
+  await page.getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("security-admin");
+  await expect(page.getByTestId("person-bob")).not.toContainText("viewer");
+  await page.getByRole("button", { name: "Log out" }).click();
+  await logIn(page, "bob");
+  await tenancy(page, "Realms");
+  await expect(page.getByTestId("tenancy-realm-acme")).toBeVisible();
+  await expect(page.getByTestId("tenancy-pool-1")).toBeVisible();
+  // Hosts and clients are theirs to bind; realms and pools aren't.
+  await expect(page.getByRole("button", { name: "Bind a host" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create realm" })).toHaveCount(0);
+  await expect(page.getByTestId("tenancy-pool-1").getByRole("button", { name: "Change" })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Tenants & projects" }).click();
+  await expect(page.getByTestId("tree-tenant-lab")).toBeVisible();
+  await expect(page.getByTestId("tree-tenant-lab").getByRole("button", { name: "Realm", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create tenant" })).toHaveCount(0);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Directories" }).click();
+  await expect(page.getByTestId("directory-uni")).toBeVisible();
+});
+
+test("tenancy: ending a directory's trust unlinks its records", async ({ page }) => {
+  await logIn(page, "ann");
+  await tenancy(page, "Directories");
+  await page.getByTestId("trusted-physics").getByRole("button", { name: "End trust" }).click();
+  await expect(page.getByRole("dialog")).toContainText(/hyperstorctl admission end --directory \S+ --tenant physics/);
+  await page.getByRole("dialog").getByRole("button", { name: "End trust" }).click();
+  // Its last tenant: the directory is no longer trusted.
+  await expect(page.getByTestId("directory-uni")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Tenants & projects" }).click();
+  const physics = page.getByTestId("tree-tenant-physics");
+  await expect(physics).not.toContainText("from directory");
+  await expect(physics.getByRole("button", { name: "Rename" })).toBeVisible();
 });

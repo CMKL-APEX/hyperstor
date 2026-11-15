@@ -42,6 +42,36 @@ pub struct Web {
     pub names: Arc<std::sync::RwLock<Vec<String>>>,
     /// The Tailscale names a certificate is held for now, with `--tailscale`.
     pub held: Option<Arc<Held>>,
+    /// `web.crt` as served now: what directories pin (D343).
+    pub slot: Arc<glidex_tls::CertSlot>,
+}
+
+/// The SHA-256 a directory pins for mgmt at `url` (`https://host[:port]`,
+/// the offer's address, D312, D343): of `cert`, the leaf mgmt serves from
+/// `--web-tls` now, read from mgmt itself and never from what a browser
+/// was served, which may be a proxy's. A host given its Tailscale
+/// certificate (`held`), or an mgmt with no certificate of its own,
+/// needs the pin given.
+pub fn offer_pin(url: &str, cert: Option<&[u8]>, held: Option<&Held>) -> Result<String, String> {
+    let uri: http::Uri = url
+        .parse()
+        .map_err(|_| format!("{url:?} isn't an https:// address"))?;
+    let host = match (uri.scheme_str(), uri.host()) {
+        (Some("https"), Some(h)) => h.trim_matches(['[', ']']),
+        _ => return Err(format!("{url:?} isn't an https:// address")),
+    };
+    if held.is_some_and(|h| h.contains(host)) {
+        return Err(format!(
+            "{host} is served its Tailscale certificate, renewed by Tailscale: give the pin"
+        ));
+    }
+    let cert = cert
+        .ok_or("this hyperstor-mgmt serves no certificate of its own (--web-tls): give the pin")?;
+    Ok(ring::digest::digest(&ring::digest::SHA256, cert)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
 }
 
 /// The server config for `dir`'s certificate (and the Tailscale ones from
@@ -53,6 +83,7 @@ pub fn start(
     proxy_ca: Option<&Path>,
 ) -> Result<Web, String> {
     let file = FileCert::load(&dir.join("web.crt"), &dir.join("web.key"))?;
+    let slot = file.slot.clone();
     let resolver = Resolver::new(file.slot.clone());
     let names = Arc::new(std::sync::RwLock::new(dns_names(&file)));
     let seen = names.clone();
@@ -75,6 +106,7 @@ pub fn start(
         config,
         names,
         held,
+        slot,
     })
 }
 
@@ -166,5 +198,34 @@ mod tests {
             .body(())
             .unwrap();
         assert!(to_https(&odd).headers().get("location").is_none());
+    }
+
+    /// An offer's pin is the SHA-256 of mgmt's own certificate, for an
+    /// https address only, and asked for where mgmt has none (D343).
+    #[test]
+    fn an_offer_pins_mgmt_s_own_certificate() {
+        let der = b"a certificate's DER";
+        let want: String = ring::digest::digest(&ring::digest::SHA256, der)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        for url in [
+            "https://mgmt.example:8852",
+            "https://192.0.2.10",
+            "https://[2001:db8::1]:8852",
+        ] {
+            assert_eq!(
+                offer_pin(url, Some(der), None).as_deref(),
+                Ok(want.as_str()),
+                "{url}"
+            );
+        }
+        assert_eq!(want.len(), 64);
+        for bad in ["http://mgmt.example", "mgmt.example", "", "https://"] {
+            assert!(offer_pin(bad, Some(der), None).is_err(), "{bad}");
+        }
+        let none = offer_pin("https://mgmt.example", None, None).unwrap_err();
+        assert!(none.contains("give the pin"), "{none}");
     }
 }

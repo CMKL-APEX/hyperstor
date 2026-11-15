@@ -371,6 +371,16 @@ is the authority for the records above:
   refusing to delete it is a glidex follow-up, as glidex refuses
   deleting a tenant that still holds resources);
 - a project whose tenant changes in the feed starts a transfer (below);
+- what the feed makes is the directory's here (D342): renaming, moving
+  or deleting a linked project, and renaming, deleting or changing the
+  realm of a trusted directory's tenant, are refused to every caller,
+  `hyperstorctl` and the web UI alike (`from_directory`), naming the
+  directory; the feed's own steps take another path. A record the feed
+  unlinks (D316), or of a directory whose trust ended, is local and
+  changed here. A project made here in a directory's tenant has no
+  glidex id, so it is local; making one with a glidex id there, or a
+  tenant naming a trusted directory, is refused, as the feed makes
+  those;
 - glidex's datastore driver creates each disk in its project
   (`--project`), and the map service refuses a project outside the
   realms that glidex cluster's identity is bound to (D311), which a bare

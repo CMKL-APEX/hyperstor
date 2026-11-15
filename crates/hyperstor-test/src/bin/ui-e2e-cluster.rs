@@ -7,11 +7,15 @@
 //! the made-up PAM helper ([`hyperstor_test::start_authd`]) and a made-up
 //! identity provider that logs any browser in as `dee@example.com`. It
 //! realm `acme` holding tenant 7, and tenant `lab` with a volume in its
-//! default project and one in its project `web`. It
+//! default project and one in its project `web`; and a fake glidex
+//! directory `uni` (glidex-trust's) whose tenant `physics`, with its
+//! project `optics`, redeemed an offer, so the tenancy page shows records
+//! linked to a directory. It
 //! prints one JSON line: `url`, the claim code, the people's password,
 //! and the provider's person; then runs until its standard input closes,
 //! and removes everything.
 
+use glidex_trust::fake::FakeDirectory;
 use hyperstor_test::*;
 use std::io::Read;
 
@@ -90,6 +94,38 @@ fn main() {
         ])
         .ok();
     }
+    // A trusted directory: its tenant and project made here by its feed
+    // (D306), linked; HS_TRUST_POLL_MS (global-setup.ts) pulls it fast.
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = rt.block_on(FakeDirectory::start("uni")).unwrap();
+    let physics = dir.add_tenant("t1", "physics");
+    dir.add_project("p1", "t1", "Optics");
+    let offer = c
+        .ctl(&[
+            "admission",
+            "offer",
+            "--tenant",
+            "physics",
+            "--directory",
+            dir.issuer(),
+            "--url",
+            &c.mgmt_url(),
+        ])
+        .ok();
+    let token = offer
+        .out
+        .split_whitespace()
+        .find(|w| w.starts_with("gxo_"))
+        .unwrap_or_else(|| panic!("{}", offer.out))
+        .to_string();
+    rt.block_on(dir.redeem(&token, &physics)).unwrap();
+    wait_for("the directory's project", 60, || {
+        c.ctl(&["tenant", "list"]).ok().has("optics").then_some(())
+    });
     let claim = c.claim_code();
     println!(
         "{}",
@@ -104,4 +140,6 @@ fn main() {
     // Until the tests are done.
     let _ = std::io::stdin().read_to_end(&mut Vec::new());
     drop(c);
+    drop(dir);
+    drop(rt);
 }

@@ -296,6 +296,9 @@ must not leave your hands off a tunnel.
 
 ### Realms
 
+The web UI's [Tenancy](managing.md#tenancy) page does what the commands
+below do.
+
 A realm is a group of tenants that looks like a separate S3 service:
 its own gateways (and so its own name and certificate), keys and pools,
 on the same cluster and, if you like, the same drives. Every tenant is
@@ -353,6 +356,8 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s
 
 ### Tenants and projects
 
+The web UI's [Tenancy](managing.md#tenancy) page manages them too.
+
 A tenant is an organization's account: its bucket names, its S3 keys,
 its realm. A project, under a tenant, owns volumes and buckets, and is
 where space will be counted. Every tenant has a project `default`, which
@@ -395,6 +400,9 @@ hyperstorctl s3 key create --tenant 43 --project 7    # its new buckets go in pr
   The move can't be cancelled; if a bucket can't move it is undone.
 
 ### glidex directories
+
+The web UI's [Tenancy](managing.md#tenancy) page lists trusted
+directories and offers, and makes and revokes offers.
 
 A glidex directory's tenants can have their storage here, as they have
 glidex clusters: the cluster trusts the directory through glidex's own

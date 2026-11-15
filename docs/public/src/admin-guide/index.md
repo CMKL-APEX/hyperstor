@@ -33,7 +33,7 @@ devices, pools and networks can be added and removed while it runs.
 |---|---|
 | [Installation](installation.md) | Requirements, building, a trial cluster, joining hosts with tokens, hosts that run VMs, S3 gateways and realms |
 | [Upgrading](upgrading.md) | Upgrading a running cluster host by host, what v0.0.8 changes, converting devices to its format, going back |
-| [Managing a cluster](managing.md) | The web UI and logins, health, volumes and VM disks, object storage, the trash, audit, operations, metrics |
+| [Managing a cluster](managing.md) | The web UI and logins, health, volumes and VM disks, object storage, tenancy, the trash, audit, operations, metrics |
 | [Pools and devices](pools-and-devices.md) | Taking devices out and in, adding and removing them, weights, classes, full devices, converting devices, splitting pools, changing their copies, deleting them |
 | [Planning a cluster](planning.md) | Nodes, devices, failure domains, pools, device classes, capacity, networks |
 | [The map service](map-service.md) | Running `hyperstor-meta`, leases, members, making a host a member or storage only, backups and recovery |

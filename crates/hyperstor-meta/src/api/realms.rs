@@ -636,6 +636,10 @@ impl RealmService for Api {
             if req.tenant == 0 {
                 return Err(invalid("a tenant is 1 or more"));
             }
+            // A directory's tenants are in its realm (D342); the feed puts
+            // them there by its own path.
+            self.not_directory_owned(&self.tenancy().await?, req.tenant, None)
+                .await?;
             let realm = self.realm_id(req.realm).await?;
             let tenant = req.tenant;
             // Checked again in the write, against the realms as they are

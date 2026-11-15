@@ -2004,6 +2004,21 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once, pin from mgmt's own certificate); a directory's records refused to every caller; GetSpace without volume rows"
+spec = ["19-administration.md §23.7", "20-tenants.md §24.8", "20-tenants.md §24.9", "D303", "D306", "D324", "D327", "D341", "D342", "D343", "I413"]
+status = "done"
+tests = [
+    "browser::tenancy_realms_are_made_bound_and_deleted",
+    "browser::tenancy_tenants_and_projects_are_made_renamed_moved_and_deleted",
+    "browser::tenancy_a_directory_s_records_are_read_only_offers_are_shown_once_and_revoked",
+    "browser::tenancy_a_viewer_sees_realms_and_tenants_with_no_actions",
+    "browser::tenancy_a_security_administrator_alone_reads_realms_and_tenants",
+    "hyperstor_meta::api::tenants::tests::a_trusted_directory_s_records_are_its_own",
+    "hyperstor_mgmt::web::tests::an_offer_pins_mgmt_s_own_certificate",
+    "browser::tenancy_ending_a_directory_s_trust_unlinks_its_records",
+]
+
+[[milestone.item]]
 what = "glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311)"
 spec = ["19-administration.md §23.12", "D311", "I396", "I397"]
 status = "done"

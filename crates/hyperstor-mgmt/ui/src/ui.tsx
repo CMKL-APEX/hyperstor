@@ -150,6 +150,7 @@ export function ActionDialog({
   run,
   onClose,
   cli,
+  disabled = false,
   children,
 }: {
   title: string;
@@ -158,6 +159,8 @@ export function ActionDialog({
   run: () => Promise<unknown>;
   onClose: (done: boolean) => void;
   cli?: string;
+  /** The submit button off, as until a typed confirmation matches. */
+  disabled?: boolean;
   children?: ReactNode;
 }) {
   const [busy, setBusy] = useState(false);
@@ -185,7 +188,7 @@ export function ActionDialog({
         {cli && <Cli cmd={cli} />}
         <div className="flex gap-2 justify-end">
           <Button onClick={() => onClose(false)}>Cancel</Button>
-          <Button type="submit" kind={kind} disabled={busy}>
+          <Button type="submit" kind={kind} disabled={busy || disabled}>
             {busy ? "Working..." : submit}
           </Button>
         </div>

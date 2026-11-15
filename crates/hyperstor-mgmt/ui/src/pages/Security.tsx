@@ -50,7 +50,7 @@ function People() {
       <p className="mt-2 text-xs text-slate-500">
         People appear here when they first log in, with no roles. viewer reads; operator also takes devices out and
         in, drains and cancels; storage-admin also manages volumes, snapshots and members; security-admin manages
-        people, tokens, certificates and backups, and nothing else. A role in a realm (storage-admin@acme) reaches
+        people, tokens, certificates and backups, and reads realms and tenants, and nothing else. A role in a realm (storage-admin@acme) reaches
         only that realm&apos;s tenants, volumes, buckets, keys, placements and people&apos;s grants in it.
         {realm && ` Acting in realm ${realm}: these are its grants alone; the others stay.`}
       </p>

@@ -363,6 +363,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Operations | running and recent operations with progress | cancel |
 | Networks | the cluster's networks (kind, trust, match, endpoints on each; 26-networks.md, D284), each device's endpoints and whether peers reach them (D210, D215), the nodes' ports with their role, state, speed, traffic and weight (D237) | add, change and remove a network, set a device's endpoints, set a port's role |
 | Members | the map service's members: voter or learner, the leader, the term and each member's Raft state in the leader's view (D281: in step, behind, no reply), the storage nodes on its host (D282) | add, remove |
+| Tenancy (I413) | in the cluster's pages only, three tabs: **Realms**, each with its tenants, pools, bound hosts and management clients, and each pool's realms (20-tenants.md §24.8); **Tenants & projects**, a tree of realm, tenant and project with each one's space (head, snapshots, trash, one copy; D335), and a badge with a link to the glidex directory a record is linked to; **Directories** (security administrators), the trusted directories with their realm, feed age, staleness limit (D324) and operator tenant, and the offers (§23.12) | create and delete realms (typed confirmation; `default` can't go), bind pools (storage administrators), hosts and clients (security administrators; none ticked unbinds, D327); create, rename and delete tenants and projects (typed confirmation), name a tenant used before records, put a tenant in a realm (security administrators), move a project to another tenant as an operation followed in place (D303); a linked record's name and membership are its directory's, so read-only here; set the staleness limit and the operator tenant, end a trust, make an offer (its token shown once, never kept) and revoke one |
 | Trash | deleted volumes and snapshots with their purge time | restore, purge now |
 | Security | users, roles, tokens, site policies, certificates | grant, revoke, rotate intermediate |
 | Audit | every mutation (§23.9.4) | filter, export |
@@ -459,7 +460,7 @@ repository (`glidex-auth`) and taken as a pinned git dependency, as
   | `viewer` | read everything except secrets and audit |
   | `operator` | viewer, plus drain, out, in, snapshots, operations, restore from trash |
   | `storage-admin` | operator, plus pools, volumes, exports, QoS, purge |
-  | `security-admin` | users, roles, tokens, site policies, certificates, audit |
+  | `security-admin` | users, roles, tokens, site policies, certificates, audit; reads realms and tenants (D341) |
 
   Storage and security are separate roles so no one administers data
   and covers their own tracks by default; a site may grant both.
@@ -596,11 +597,12 @@ cluster, through glidex's own handshake and feed:
 | Step | glidex (19-tenancy.md) | hyperstor |
 |---|---|---|
 | Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the map service's leader on first use (I380), kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
-| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate |
+| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate; the web UI's Tenancy page makes one too, and an offer through mgmt naming no pin takes the SHA-256 of mgmt's own `--web-tls` certificate, never what a browser was served (D343) |
 | Redeem | the tenant's admin runs `gxctl tenant opt-in --offer` at the directory (D65) | unchanged: the directory redeems at mgmt, which pins the directory's keys; the first redeemed offer of a directory makes its realm (or links the one named) |
 | Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica, with the offers and trust records, as rows of the map service's settings table (`trust/…`); the map service checks redeems and ends, which mgmt relays (D315); every mgmt reads them |
 | Reports | admission, cap, counts of VMs, disks, networks (D70) | admission, caps per pool, counts of volumes, buckets and bytes per project; glidex shows them on the tenant's page (a glidex change) |
 | Ending | either side ends it (D66) | the same; the realm and its tenants stay, unlinked, until an operator removes them |
+| Records | the directory owns its tenants' and projects' names and membership | the map service refuses renaming, moving, a tenant's realm and deleting a trusted directory's tenant or linked project to every caller (`from_directory`, D342); the feed changes them by its own path; unlinked, they are local |
 
 The operator's own directory is trusted the same way when the operator
 takes the cluster over (`hyperstorctl cluster set-operator`, as glidex's

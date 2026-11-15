@@ -74,10 +74,10 @@ namespace Hyperstor {
   action "S3Service.GetS3Bucket" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
-  action "RealmService.ListRealms" in [Action::"read"] appliesTo {
+  action "RealmService.ListRealms" in [Action::"read", Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
-  action "TenantService.ListTenants" in [Action::"read"] appliesTo {
+  action "TenantService.ListTenants" in [Action::"read", Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "Dashboard.Read" in [Action::"read"] appliesTo {

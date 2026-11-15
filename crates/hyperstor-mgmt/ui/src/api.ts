@@ -20,6 +20,7 @@ import {
   S3Service,
   TenantService,
   TokenService,
+  TrustService,
 } from "./gen/hyperstor/v1/admin_pb";
 
 /** A refusal: the HTTP status, the reason (`reauth_required`,
@@ -187,6 +188,8 @@ export const audit = client(AuditService);
 export const s3 = client(S3Service);
 export const realms = client(RealmService);
 export const tenants = client(TenantService);
+/** Trust in glidex directories (D306): offers, directories, the operator. */
+export const trust = client(TrustService);
 /** Every realm the person may see, not only the one they act in. */
 export const allRealms = client(RealmService, anyRealm);
 
@@ -417,5 +420,9 @@ export interface NodeMetrics {
   up: boolean;
   samples: [string, Record<string, string>, number][];
 }
+
+/** The pin an offer for `url` takes: the SHA-256 of the certificate this
+ * mgmt serves itself (D343), never what the browser was served. */
+export const offerPin = (url: string) => call<{ pin: string }>("POST", "/auth/offer-pin", { url }).then((r) => r.pin);
 
 export const metrics = () => call<{ nodes: NodeMetrics[] }>("GET", "/api/metrics").then((r) => r.nodes);

@@ -34,6 +34,7 @@ import Security from "./pages/Security";
 import Trash from "./pages/Trash";
 import ObjectStorage from "./pages/ObjectStorage";
 import Audit from "./pages/Audit";
+import Tenancy from "./pages/Tenancy";
 
 /** Where an account comes from, as people know it. */
 function accountFrom(a: Account): string {
@@ -111,6 +112,7 @@ const PAGES = [
   ["/operations", "Operations"],
   ["/networks", "Networks"],
   ["/members", "Members"],
+  ["/tenancy", "Tenancy"],
   ["/security", "Security"],
   ["/audit", "Audit"],
 ] as const;
@@ -350,6 +352,7 @@ function Shell() {
           <Route path="/operations" element={<Operations />} />
           <Route path="/networks" element={<Networks />} />
           <Route path="/members" element={<Members />} />
+          <Route path="/tenancy" element={<Tenancy />} />
           <Route path="/security" element={<Security />} />
           <Route path="/audit" element={<Audit />} />
           <Route path="*" element={<Navigate to="/" replace />} />
