@@ -55,6 +55,9 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
     unsafe {
         std::env::set_var("HS_TRUST_POLL_MS", "300");
         std::env::set_var("HS_TRUST_REPORT_MS", "1000");
+        // Space walked and the volumes' catalog read every 300 ms (D335).
+        std::env::set_var("HS_PG_USAGE_MS", "300");
+        std::env::set_var("HS_SPACE_CATALOG_MS", "300");
     }
     let c = Cluster::all_in_one("directories", 3);
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -161,22 +164,56 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
     // A volume in a project; the directory deletes the project: kept,
     // unlinked.
     let api_s = api.to_string();
-    c.ctl(&[
-        "create-volume",
-        "--size",
-        "1M",
-        "--name",
-        "disk",
-        "--project",
-        &api_s,
-    ])
-    .ok();
-    // Reports carry its storage (glidex D85).
+    let made = c
+        .ctl(&[
+            "create-volume",
+            "--size",
+            "1M",
+            "--name",
+            "disk",
+            "--project",
+            &api_s,
+        ])
+        .ok();
+    let disk = made.out.split_whitespace().nth(1).unwrap().to_string();
+    // Reports carry its storage (glidex D85): nothing used yet.
     let storage = wait_for("a report with the volume", 30, || {
         let s = dir.cluster(&c.cluster_id)?.storage.get("t1")?.clone();
         (s.volumes == 1).then_some(s)
     });
     assert_eq!(storage.volume_gib, 1);
+    assert_eq!(storage.volume_used_bytes, 0);
+    // The bytes it uses track what is written (D335): 256 KiB, then 256
+    // KiB more elsewhere, then the first 256 KiB again (no more space).
+    let write = |name: &str, seed: u8, offset: &str| {
+        let f = c.scratch.path(name);
+        std::fs::write(&f, hyperstor_test::vhost::pattern(seed, 256 << 10)).unwrap();
+        c.ctl(&[
+            "write-volume",
+            "--id",
+            &disk,
+            "--file",
+            f.to_str().unwrap(),
+            "--offset",
+            offset,
+        ])
+        .ok();
+    };
+    let used = |want: u64| {
+        wait_for(&format!("a report of {want} bytes used"), 30, || {
+            let s = dir.cluster(&c.cluster_id)?.storage.get("t1")?.clone();
+            (s.volume_used_bytes == want).then_some(())
+        })
+    };
+    write("a.raw", 1, "0");
+    used(256 << 10);
+    write("b.raw", 2, "524288");
+    used(512 << 10);
+    write("c.raw", 3, "0");
+    used(512 << 10);
+    let space = c.ctl(&["space"]).ok();
+    assert!(space.has("acme/api-v2"), "{}", space.out);
+    assert!(space.has(&(512u64 << 10).to_string()), "{}", space.out);
     dir.remove_row("projects", "p2");
     wait_for("the project kept, unlinked", 30, || {
         let (_, g) = project(&c, "acme", "api-v2")?;
@@ -200,10 +237,40 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
         .ok();
     rt.block_on(dir.redeem(&token(&offer2), &lab)).unwrap();
     dir.add_project("p3", "t1", "shared");
-    wait_for("project shared", 30, || project(&c, "acme", "shared"));
+    let (shared, _) = wait_for("project shared", 30, || project(&c, "acme", "shared"));
+    // A volume in it, 256 KiB written: acme's until the project moves.
+    let made = c
+        .ctl(&[
+            "create-volume",
+            "--size",
+            "1M",
+            "--name",
+            "lab-disk",
+            "--project",
+            &shared.to_string(),
+        ])
+        .ok();
+    let lab_disk = made.out.split_whitespace().nth(1).unwrap().to_string();
+    let f = c.scratch.path("d.raw");
+    std::fs::write(&f, hyperstor_test::vhost::pattern(4, 256 << 10)).unwrap();
+    c.ctl(&[
+        "write-volume",
+        "--id",
+        &lab_disk,
+        "--file",
+        f.to_str().unwrap(),
+    ])
+    .ok();
+    used(768 << 10);
     dir.add_project("p3", "t2", "shared");
     wait_for("the move", 60, || project(&c, "lab", "shared"));
     assert!(project(&c, "acme", "shared").is_none());
+    // Its counts went with it (§24.9.1).
+    used(512 << 10);
+    wait_for("lab's report with the moved volume", 30, || {
+        let s = dir.cluster(&c.cluster_id)?.storage.get("t2")?.clone();
+        (s.volume_used_bytes == 256 << 10).then_some(())
+    });
 
     // The operator tenant: a tenant of a trusted directory only.
     let local = tenant_id(&c, "local").unwrap().to_string();
@@ -266,8 +333,12 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
     assert!(tenant_id(&c, "acme").is_some());
 
     // Audited: the offers, the redeem and its refusals, the feed's
-    // changes, the ends; never a secret.
-    let audit = c.audit().join("\n");
+    // changes, the ends; never a secret. mgmt notes the end it told after
+    // the directory answered, so a moment after the directory forgot us.
+    let audit = wait_for("the told end audited", 30, || {
+        let a = c.audit().join("\n");
+        a.contains("EndToldDirectory").then_some(a)
+    });
     for op in [
         "CreateOffer",
         "RedeemOffer",

@@ -1084,6 +1084,19 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Space each volume uses, head and snapshot-only bytes apart (each chunk's versions laid over each other in D155's 30 s walk on each primary), summed per project and per tenant in each pool when read, trash and deletes counted until freed, clones' shared blocks to their parent; GetSpace, ListVolumes' rows, hyperstorctl space and volumes, the UI's volumes; reports to glidex directories send volume_used_bytes from them"
+spec = ["20-tenants.md §24.4", "10-volumes.md §10.5", "D335", "D336", "D337", "D338", "D339", "I404", "I405", "I406", "I407"]
+status = "done"
+tests = [
+    "cluster::space_counts_match_a_recount",
+    "hyperstor_daemon::space::tests::the_walk_matches_a_recount_block_by_block",
+    "hyperstor_proto::space::tests::overlay_counts_what_each_owner_s_head_reads",
+    "hyperstor_meta::space::tests::reports_converge_on_the_branches_through_moves_and_failovers",
+    "hyperstor_meta::space::tests::heads_name_lineages_with_clones_or_rollbacks",
+    "hyperstor_meta::api::space::tests::rows_sum_volumes_into_projects_and_tenants",
+]
+
+[[milestone.item]]
 what = "A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use"
 spec = ["20-tenants.md §24.2", "20-tenants.md §24.8", "D248", "D249", "D258", "I299"]
 status = "done"
@@ -1171,7 +1184,9 @@ tests = [
 [[milestone.item]]
 what = "Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool"
 spec = ["20-tenants.md §24.4"]
-status = "planned"
+# The counting is built (the space each volume uses, above, D335); the
+# quotas are not.
+status = "partial"
 
 [[milestone.item]]
 what = "Two-level fair share in the reactors: tenants share each priority class by weight, then volumes within a tenant"

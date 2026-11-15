@@ -203,6 +203,7 @@ fn main() {
         io_timeout,
         read_timeout,
         perf_every: std::time::Duration::ZERO,
+        usage_every: std::time::Duration::ZERO,
         commit_delays: None,
         pings: None,
         older: None,

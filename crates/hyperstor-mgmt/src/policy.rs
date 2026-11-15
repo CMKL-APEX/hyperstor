@@ -57,6 +57,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.ListTopVolumes", Group::Read, false),
     ("ClusterService.ListFindings", Group::Read, false),
     ("ClusterService.ListVolumes", Group::Read, false),
+    ("ClusterService.GetSpace", Group::Read, false),
     ("ClusterService.ListSnapshots", Group::Read, false),
     ("TrashService.ListTrash", Group::Read, false),
     ("TrashService.GetTrashSettings", Group::Read, false),
@@ -210,6 +211,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
 /// tenants) is the cluster's as a whole.
 pub const IN_REALM: &[&str] = &[
     "ClusterService.ListVolumes",
+    // Its tenants' space (D335).
+    "ClusterService.GetSpace",
     "ClusterService.ListSnapshots",
     "TrashService.ListTrash",
     "S3Service.ListS3Placements",

@@ -42,6 +42,7 @@ mod ops;
 mod perf;
 mod realms;
 mod s3;
+mod space;
 mod tenants;
 mod trash;
 mod trust;
@@ -3220,6 +3221,15 @@ impl ClusterService for Api {
         }
         let names = self.realm_names(&scope).await;
         let tenancy = self.tenancy_names(&scope).await;
+        // The space each uses, from the leader (D335); another member
+        // leaves it unknown.
+        let view = self.space().await.ok();
+        let known = view.is_some();
+        let space: std::collections::HashMap<u128, (u64, u64)> = view
+            .iter()
+            .flat_map(|v| &v.volumes)
+            .map(|s| (s.id, (s.head_bytes, s.snapshot_bytes)))
+            .collect();
         Ok(pb::ListVolumesResponse {
             volumes: vols
                 .iter()
@@ -3227,17 +3237,50 @@ impl ClusterService for Api {
                 .map(|v| {
                     let tenant = tenancy.tenant_of(v.tenant, v.project);
                     let project = tenancy.project_of(tenant, v.project);
+                    let (head_bytes, snapshot_bytes) =
+                        space.get(&v.id).copied().unwrap_or_default();
                     pb::Volume {
                         realm: names.realm_name(tenant),
                         tenant,
                         project,
                         project_name: tenancy.project_label(project),
+                        head_bytes,
+                        snapshot_bytes,
+                        space_known: known,
                         ..volume_pb(v)
                     }
                 })
                 .collect(),
             ..Default::default()
         }
+        .into())
+    }
+
+    async fn get_space(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::GetSpaceRequest>,
+    ) -> ServiceResult<pb::GetSpaceResponse> {
+        let (_, reach) =
+            self.authorize_in(&ctx, "GetSpace", &format!("pool {}", req.pool), false)?;
+        let scope = self.scope(reach).await?;
+        let view = self.space().await?;
+        let (map, ..) = self.published().await?;
+        if req.pool != 0 && !map.pools.contains_key(&req.pool) {
+            return Err(with_reason(
+                ConnectError::not_found(format!("no pool {}", req.pool)),
+                "not_found",
+            ));
+        }
+        let tenancy = self.tenancy_names(&scope).await;
+        Ok(space::rows(
+            &view,
+            &tenancy,
+            &map,
+            req.pool,
+            |tenant, project, _| scope.container(tenant, project),
+            scope.whole(),
+        )
         .into())
     }
 

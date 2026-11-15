@@ -2584,3 +2584,36 @@ Findings:
    `hyperstor_codec::tests::the_two_libraries_agree_everywhere` keeps
    the first two.
 
+
+## 2026-11-15: The space walk's cost (D338, #364)
+
+Host dev-1 (AMD EPYC 9124), shared with other sessions; release build.
+Command: `hyperstor-bench space-walk`. One PG's index in memory: 4 MiB
+chunks (1,024 blocks) written whole (one run), in 64 runs of 8 blocks,
+or every other block (a dense map); a third of chunks with two older
+versions (snapshots), so 1⅔ objects a chunk. Each walk in slices of
+4,096 objects, as on a reactor; the best of five. *Before* is D155's
+sum of blocks (`pg_blocks`' loop); *after* is the walk primaries now
+make, which also lays each chunk's versions over each other (bit sets
+of their blocks; a lone version is counted without laying).
+
+| Chunks | Shape | Objects | Walk before | Walk after | Longest slice before | Longest slice after |
+|---|---|---|---|---|---|---|
+| 10,000 | whole | 16,668 | 0.4 ms | 1.9 ms | 0.09 ms | 0.47 ms |
+| 10,000 | 64 runs | 16,668 | 14.8 ms | 19.5 ms | 3.71 ms | 4.79 ms |
+| 10,000 | dense | 16,668 | 10.0 ms | 13.6 ms | 2.49 ms | 3.36 ms |
+| 100,000 | whole | 166,668 | 16.7 ms | 39.8 ms | 0.43 ms | 1.03 ms |
+| 100,000 | 64 runs | 166,668 | 151.1 ms | 193.9 ms | 3.73 ms | 4.80 ms |
+| 100,000 | dense | 166,668 | 106.2 ms | 140.2 ms | 2.77 ms | 3.56 ms |
+
+- The walk costs 1.3× D155's on fragmented and dense maps, where
+  reading the block maps dominates both, and 2–5× on whole chunks,
+  where D155's walk did almost nothing (a run's length per object) and
+  the new one adds a hash-map update per chunk; at most 40 ms per
+  100,000 chunks (400 GB) every 30 s.
+- The longest slice, what a request can wait behind, grows from 3.7 ms
+  to 4.8 ms at worst; slices still end after 4,096 objects (or the end
+  of the chunk under way).
+- A first version laid sorted ranges over each other: dense maps then
+  took 7× D155's time, with 17 ms slices; bit sets brought it to the
+  numbers above.
