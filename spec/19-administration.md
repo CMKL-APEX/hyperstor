@@ -118,13 +118,14 @@ the reason and the fix:
 - free cores for reactors after the host's reservations;
 - clock sync (leases depend on bounded drift, D48);
 - that no device given is mounted, in use by LVM or another datastore;
-- whether libblkid knows Hyperstor's superblock (D332–D334): info when
-  it doesn't, warn when it once did on this host and an update replaced
-  it.
+- whether libblkid knows Hyperstor's superblock (D332–D334, D344): info
+  when it doesn't, warn when it once did on this host and an update
+  replaced it; warn when apt has unmet dependencies on libblkid1, and
+  note D333's patched package still installed.
 
 A check that rests on a host claim cites its host check (G…).
 
-**Other tools and Hyperstor's devices** (D332–D334). A whole device
+**Other tools and Hyperstor's devices** (D332–D334, D344). A whole device
 Hyperstor formats has no partition table, and util-linux's libblkid,
 which `lsblk`, `blkid`, `wipefs`, `fdisk` and `mkfs` ask, doesn't know its
 superblock: the device looks blank, and nothing stops `mkfs` writing
@@ -137,12 +138,20 @@ Ubuntu ships it:
   and keeps `libblkid1_VERSION+hyperstor1_ARCH.deb` only after its
   `blkid` recognises images of both device formats and refuses a damaged
   superblock (D332).
-- `hyperstor-install install --libblkid-deb DIR` installs the file for
-  the host's libblkid1 version, found before anything changes (D333),
-  then restarts `systemd-udevd` (it probes in its own process, with the
-  library it loaded at start) and has it probe the nodes' devices again.
-- Ubuntu's next util-linux replaces it, so security fixes aren't held
-  back; the host check then warns (D334).
+- `hyperstor-install install --libblkid-deb DIR` takes the file for the
+  host's libblkid1 version, found before anything changes (D333), and
+  installs its library, not the package, as a copy in
+  `/usr/local/lib/<triplet>/`, which the loader searches before Ubuntu's
+  directory (D344). No package changes, so apt stays whole: on Ubuntu
+  26.04 util-linux's packages pin libblkid1 exactly, and a patched
+  package left apt unable to install anything (#384). It then runs
+  `ldconfig`, restarts `systemd-udevd` (it probes in its own process,
+  with the library it loaded at start) and has it probe the nodes'
+  devices again. A host with D333's patched package gets Ubuntu's back.
+- An apt hook (`/etc/apt/apt.conf.d/80hyperstor-libblkid`) removes the
+  copy once Ubuntu's libblkid1 is no longer the version it was built
+  from, so security fixes aren't held back; the host check then warns
+  (D334, D344). `uninstall` removes the copy and the hook.
 
 The prober reports `TYPE=hyperstor`, the format version, the cluster's
 id as `UUID` (the same on each device of a cluster, as btrfs shares its

@@ -255,7 +255,7 @@ covered by tests that run on every change.
 | Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates | Done |
 | Backing up the root CA's key, encrypted, and restoring it | Done |
 | Installing storage hosts on whole devices | Planned |
-| Other tools see Hyperstor's devices: a libblkid prober (TYPE hyperstor, the format version, the cluster id as UUID, device-N as label, checked by CRC32C), built into Ubuntu's own libblkid per release by scripts/build-libblkid-deb.sh and installed with hyperstor-install --libblkid-deb; the host check says whether libblkid knows them and warns once an update replaced the build | Done |
+| Other tools see Hyperstor's devices: a libblkid prober (TYPE hyperstor, the format version, the cluster id as UUID, device-N as label, checked by CRC32C), built into Ubuntu's own libblkid per release by scripts/build-libblkid-deb.sh and installed with hyperstor-install --libblkid-deb as a copy of the library beside Ubuntu's package, removed by an apt hook when Ubuntu updates libblkid1; the host check says whether libblkid knows them, warns once an update replaced the build, and warns on apt's unmet dependencies on libblkid1 | Done |
 
 ## AD2: Management service and read-only web UI
 

@@ -540,8 +540,13 @@ sudo ./hyperstor-install install --libblkid-deb dist/ ...
 The script builds in a container (podman or docker) from Ubuntu's
 source for that release, and keeps the package only after its `blkid`
 recognises Hyperstor devices of both formats and refuses a damaged
-superblock. The installer installs the file matching the host's
-libblkid1 version, or stops if `dist/` has none. Then:
+superblock. The installer takes the file matching the host's libblkid1
+version, or stops if `dist/` has none. It installs the library from it,
+not the package: a copy in `/usr/local/lib/x86_64-linux-gnu/` (or your
+architecture's directory), which programs load before Ubuntu's own. No
+package changes, so apt keeps working. On Ubuntu 26.04, util-linux's
+packages require each other at exactly the same version, so installing
+the package itself left apt unable to install anything. Then:
 
 ```text
 $ lsblk -f /dev/nvme1n1
@@ -553,12 +558,21 @@ The UUID is the cluster's id, the same on each of its devices, and the
 label names the device. `wipefs` lists the signature and `mkfs` warns
 before writing over it.
 
-The package is Ubuntu's version with `+hyperstor1` appended, so Ubuntu's
-next util-linux update, a security fix for example, replaces it. That
-is on purpose: fixes aren't held back. `hyperstor-install check` then
-warns that the library no longer knows Hyperstor's devices; build the
-package for the new version and run the installer again. `uninstall`
-leaves the library as it is.
+When Ubuntu's next util-linux update, a security fix for example,
+changes libblkid1, an apt hook the installer adds
+(`/etc/apt/apt.conf.d/80hyperstor-libblkid`) removes the copy, so
+Ubuntu's fixed library is the one programs load. That is on purpose:
+fixes aren't held back. `hyperstor-install check` then warns that the
+library no longer knows Hyperstor's devices; build the package for the
+new version and run the installer again. `uninstall` removes the copy
+and the hook.
+
+`check` also warns when apt has unmet dependencies on libblkid1. A host
+where an earlier installer put the patched package itself in place gets
+Ubuntu's package back the next time you run `install --libblkid-deb`.
+To repair apt on such a host by hand:
+`sudo apt-get install --allow-downgrades libblkid1=VERSION`, with Ubuntu's
+version (the installed one without `+hyperstor1`).
 
 ## Running as services by hand
 
