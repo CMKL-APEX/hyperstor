@@ -2022,6 +2022,11 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523)"
+spec = ["19-administration.md §23.12", "20-tenants.md §24.9", "D345", "D346", "D347"]
+status = "planned"
+
+[[milestone.item]]
 what = "glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311)"
 spec = ["19-administration.md §23.12", "D311", "I396", "I397"]
 status = "done"
