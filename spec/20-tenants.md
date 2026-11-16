@@ -364,7 +364,10 @@ roles are separate from it.
 handshake (glidex 19-tenancy.md §12; 19-administration.md §23.12), and its feed
 is the authority for the records above:
 
-- a directory's first admitted tenant makes its realm;
+- a directory's first admitted tenant makes its realm, or its directory
+  offer does when the directory is trusted as a whole (D345); its
+  tenants then opt in, admitted by the directory's setting with a copy
+  of its default caps (D346, D347);
 - a tenant admitted makes a tenant; a project made, renamed or deleted
   in the feed does the same here (a project with containers isn't
   deleted: it is unlinked and kept as a local project, D316; glidex

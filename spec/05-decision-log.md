@@ -1733,3 +1733,18 @@ libblkid1), and asked about a symlink or update-alternatives, which
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 307 | How the patched libblkid is installed: util-linux's whole set at `+hyperstor1`, through a local apt repository; or the library alone as a copy the loader finds first, with an apt hook removing it when Ubuntu's libblkid1 changes (recommended after the comparison) | The copy, with the hook | D344 |
+
+## Trusting a glidex directory as a whole (#386, 2026-11-15)
+
+Each tenant of a glidex directory needed its own offer (D306, glidex
+D64). Asked whether trust could be at the directory's level, with a
+directory-wide admission (every tenant, no consent) and a directory
+trusted once with tenants opting in compared, the owner chose the
+second, then settled its parts as recommended:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 308 | Trust per tenant as now; a directory-wide offer admitting every tenant; or the directory trusted once and each tenant opting in | The directory trusted once, tenants opting in | D345 |
+| 309 | How a directory is first trusted: an offer naming only the directory, redeemed by its owner (recommended); or the first tenant's offer | A directory offer | D345 |
+| 310 | What an opt-in does: a setting per directory, `open` by default (recommended); the same, `approval` by default; always open | Per directory, `open` by default | D346 |
+| 311 | A self-admitted tenant's caps: a copy of the directory's defaults (recommended); one cap for the whole realm | The directory's defaults | D347 |
