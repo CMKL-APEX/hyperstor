@@ -1135,8 +1135,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-auth"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
+version = "0.0.8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
@@ -1155,8 +1155,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-authd"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
+version = "0.0.8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
 dependencies = [
  "libc",
  "libloading",
@@ -1171,8 +1171,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-raftstore"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
+version = "0.0.8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1191,33 +1191,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-tls"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
-dependencies = [
- "arc-swap",
- "http",
- "http-body-util",
- "hyper",
- "hyper-util",
- "libc",
- "nix 0.31.3",
- "rcgen",
- "rustls-native-certs",
- "rustls-pki-types",
- "serde_json",
- "sha2",
- "socket2",
- "time",
- "tokio",
- "tokio-rustls",
- "tracing",
- "x509-parser",
-]
-
-[[package]]
-name = "glidex-tls"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=aeae1abbaa5ede650db7e3ea397f29ca7259a1c0#aeae1abbaa5ede650db7e3ea397f29ca7259a1c0"
+version = "0.0.8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
 dependencies = [
  "arc-swap",
  "http",
@@ -1241,8 +1216,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-topology"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca#9b69618e53097a32f7c4d6e0f83878bde7116dca"
+version = "0.0.8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
 dependencies = [
  "nix 0.31.3",
  "serde",
@@ -1250,14 +1225,14 @@ dependencies = [
 
 [[package]]
 name = "glidex-trust"
-version = "0.0.8-dev"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=aeae1abbaa5ede650db7e3ea397f29ca7259a1c0#aeae1abbaa5ede650db7e3ea397f29ca7259a1c0"
+version = "0.0.8"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "bytes",
  "getrandom 0.4.3",
- "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=aeae1abbaa5ede650db7e3ea397f29ca7259a1c0)",
+ "glidex-tls",
  "http",
  "http-body-util",
  "hyper",
@@ -1580,7 +1555,7 @@ name = "hyperstor-install"
 version = "0.1.0"
 dependencies = [
  "connectrpc",
- "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca)",
+ "glidex-tls",
  "glidex-topology",
  "http",
  "hyperstor-api",
@@ -1668,7 +1643,7 @@ dependencies = [
  "connectrpc",
  "glidex-auth",
  "glidex-authd",
- "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca)",
+ "glidex-tls",
  "glidex-trust",
  "http",
  "http-body-util",
@@ -1777,7 +1752,7 @@ dependencies = [
  "base64 0.23.1",
  "connectrpc",
  "glidex-authd",
- "glidex-tls 0.0.8-dev (git+https://github.com/CMKL-APEX/glidex?rev=9b69618e53097a32f7c4d6e0f83878bde7116dca)",
+ "glidex-tls",
  "glidex-trust",
  "hyperstor-api",
  "hyperstor-pki",
@@ -2526,9 +2501,9 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openraft"
-version = "0.9.25"
+version = "0.9.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a97014fb78acb77be3a40ac2da305f6dd3a6b243f3a908ace87d29b3972eaafd"
+checksum = "6e6470b76207acaab8e73f320a4a3674b4f517c4a0647c740f039bcd5a08ff9c"
 dependencies = [
  "anyerror",
  "byte-unit",

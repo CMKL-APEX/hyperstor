@@ -1178,6 +1178,9 @@ impl TrustService for Api {
                     tenant: gid.clone(),
                     suspended: tenants.iter().any(|x| &x.id == gid && x.suspended),
                     storage: counts.remove(id).unwrap_or_default(),
+                    // Per project (glidex D89): not sent yet, so the
+                    // directory blocks no project's delete (I415, #390).
+                    project_storage: Vec::new(),
                 })
                 .collect(),
         };
