@@ -5,17 +5,22 @@
 //!
 //! - `trust/key`: the cluster key towards directories (glidex D63), an
 //!   ES256 key sealed with the cluster key (D162); made on first use.
-//! - `trust/offer/<id>`: an offer to a directory's tenant (glidex D64): the
-//!   hash of its secret, never the secret, and whether it is still open.
+//! - `trust/offer/<id>`: an offer to a directory's tenant (glidex D64), or
+//!   to the directory as a whole (D345): the hash of its secret, never the
+//!   secret, and whether it is still open.
 //! - `trust/dir/<trusted id>`: a directory that redeemed an offer (glidex
 //!   D65), its tenants admitted here, and the realm it maps to
-//!   (20-tenants.md §24.9, D299).
+//!   (20-tenants.md §24.9, D299); trusted as a whole (D345), also its
+//!   admission setting, the tenants pending and refused (glidex-trust's
+//!   `WholeDirectory`), its default caps and each opt-in's copy of them
+//!   (D346, D347).
 //! - `trust/feed/<trusted id>`: what was last applied from its feed (glidex
 //!   D68), and what of it couldn't be, retried at every pull.
 //! - `trust/row/<trusted id>/<table>/<key>`: the feed's rows, the replica
 //!   every mgmt reads (stage 5's logins and grants).
 //! - `trust/ending/<trusted id>/<glidex tenant>`: an end decided here that
-//!   the directory hasn't been told of yet (glidex D66).
+//!   the directory hasn't been told of yet (glidex D66); the glidex tenant
+//!   empty for the whole directory's (D345).
 //! - `trust/operator`: the operator tenant (glidex §12.1), a tenant id.
 //!
 //! [`plan`] is what the feed asks of the tenants and projects here: pure,
@@ -27,7 +32,11 @@ use crate::store::{self, Db, Origin, Table};
 use crate::tenancy::{ProjectState, Tenancy};
 use crate::tokens::TokenError as Error;
 use glidex_raftstore::store::{RecTable, StoreError, definition};
-use glidex_trust::{FeedState, RemoteTenant, Row, TrustedDirectory};
+use glidex_trust::cluster as gt_cluster;
+use glidex_trust::{
+    AdmissionStatus, AdmitSetting, EndAtCluster, FeedState, OfferScope, RemoteTenant, Row,
+    TrustedDirectory,
+};
 use redb::ReadableTable as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -60,11 +69,21 @@ pub const OPEN: &str = "open";
 pub const REDEEMED: &str = "redeemed";
 pub const REVOKED: &str = "revoked";
 
-/// An offer to one of a directory's tenants (glidex D64).
+/// A cap on the bytes a tenant may hold in one pool (20-tenants.md §24.4,
+/// D347): kept, not yet enforced, as caps aren't (D303's hook).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct PoolCap {
+    pub pool: String,
+    pub bytes: u64,
+}
+
+/// An offer to one of a directory's tenants (glidex D64), or to the
+/// directory as a whole (D345).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferRec {
     pub id: String,
-    /// The glidex tenant's slug, and its directory's issuer (normalized).
+    /// The glidex tenant's slug (empty in a directory offer), and its
+    /// directory's issuer (normalized).
     pub tenant: String,
     pub directory: String,
     /// The tenant's name here, and the realm its directory maps to.
@@ -84,6 +103,14 @@ pub struct OfferRec {
     /// directory sends their logins back there; empty: `url`.
     #[serde(default)]
     pub ui: String,
+    /// A tenant's offer, or the directory's (D345); a directory offer's
+    /// admission setting and default caps (D346, D347).
+    #[serde(default)]
+    pub scope: OfferScope,
+    #[serde(default)]
+    pub admit: AdmitSetting,
+    #[serde(default)]
+    pub caps: Vec<PoolCap>,
 }
 
 impl OfferRec {
@@ -112,6 +139,28 @@ pub struct DirRec {
     /// [`LOGIN_CALLBACK`] at the last redeemed offer's `ui`.
     #[serde(default)]
     pub ui_callback: String,
+    /// Trusted as a whole (D347): the caps each tenant it admits by opt-in
+    /// starts with, and each such tenant's copy, by its glidex id. A copy
+    /// is the tenant's own: changing the defaults leaves it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub caps: Vec<PoolCap>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tenant_caps: BTreeMap<String, Vec<PoolCap>>,
+}
+
+impl DirRec {
+    /// Whether it is trusted as a whole (D345).
+    pub fn whole(&self) -> bool {
+        self.dir.whole.is_some()
+    }
+
+    /// Tenant `t` is admitted: under a directory trusted as a whole, with a
+    /// copy of its default caps unless it has one (D347).
+    fn admitted(&mut self, t: &str) {
+        if self.whole() && !self.tenant_caps.contains_key(t) {
+            self.tenant_caps.insert(t.to_string(), self.caps.clone());
+        }
+    }
 }
 
 /// mgmt's path that directories send people's browser logins back to.
@@ -311,9 +360,28 @@ pub fn directory_of(db: &Db, issuer: &str) -> Result<Option<DirRec>, Error> {
         .find(|d| d.dir.issuer == issuer))
 }
 
-/// Keeps `d`, a directory as a redeem left it. Only the leader.
+/// Keeps `d`, a directory as a redeem left it, its feed pulled whole
+/// next ([`refetch`]). Only the leader.
 pub fn put_directory(db: &Db, d: &DirRec) -> Result<(), Error> {
-    write(db, |t| put(t, &format!("{DIR}{}", d.dir.id), &json(d)))
+    write(db, |t| {
+        put(t, &format!("{DIR}{}", d.dir.id), &json(d))?;
+        refetch(t, &d.dir.id)
+    })
+}
+
+/// Directory `id`'s next pull asks for its whole feed: a tenant admitted
+/// since the last one has rows that the replica dropped while it wasn't
+/// (`admitted_rows`), and the directory, its rows unchanged, would answer
+/// "unchanged" to the revision kept.
+fn refetch(t: &mut RecTable<'_, store::MapSchema>, id: &str) -> Result<(), Error> {
+    let feed_row = format!("{FEED}{id}");
+    if let Some(mut f) = get_in::<FeedRec>(&**t, &feed_row)?
+        && !f.state.revision.is_empty()
+    {
+        f.state.revision.clear();
+        put(t, &feed_row, &json(&f))?;
+    }
+    Ok(())
 }
 
 /// A directory's feed record, default if none.
@@ -443,23 +511,39 @@ pub fn set_blocked(db: &Db, id: &str, blocked: &[String]) -> Result<(), Error> {
     })
 }
 
-/// Ends the trust in glidex tenant `tenant` of directory `id` (glidex D66):
-/// drops it from the directory's tenants, and with the last one the
-/// directory, its feed and its replica; with `tell`, keeps an end for mgmt
-/// to tell the directory of. The directory as it was; `None` if it isn't
-/// trusted or the tenant isn't admitted. Its tenants here are unlinked by
-/// the caller.
-pub fn end_tenant(db: &Db, id: &str, tenant: &str, tell: bool) -> Result<Option<DirRec>, Error> {
+/// Ends the trust in glidex tenant `tenant` of directory `id` (glidex D66),
+/// or with `tenant` empty in the whole directory (D345): the tenant leaves
+/// every list (admitted, pending, refused) and its caps' copy goes; when
+/// the trust ends ([`gt_cluster::ended`]: the whole directory's, or the
+/// last tenant's of a directory not trusted as a whole), the directory,
+/// its feed and its replica go. With `tell`, keeps an end for mgmt to tell
+/// the directory of; a whole end replaces the tenants' ends not told yet.
+/// The directory as it was; `None` if it isn't trusted, or the tenant has
+/// no admission there. Its tenants here are unlinked by the caller: those
+/// of [`Ended::unlink`].
+pub fn end_tenant(db: &Db, id: &str, tenant: &str, tell: bool) -> Result<Option<Ended>, Error> {
     let dir_row = format!("{DIR}{id}");
     write(db, |t| {
         let Some(d) = get_in::<DirRec>(&**t, &dir_row)? else {
             return Ok(None);
         };
-        if !d.dir.tenants.iter().any(|x| x.id == tenant) {
+        if !tenant.is_empty() && d.dir.admission(tenant).is_none() {
             return Ok(None);
         }
-        let mut left = d.clone();
-        left.dir.tenants.retain(|x| x.id != tenant);
+        let unlink: Vec<String> = if tenant.is_empty() {
+            d.dir.tenants.iter().map(|x| x.id.clone()).collect()
+        } else {
+            vec![tenant.to_string()]
+        };
+        if tenant.is_empty() {
+            let told: Vec<String> = rows(&**t, &format!("{ENDING}{id}/"))?
+                .into_iter()
+                .map(|(k, _)| format!("{ENDING}{id}/{k}"))
+                .collect();
+            for k in told {
+                t.remove(k.as_str()).map_err(StoreError::from)?;
+            }
+        }
         if tell {
             put(
                 t,
@@ -470,21 +554,138 @@ pub fn end_tenant(db: &Db, id: &str, tenant: &str, tell: bool) -> Result<Option<
                 }),
             )?;
         }
-        if left.dir.tenants.is_empty() {
-            t.remove(dir_row.as_str()).map_err(StoreError::from)?;
-            t.remove(format!("{FEED}{id}").as_str())
-                .map_err(StoreError::from)?;
-            let gone: Vec<String> = rows(&**t, &format!("{ROW}{id}/"))?
-                .into_iter()
-                .map(|(k, _)| format!("{ROW}{id}/{k}"))
-                .collect();
-            for k in gone {
-                t.remove(k.as_str()).map_err(StoreError::from)?;
+        let end = EndAtCluster {
+            issuer: d.dir.issuer.clone(),
+            tenant: tenant.to_string(),
+        };
+        match gt_cluster::ended(d.dir.clone(), &end) {
+            Some(left) => {
+                let mut left = DirRec {
+                    dir: left,
+                    ..d.clone()
+                };
+                left.tenant_caps.remove(tenant);
+                put(t, &dir_row, &json(&left))?;
             }
-        } else {
-            put(t, &dir_row, &json(&left))?;
+            None => {
+                t.remove(dir_row.as_str()).map_err(StoreError::from)?;
+                t.remove(format!("{FEED}{id}").as_str())
+                    .map_err(StoreError::from)?;
+                let gone: Vec<String> = rows(&**t, &format!("{ROW}{id}/"))?
+                    .into_iter()
+                    .map(|(k, _)| format!("{ROW}{id}/{k}"))
+                    .collect();
+                for k in gone {
+                    t.remove(k.as_str()).map_err(StoreError::from)?;
+                }
+            }
         }
-        Ok(Some(d))
+        Ok(Some(Ended { dir: d, unlink }))
+    })
+}
+
+/// What [`end_tenant`] ended: the directory as it was, and the glidex
+/// tenants whose tenants here to unlink (D316).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ended {
+    pub dir: DirRec,
+    pub unlink: Vec<String>,
+}
+
+/// Tenant `t` of directory `id`, trusted as a whole, opts in (D346): its
+/// admission as glidex-trust's [`gt_cluster::admit`] decides it, an
+/// admitted tenant given a copy of the default caps (D347). In one write.
+/// The directory after, and the status; `None` if it isn't trusted (any
+/// more).
+pub fn admit(
+    db: &Db,
+    id: &str,
+    t: &RemoteTenant,
+) -> Result<Option<(DirRec, AdmissionStatus)>, Error> {
+    let dir_row = format!("{DIR}{id}");
+    write(db, |tx| {
+        let Some(mut d) = get_in::<DirRec>(&**tx, &dir_row)? else {
+            return Ok(None);
+        };
+        if !d.whole() {
+            return Ok(None);
+        }
+        // A tenant admitted already (by a tenant offer too) keeps what it
+        // has: the copy is made when it is admitted, once.
+        let before = d.dir.admission(&t.id);
+        let status = gt_cluster::admit(&mut d.dir, t);
+        if status.is_admitted() && before != Some(AdmissionStatus::Admitted) {
+            d.admitted(&t.id);
+            refetch(tx, id)?;
+        }
+        put(tx, &dir_row, &json(&d))?;
+        Ok(Some((d, status)))
+    })
+}
+
+/// A security administrator decides pending tenant `tenant` (its glidex id
+/// or slug) of directory `id` (D346): admitted with a copy of the default
+/// caps, or refused. The tenant decided; `None` if none is pending so.
+pub fn decide(
+    db: &Db,
+    id: &str,
+    tenant: &str,
+    approve: bool,
+) -> Result<Option<(DirRec, RemoteTenant)>, Error> {
+    let dir_row = format!("{DIR}{id}");
+    write(db, |tx| {
+        let Some(mut d) = get_in::<DirRec>(&**tx, &dir_row)? else {
+            return Ok(None);
+        };
+        let Some(x) = d
+            .dir
+            .whole
+            .as_ref()
+            .and_then(|w| {
+                w.pending
+                    .iter()
+                    .find(|x| x.id == tenant)
+                    .or_else(|| w.pending.iter().find(|x| x.slug == tenant))
+            })
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        gt_cluster::decide(&mut d.dir, &x.id, approve);
+        if approve {
+            d.admitted(&x.id);
+            refetch(tx, id)?;
+        }
+        put(tx, &dir_row, &json(&d))?;
+        Ok(Some((d, x)))
+    })
+}
+
+/// Directory `id`'s admission setting and default caps (D346, D347), each
+/// unchanged when `None`; the copies its tenants hold stay. `false` if it
+/// isn't trusted as a whole. Only the leader.
+pub fn set_admission(
+    db: &Db,
+    id: &str,
+    admit: Option<AdmitSetting>,
+    caps: Option<Vec<PoolCap>>,
+) -> Result<bool, Error> {
+    let dir_row = format!("{DIR}{id}");
+    write(db, |t| {
+        let Some(mut d) = get_in::<DirRec>(&**t, &dir_row)? else {
+            return Ok(false);
+        };
+        let Some(w) = d.dir.whole.as_mut() else {
+            return Ok(false);
+        };
+        if let Some(a) = admit {
+            w.admit = a;
+        }
+        if let Some(c) = caps {
+            d.caps = c;
+        }
+        put(t, &dir_row, &json(&d))?;
+        Ok(true)
     })
 }
 
@@ -502,7 +703,8 @@ pub fn endings(db: &Db) -> Result<Vec<EndingRec>, Error> {
     )
 }
 
-/// The directory was told of the end of glidex tenant `tenant`.
+/// The directory was told of the end of glidex tenant `tenant` (empty:
+/// of the whole directory's trust).
 pub fn ending_told(db: &Db, id: &str, tenant: &str) -> Result<(), Error> {
     write(db, |t| {
         t.remove(format!("{ENDING}{id}/{tenant}").as_str())
@@ -570,7 +772,7 @@ pub fn name_of(s: &str) -> String {
 
 /// `base`, or `base-2`, `base-3`… the first that `taken` doesn't hold,
 /// within 63 characters.
-fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
+pub fn free_name(base: &str, taken: impl Fn(&str) -> bool) -> String {
     if !taken(base) {
         return base.to_string();
     }

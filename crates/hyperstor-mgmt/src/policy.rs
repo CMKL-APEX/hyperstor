@@ -159,6 +159,9 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TrustService.SetOperator", Group::Secure, true),
     // How long a cut-off directory's people keep working (D309).
     ("TrustService.SetDirectoryStaleness", Group::Secure, true),
+    // Who of a directory trusted as a whole is admitted, and how (D346).
+    ("TrustService.DecideAdmission", Group::Secure, true),
+    ("TrustService.SetDirectoryAdmission", Group::Secure, true),
     // Which gateway takes a tenant's keys (D250): a fresh login.
     ("RealmService.SetTenantRealm", Group::Secure, true),
     // Which volumes a host may attach (D251).
@@ -194,6 +197,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TrustService.GetTrustKey", Group::Machine, false),
     ("TrustService.RelayRedeem", Group::Machine, false),
     ("TrustService.RelayEnd", Group::Machine, false),
+    ("TrustService.RelayAdmit", Group::Machine, false),
     ("TrustService.GetFeedWork", Group::Machine, false),
     ("TrustService.ApplyFeed", Group::Machine, false),
     ("TrustService.GetTrustReport", Group::Machine, false),

@@ -977,7 +977,8 @@ message MoveProjectResponse {
 service TrustService {
   // Makes an offer to a directory's tenant: its token, shown once (only
   // its secret's hash is kept), for the tenant's administrator to redeem
-  // at the directory. Write.
+  // at the directory. With no tenant, an offer to the directory as a
+  // whole (D345), which its owner redeems; its tenants then opt in. Write.
   rpc CreateOffer(CreateOfferRequest) returns (CreateOfferResponse);
 
   // The offers, open or not. Read.
@@ -991,8 +992,8 @@ service TrustService {
   rpc ListTrustedDirectories(ListTrustedDirectoriesRequest) returns (ListTrustedDirectoriesResponse);
 
   // Ends the trust in one of a directory's tenants here; hyperstor-mgmt
-  // tells the directory. The tenant and its projects stay, unlinked.
-  // Write.
+  // tells the directory. The tenant and its projects stay, unlinked. With
+  // no tenant, the whole directory's trust ends (D345). Write.
   rpc EndTrust(EndTrustRequest) returns (EndTrustResponse);
 
   // Names the operator tenant (glidex 19-tenancy.md §12.1), a tenant of a
@@ -1008,6 +1009,18 @@ service TrustService {
 
   // hyperstor-mgmt's alone: a directory's POST /trust/v1/end, relayed.
   rpc RelayEnd(RelayEndRequest) returns (RelayEndResponse);
+
+  // hyperstor-mgmt's alone: a directory's POST /trust/v1/admit, relayed: a
+  // tenant of a directory trusted as a whole opts in (D346).
+  rpc RelayAdmit(RelayAdmitRequest) returns (RelayAdmitResponse);
+
+  // Admits or refuses a tenant pending at a directory trusted as a whole
+  // (D346). Write.
+  rpc DecideAdmission(DecideAdmissionRequest) returns (DecideAdmissionResponse);
+
+  // A directory trusted as a whole: how its tenants' opt-ins are admitted,
+  // and the caps each admitted one starts with (D346, D347). Write.
+  rpc SetDirectoryAdmission(SetDirectoryAdmissionRequest) returns (SetDirectoryAdmissionResponse);
 
   // hyperstor-mgmt's alone: the directories whose feeds to pull, and the
   // ends to tell them.
@@ -1060,6 +1073,20 @@ message TrustOffer {
   // Where people's browsers reach hyperstor-mgmt: the directory sends
   // their logins back there.
   string ui = 12;
+  // "tenant", or "directory" for an offer to the directory as a whole
+  // (D345), whose tenant is empty.
+  string scope = 13;
+  // A directory offer's: "open" or "approval" (D346), and the caps each
+  // tenant it admits starts with (D347).
+  string admit = 14;
+  repeated PoolCap caps = 15;
+}
+
+// A cap on the bytes a tenant may hold in a pool (20-tenants.md §24.4):
+// kept, not yet enforced.
+message PoolCap {
+  string pool = 1;
+  uint64 bytes = 2;
 }
 
 message CreateOfferRequest {
@@ -1077,6 +1104,10 @@ message CreateOfferRequest {
   // Where people's browsers reach hyperstor-mgmt, https://host[:port];
   // default: url.
   string ui = 8;
+  // With no tenant (a directory offer, D345): "open" (the default) or
+  // "approval" (D346), and the directory's default caps (D347).
+  string admit = 9;
+  repeated PoolCap caps = 10;
 }
 
 message CreateOfferResponse {
@@ -1105,6 +1136,10 @@ message TrustedTenant {
   uint32 tenant = 3;
   string name = 4;
   bool operator = 5;
+  // "admitted", "pending" or "refused" (D346).
+  string admission = 6;
+  // Admitted by opt-in: its copy of the directory's default caps (D347).
+  repeated PoolCap caps = 7;
 }
 
 message TrustedDirectory {
@@ -1126,6 +1161,14 @@ message TrustedDirectory {
   // How long its credentials stay good after its feed last answered, in
   // minutes; 0: the cluster's default.
   uint32 max_staleness_minutes = 12 [json_name = "max_staleness_minutes"];
+  // Trusted as a whole (D345): its admission setting, "open" or
+  // "approval", its default caps, and its tenants waiting for a decision
+  // or refused (D346, D347).
+  bool whole = 13;
+  string admit = 14;
+  repeated PoolCap caps = 15;
+  repeated TrustedTenant pending = 16;
+  repeated TrustedTenant refused = 17;
 }
 
 message ListTrustedDirectoriesRequest {}
@@ -1137,7 +1180,8 @@ message ListTrustedDirectoriesResponse {
 }
 
 message EndTrustRequest {
-  // The directory's issuer or id, and the glidex tenant's slug or id.
+  // The directory's issuer or id, and the glidex tenant's slug or id;
+  // none: the whole directory (D345).
   string directory = 1;
   string tenant = 2;
 }
@@ -1181,6 +1225,43 @@ message RelayEndResponse {
   uint32 status = 1;
   bytes body = 2;
 }
+
+message RelayAdmitRequest {
+  string assertion = 1;
+  bytes body = 2;
+}
+
+message RelayAdmitResponse {
+  uint32 status = 1;
+  bytes body = 2;
+}
+
+message DecideAdmissionRequest {
+  // The directory's issuer or id, and the pending glidex tenant's slug or
+  // id.
+  string directory = 1;
+  string tenant = 2;
+  // Admitted, or refused.
+  bool approve = 3;
+}
+
+message DecideAdmissionResponse {
+  // Admitted: its tenant here, 0 if not made yet.
+  uint32 tenant = 1;
+}
+
+message SetDirectoryAdmissionRequest {
+  // The directory's issuer or id.
+  string directory = 1;
+  // "open" or "approval"; empty: unchanged.
+  string admit = 2;
+  // With set_caps, the default caps from now on (none: no caps); later
+  // admissions only (D347).
+  bool set_caps = 3 [json_name = "set_caps"];
+  repeated PoolCap caps = 4;
+}
+
+message SetDirectoryAdmissionResponse {}
 
 message FeedTarget {
   // A glidex TrustedDirectory record (JSON), and the feed's revision.

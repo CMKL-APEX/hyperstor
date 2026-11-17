@@ -47,9 +47,12 @@ fn dir_rec(tenants: &[(&str, &str)], realm: u32) -> DirRec {
                 .collect(),
             created_at: 1,
             max_staleness_minutes: None,
+            whole: None,
         },
         realm,
         ui_callback: String::new(),
+        caps: Vec::new(),
+        tenant_caps: BTreeMap::new(),
     }
 }
 
@@ -70,6 +73,9 @@ fn offers_are_spent_once_and_revoked_only_while_open() {
         expires_unix: 100,
         state: OPEN.into(),
         ui: String::new(),
+        scope: OfferScope::Tenant,
+        admit: AdmitSetting::Open,
+        caps: Vec::new(),
     };
     create_offer(&db, &o).unwrap();
     assert!(create_offer(&db, &o).is_err());
@@ -185,6 +191,206 @@ fn a_feed_keeps_rows_of_admitted_tenants_and_ends_drop_them() {
     assert!(directories(&db).unwrap().is_empty());
     ending_told(&db, &id, "t2").unwrap();
     assert!(all_rows(&db).is_empty(), "{:?}", all_rows(&db));
+}
+
+/// D345–D347 against a model: opt-ins under either setting, decisions,
+/// changes of the setting and the default caps, tenants leaving and the
+/// whole directory's end, at random. After each step the record holds
+/// each tenant in one list at most, as the model says; every admitted
+/// opt-in holds the defaults as they were when it was admitted; and a
+/// whole end leaves nothing of the directory but the end to tell.
+#[test]
+fn a_directory_trusted_as_a_whole_admits_by_its_setting() {
+    use glidex_trust::WholeDirectory;
+    use rand::rngs::SmallRng;
+    use rand::{RngExt, SeedableRng};
+    for seed in 0..200u64 {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let (_d, db) = db();
+        let mut d = dir_rec(&[("t0", "zero")], 1);
+        d.dir.whole = Some(WholeDirectory::default());
+        let id = d.dir.id.clone();
+        put_directory(&db, &d).unwrap();
+        // The model: each tenant's status, and its caps if admitted by
+        // opt-in; t0 came by a tenant offer and has none.
+        let mut model: BTreeMap<String, (AdmissionStatus, Option<Vec<PoolCap>>)> = BTreeMap::new();
+        model.insert("t0".into(), (AdmissionStatus::Admitted, None));
+        let mut setting = AdmitSetting::Open;
+        let mut defaults: Vec<PoolCap> = Vec::new();
+        let mut ended = false;
+        for step in 0..40 {
+            let t = format!("t{}", rng.random_range(0..5));
+            let tenant = RemoteTenant {
+                id: t.clone(),
+                slug: format!("s{t}"),
+                display_name: String::new(),
+            };
+            match rng.random_range(0..10) {
+                0..=3 => {
+                    let r = admit(&db, &id, &tenant).unwrap();
+                    if ended {
+                        assert!(r.is_none());
+                        continue;
+                    }
+                    let was = model.get(&t).cloned();
+                    let want = match (&was, setting) {
+                        (Some((AdmissionStatus::Admitted, _)), _) | (_, AdmitSetting::Open) => {
+                            AdmissionStatus::Admitted
+                        }
+                        _ => AdmissionStatus::Pending,
+                    };
+                    assert_eq!(r.unwrap().1, want, "seed {seed} step {step}");
+                    let caps = match was {
+                        Some((AdmissionStatus::Admitted, c)) => c,
+                        _ if want.is_admitted() => Some(defaults.clone()),
+                        _ => None,
+                    };
+                    model.insert(t, (want, caps));
+                }
+                4 | 5 => {
+                    let approve = rng.random_bool(0.5);
+                    // By slug or id, as hyperstorctl takes either.
+                    let name = if rng.random_bool(0.5) {
+                        t.clone()
+                    } else {
+                        tenant.slug.clone()
+                    };
+                    let r = decide(&db, &id, &name, approve).unwrap();
+                    let pending = model
+                        .get(&t)
+                        .is_some_and(|(s, _)| *s == AdmissionStatus::Pending);
+                    assert_eq!(r.is_some(), pending && !ended, "seed {seed} step {step}");
+                    if pending && !ended {
+                        model.insert(
+                            t,
+                            if approve {
+                                (AdmissionStatus::Admitted, Some(defaults.clone()))
+                            } else {
+                                (AdmissionStatus::Refused, None)
+                            },
+                        );
+                    }
+                }
+                6 => {
+                    let a = if rng.random_bool(0.5) {
+                        AdmitSetting::Open
+                    } else {
+                        AdmitSetting::Approval
+                    };
+                    let c = vec![PoolCap {
+                        pool: "ssd".into(),
+                        bytes: rng.random_range(1..100),
+                    }];
+                    assert_eq!(
+                        set_admission(&db, &id, Some(a), Some(c.clone())).unwrap(),
+                        !ended
+                    );
+                    if !ended {
+                        (setting, defaults) = (a, c);
+                    }
+                }
+                7 | 8 => {
+                    let r = end_tenant(&db, &id, &t, rng.random_bool(0.5)).unwrap();
+                    assert_eq!(r.is_some(), !ended && model.contains_key(&t));
+                    if let Some(e) = r {
+                        assert_eq!(e.unlink, vec![t.clone()]);
+                    }
+                    model.remove(&t);
+                }
+                _ => {
+                    let r = end_tenant(&db, &id, "", true).unwrap();
+                    if !ended {
+                        let e = r.unwrap();
+                        let mut admitted: Vec<&String> = model
+                            .iter()
+                            .filter(|(_, (s, _))| s.is_admitted())
+                            .map(|(k, _)| k)
+                            .collect();
+                        let mut unlink: Vec<&String> = e.unlink.iter().collect();
+                        admitted.sort();
+                        unlink.sort();
+                        assert_eq!(unlink, admitted);
+                        assert!(directories(&db).unwrap().is_empty());
+                        // Only the whole end is left to tell.
+                        let ends = endings(&db).unwrap();
+                        assert_eq!(ends.len(), 1);
+                        assert!(ends[0].tenant.is_empty());
+                        ended = true;
+                        model.clear();
+                    } else {
+                        assert!(r.is_none());
+                    }
+                }
+            }
+            if ended {
+                continue;
+            }
+            // A directory trusted as a whole stays, its last tenant gone.
+            let rec = directories(&db).unwrap();
+            assert_eq!(rec.len(), 1, "seed {seed} step {step}");
+            let rec = &rec[0];
+            for (t, (s, caps)) in &model {
+                assert_eq!(
+                    rec.dir.admission(t),
+                    Some(*s),
+                    "seed {seed} step {step} {t}"
+                );
+                assert_eq!(rec.tenant_caps.get(t), caps.as_ref(), "seed {seed} {t}");
+            }
+            assert_eq!(rec.dir.admissions().len(), model.len());
+            assert_eq!(
+                rec.tenant_caps.len(),
+                model.values().filter(|x| x.1.is_some()).count()
+            );
+            assert_eq!(rec.dir.whole.as_ref().unwrap().admit, setting);
+            assert_eq!(rec.caps, defaults);
+        }
+    }
+}
+
+/// The feed of a directory trusted as a whole keeps only its admitted
+/// tenants' rows: a pending tenant's are dropped (D345).
+#[test]
+fn a_pending_tenant_s_rows_are_not_kept() {
+    let (_d, db) = db();
+    let mut d = dir_rec(&[], 1);
+    d.dir.whole = Some(glidex_trust::WholeDirectory {
+        admit: AdmitSetting::Approval,
+        ..Default::default()
+    });
+    let id = d.dir.id.clone();
+    put_directory(&db, &d).unwrap();
+    let t = |id: &str| RemoteTenant {
+        id: id.into(),
+        slug: id.into(),
+        display_name: String::new(),
+    };
+    assert_eq!(
+        admit(&db, &id, &t("t1")).unwrap().unwrap().1,
+        AdmissionStatus::Pending
+    );
+    let snap = snapshot(vec![
+        row(
+            "tenants",
+            "t1",
+            serde_json::json!({ "id": "t1", "slug": "t1" }),
+        ),
+        row(
+            "projects",
+            "p1",
+            serde_json::json!({ "id": "p1", "tenant_id": "t1", "name": "x" }),
+        ),
+    ]);
+    assert!(apply_feed(&db, &id, Some(&snap), 5).unwrap());
+    assert_eq!(feed_records(&db, &id).unwrap(), (vec![], vec![]));
+    // Approved, the same feed's rows are kept.
+    assert_eq!(feed(&db, &id).unwrap().state.revision, snap.revision);
+    decide(&db, &id, "t1", true).unwrap().unwrap();
+    // The next pull asks for the whole feed, whose rows haven't changed.
+    assert!(feed(&db, &id).unwrap().state.revision.is_empty());
+    apply_feed(&db, &id, Some(&snap), 6).unwrap();
+    assert_eq!(feed_records(&db, &id).unwrap().0.len(), 1);
+    assert_eq!(feed_records(&db, &id).unwrap().1.len(), 1);
 }
 
 #[test]

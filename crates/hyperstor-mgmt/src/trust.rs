@@ -3,8 +3,10 @@
 //! and the calls mgmt makes to directories. The records and their checks
 //! are the map service's (`TrustService`); mgmt holds nothing.
 //!
-//! - **Redeems and ends** (`POST /trust/v1/redeem`, `POST /trust/v1/end`,
-//!   glidex D65, D66) come from directories, without a session or token:
+//! - **Redeems, ends and opt-ins** (`POST /trust/v1/redeem`, `POST
+//!   /trust/v1/end`, glidex D65, D66; `POST /trust/v1/admit` from a
+//!   directory trusted as a whole, D345, D346) come from directories,
+//!   without a session or token:
 //!   their peer assertion is their credential. mgmt relays the assertion
 //!   and the body to the map service, which checks them, and answers the
 //!   directory as it says.
@@ -56,11 +58,13 @@ fn poll_every() -> Duration {
 
 /// The paths directories call, under mgmt's address in their offer.
 pub fn is_trust_path(path: &str) -> bool {
-    path == glidex_trust::REDEEM_PATH || path == glidex_trust::END_PATH
+    path == glidex_trust::REDEEM_PATH
+        || path == glidex_trust::END_PATH
+        || path == glidex_trust::ADMIT_PATH
 }
 
-/// Relays a directory's redeem or end to the map service: the status and
-/// JSON body to answer it with.
+/// Relays a directory's redeem, end or opt-in to the map service: the
+/// status and JSON body to answer it with.
 pub async fn relay(
     members: &Members,
     path: &str,
@@ -78,6 +82,24 @@ pub async fn relay(
                 let (assertion, body) = (assertion.clone(), body.clone());
                 async move {
                     c.relay_redeem(pb::RelayRedeemRequest {
+                        assertion,
+                        body,
+                        ..Default::default()
+                    })
+                    .await
+                    .map(|r| {
+                        let r = r.into_owned();
+                        (r.status, r.body)
+                    })
+                }
+            })
+            .await
+    } else if path == glidex_trust::ADMIT_PATH {
+        members
+            .each(TrustServiceClient::new, |c| {
+                let (assertion, body) = (assertion.clone(), body.clone());
+                async move {
+                    c.relay_admit(pb::RelayAdmitRequest {
                         assertion,
                         body,
                         ..Default::default()
