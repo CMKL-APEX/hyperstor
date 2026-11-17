@@ -1135,8 +1135,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-auth"
-version = "0.0.8"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
+version = "0.0.9-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4581ea401e4eba25cc2acc074b9e88f7cdda0b6a#4581ea401e4eba25cc2acc074b9e88f7cdda0b6a"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
@@ -1155,8 +1155,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-authd"
-version = "0.0.8"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
+version = "0.0.9-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4581ea401e4eba25cc2acc074b9e88f7cdda0b6a#4581ea401e4eba25cc2acc074b9e88f7cdda0b6a"
 dependencies = [
  "libc",
  "libloading",
@@ -1171,8 +1171,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-raftstore"
-version = "0.0.8"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
+version = "0.0.9-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4581ea401e4eba25cc2acc074b9e88f7cdda0b6a#4581ea401e4eba25cc2acc074b9e88f7cdda0b6a"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1191,8 +1191,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-tls"
-version = "0.0.8"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
+version = "0.0.9-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4581ea401e4eba25cc2acc074b9e88f7cdda0b6a#4581ea401e4eba25cc2acc074b9e88f7cdda0b6a"
 dependencies = [
  "arc-swap",
  "http",
@@ -1216,8 +1216,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-topology"
-version = "0.0.8"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
+version = "0.0.9-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4581ea401e4eba25cc2acc074b9e88f7cdda0b6a#4581ea401e4eba25cc2acc074b9e88f7cdda0b6a"
 dependencies = [
  "nix 0.31.3",
  "serde",
@@ -1225,8 +1225,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-trust"
-version = "0.0.8"
-source = "git+https://github.com/CMKL-APEX/glidex?rev=dd63bdfb8b0e416fdf9558dbb033f08382efb49c#dd63bdfb8b0e416fdf9558dbb033f08382efb49c"
+version = "0.0.9-dev"
+source = "git+https://github.com/CMKL-APEX/glidex?rev=4581ea401e4eba25cc2acc074b9e88f7cdda0b6a#4581ea401e4eba25cc2acc074b9e88f7cdda0b6a"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",

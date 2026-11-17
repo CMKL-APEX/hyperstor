@@ -453,6 +453,52 @@ hyperstorctl cluster set-operator --tenant 12
 - Ending the trust, from either side, keeps the tenant and its projects,
   unlinked.
 
+#### Trusting a directory as a whole
+
+A directory with many tenants (a university and its labs) would take an
+offer per tenant. Instead, offer the directory itself, once: its owner
+redeems the offer, and its tenants then opt in by themselves, with no
+offer each.
+
+```bash
+# An offer to the whole directory: no --tenant.
+hyperstorctl admission offer --directory https://id.uni.example/d/uni     --url https://storage.example.org:8852 --admit approval --cap ssd=500G,hdd=4T
+# Prints gxo_...: the directory's owner redeems it at the directory:
+#   gxctl directory trust-cluster --offer gxo_...
+# A lab's administrator opts in at the directory (gxctl tenant opt-in
+# LAB --cluster ID); under --admit approval it waits here:
+hyperstorctl admission pending
+hyperstorctl admission approve --directory https://id.uni.example/d/uni --tenant physics
+hyperstorctl admission reject --directory https://id.uni.example/d/uni --tenant chem
+# How later opt-ins are admitted, and the caps they start with:
+hyperstorctl admission directory --directory https://id.uni.example/d/uni --admit open --cap ssd=1T
+# The whole directory's trust ends: every tenant of it is unlinked.
+hyperstorctl admission end --directory https://id.uni.example/d/uni
+```
+
+- The redeem makes or links the directory's realm, as a first tenant
+  offer does, and admits no tenant. A directory already trusted through
+  tenant offers becomes trusted as a whole, if it signs with the keys it
+  is known by; its tenants stay.
+- `--admit open` (the default) admits a tenant as soon as it opts in;
+  `--admit approval` keeps it pending until a security administrator
+  approves or refuses it. A refused tenant may ask again. Use `approval`
+  for a directory where anyone may make a tenant.
+- Each tenant admitted is made here as a tenant offer's is, named after
+  its slug, with a copy of the directory's default caps (`--cap`). The
+  copy is the tenant's own: changing the defaults with `admission
+  directory` changes only later admissions. Caps are kept and listed by
+  `admission directories`, not yet enforced.
+- The feed carries a tenant only once it is admitted: a pending
+  tenant's members and projects aren't sent, nor made here.
+- The reports tell the directory which tenants are pending or refused.
+- A tenant leaving ends its admission only; the directory stays trusted
+  when its last tenant leaves. Ending the whole directory's trust, from
+  either side (`admission end` with no `--tenant`), ends every admission
+  and unlinks its tenants here.
+- Every opt-in, approval, refusal and change of the setting is in the
+  audit log.
+
 ### People from glidex directories
 
 Once a directory is trusted, its people sign in to mgmt through it, with

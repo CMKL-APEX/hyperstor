@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 # The host's topology: NUMA nodes, the PCIe tree, network ports (D204).
-glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "dd63bdfb8b0e416fdf9558dbb033f08382efb49c", optional = true }
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex", rev = "4581ea401e4eba25cc2acc074b9e88f7cdda0b6a", optional = true }
 rand.workspace = true
 
 # `host`: reading hosts (endpoints ranked, routing checked). Without it,

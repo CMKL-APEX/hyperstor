@@ -37,7 +37,7 @@ covered by tests that run on every change.
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
 | AD3: Administration from the UI and CLI, with roles, trash and audit | Done |
-| AD5: People from glidex directories | In progress |
+| AD5: People from glidex directories | Done |
 | AD4: A tenant's storage in glidex's UI | In progress |
 
 ## HS0: Local storage engine and reactor
@@ -302,7 +302,7 @@ covered by tests that run on every change.
 | Logins through a directory (browser, access and API tokens, hyperstorctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness | Done |
 | Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person | Done |
 | The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once, pin from mgmt's own certificate); a directory's records refused to every caller; GetSpace without volume rows | Done |
-| A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523) | Planned |
+| A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523) | Done |
 | glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311) | Done |
 
 ## AD4: A tenant's storage in glidex's UI
