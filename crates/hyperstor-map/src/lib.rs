@@ -1101,16 +1101,21 @@ impl ClusterMap {
     /// kept as it is: removals go through `out` and `in`. Whether
     /// anything was added. Devices added start at weight 0, as a joining
     /// host's do (D158), and a node given more devices counts them.
+    /// Removed devices and nodes stay removed (D186, #394): a cluster file
+    /// written before their removal still lists them.
     pub fn merge_new(&mut self, seed: &ClusterMap) -> bool {
         let mut added = false;
         for (id, n) in &seed.nodes {
-            if !self.nodes.contains_key(id) {
+            if !self.nodes.contains_key(id) && !self.removed_nodes.contains(id) {
                 self.nodes.insert(*id, n.clone());
                 added = true;
             }
         }
         for (id, d) in &seed.devices {
-            if !self.devices.contains_key(id) {
+            if !self.devices.contains_key(id)
+                && !self.removed_devices.contains(id)
+                && !self.removed_nodes.contains(&d.node)
+            {
                 self.devices.insert(
                     *id,
                     DeviceInfo {
@@ -2920,6 +2925,28 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert!(!m.endpoints.contains_key(&0));
         m.remove_device(1).unwrap();
         assert!(!m.endpoints.contains_key(&1));
+    }
+
+    /// D186, #394: a cluster file written before a removal still lists the
+    /// removed device, and the node that left with its last one; merging
+    /// it when a member takes the lead brings neither back. A device new
+    /// to the file still comes in.
+    #[test]
+    fn a_cluster_file_doesnt_bring_back_what_was_removed() {
+        let seed = parse_cluster(FILE).unwrap();
+        let mut m = seed.clone();
+        assert_eq!(m.remove_device(1), Some(false), "node 0 keeps device 0");
+        assert_eq!(m.remove_device(1000), Some(true), "node 1's last device");
+        let (devices, nodes) = (m.devices.clone(), m.nodes.clone());
+        assert!(!m.merge_new(&seed));
+        assert_eq!((&m.devices, &m.nodes), (&devices, &nodes));
+        assert!(!m.endpoints.contains_key(&1));
+        let mut more = seed.clone();
+        let id = more.add_device(0, "203.0.113.10:9102".parse().unwrap(), "nvme");
+        assert_eq!(id, Some(2));
+        assert!(m.merge_new(&more));
+        assert!(m.devices.contains_key(&2) && !m.devices.contains_key(&1));
+        assert!(!m.nodes.contains_key(&1));
     }
 }
 
