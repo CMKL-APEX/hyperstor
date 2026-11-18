@@ -376,6 +376,14 @@ pub enum Msg {
     Host {
         name: String,
     },
+    /// Storage node to map service: the host it runs on, by its host
+    /// name, at start and every 30 s (D348), for people to find the
+    /// machine. Answered `Noted`; an older map service refuses it as
+    /// unknown.
+    NodeHost {
+        node: u32,
+        name: String,
+    },
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (09-replication.md §8.5).
     Push {
@@ -892,6 +900,7 @@ mod kind {
     pub const PG_SPACE: u16 = 97;
     pub const PG_SPACE_OK: u16 = 98;
     pub const ERROR: u16 = 99;
+    pub const NODE_HOST: u16 = 100;
 }
 
 impl Msg {
@@ -969,6 +978,7 @@ impl Msg {
             Msg::EndpointDown { .. } => ENDPOINT_DOWN,
             Msg::PortReport { .. } => PORT_REPORT,
             Msg::Host { .. } => HOST,
+            Msg::NodeHost { .. } => NODE_HOST,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
             Msg::LeaseHeld { .. } => LEASE_HELD,
@@ -1146,6 +1156,9 @@ impl Msg {
             }
             Msg::Host { name } => {
                 e.str(name);
+            }
+            Msg::NodeHost { node, name } => {
+                e.u32(*node).str(name);
             }
             Msg::PortReport { node, ports } => {
                 e.u32(*node).seq(ports, |e, p| p.encode(e));
@@ -1631,6 +1644,10 @@ impl Msg {
                 addr: d.str()?.parse().map_err(|_| DecodeError::Utf8)?,
             },
             HOST => Msg::Host {
+                name: d.str()?.to_string(),
+            },
+            NODE_HOST => Msg::NodeHost {
+                node: d.u32()?,
                 name: d.str()?.to_string(),
             },
             PORT_REPORT => Msg::PortReport {
@@ -2529,6 +2546,10 @@ mod tests {
             },
             Msg::Host {
                 name: "hv-7".into(),
+            },
+            Msg::NodeHost {
+                node: 2,
+                name: "storage-2".into(),
             },
             Msg::HelloOk {
                 version: 1,

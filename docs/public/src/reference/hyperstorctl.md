@@ -17,7 +17,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--toke
 | Command | Does |
 |---|---|
 | `status` | Health (`ok`, `warn` or `error`) with its reasons, nodes and devices up, the raw space free and total over the devices in (before copies; `-` until devices have reported), and PG states and space per pool |
-| `nodes` | Each node and its devices: address, weight, free and total space (GiB; `-` until the device has reported to the leader), shard format (`1`, or `2` for v0.0.8's; blank on a member that isn't the leader, or from a node before v0.0.8; `>2` when asked to convert), in or out |
+| `nodes` | Each node and its devices: the node's host name (blank until the node has reported it, or from a node before v0.0.8), address, weight, free and total space (GiB; `-` until the device has reported to the leader), shard format (`1`, or `2` for v0.0.8's; blank on a member that isn't the leader, or from a node before v0.0.8; `>2` when asked to convert), in or out |
 | `pools` | Each pool: kind, copies, PGs clean, degraded, backfilling and inactive, and its usable free and total space (GiB, after copies or erasure coding) |
 | `pgs` | One pool's PGs with their acting and up sets; `--pg N` for one PG |
 | `pg-grid` | One pool's PG states, a character per PG, 64 to a line: `.` clean, `d` degraded, `b` backfilling, `X` inactive; with `--usage`, also a digit per PG for the data on its primary, `0` least to `9` most |

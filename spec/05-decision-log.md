@@ -1748,3 +1748,19 @@ second, then settled its parts as recommended:
 | 309 | How a directory is first trusted: an offer naming only the directory, redeemed by its owner (recommended); or the first tenant's offer | A directory offer | D345 |
 | 310 | What an opt-in does: a setting per directory, `open` by default (recommended); the same, `approval` by default; always open | Per directory, `open` by default | D346 |
 | 311 | A self-admitted tenant's caps: a copy of the directory's defaults (recommended); one cap for the whole realm | The directory's defaults | D347 |
+
+## Host names on the Nodes page (2026-11-17)
+
+The owner asked for each node's host name on the web UI's Nodes page,
+to find the machine for maintenance. Nothing recorded it: nodes have an
+id, a rack and devices, and D282 matched members to nodes by address.
+Asked where the name is kept (in the map, recommended; the leader's
+memory only, like device space; a label an operator sets), the owner
+chose the map. Building it, the encoded map turned out to be what
+clients (`hyperstor-vhost`, `hyperstor-ublk`, gateways) read, so a new
+format would break older ones; the names are rows of the map's table
+beside its head instead, replicated and persistent as the map is.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 312 | Where a storage node's host name is kept: in the map (recommended); the leader's memory; an operator's label | In the map, as rows beside its head | D348 |

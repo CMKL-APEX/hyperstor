@@ -204,8 +204,18 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
         o,
-        "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {:<6} STATE",
-        "NODE", "RACK", "UP", "DEVICE", "ADDRESS", "WEIGHT", "CLASS", "FREE", "TOTAL", "FORMAT"
+        "{:<5} {:<16} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {:<6} STATE",
+        "NODE",
+        "HOST",
+        "RACK",
+        "UP",
+        "DEVICE",
+        "ADDRESS",
+        "WEIGHT",
+        "CLASS",
+        "FREE",
+        "TOTAL",
+        "FORMAT"
     );
     let mut fixed = false;
     let mut class_set = false;
@@ -228,8 +238,10 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
             );
             let _ = writeln!(
                 o,
-                "{:<5} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {:<6} {}",
+                "{:<5} {:<16} {:<5} {:<5} {:<7} {:<22} {:<8} {:<12} {:>10} {:>10} {:<6} {}",
                 n.id,
+                // Its host name, once its node has reported it (D348).
+                n.host,
                 n.rack,
                 if n.up { "yes" } else { "no" },
                 d.id,
@@ -2484,7 +2496,13 @@ mod tests {
         let mut with = s.clone();
         with.nodes[0].devices[0].total_bytes = Some(4 << 30);
         with.nodes[0].devices[0].free_bytes = Some(1 << 29);
+        // A node's host name, once reported (D348).
+        with.nodes[0].host = "storage-a".into();
         let n = nodes_text(&with);
+        assert!(
+            n.lines().nth(1).unwrap().starts_with("0     storage-a "),
+            "{n}"
+        );
         // No format reported: a blank column (D274).
         assert!(n.contains("0.5G       4.0G        in"), "{n}");
         // A weight an operator set is marked (D158).

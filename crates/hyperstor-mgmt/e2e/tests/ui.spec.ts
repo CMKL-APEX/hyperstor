@@ -68,6 +68,8 @@ test("the pages show the cluster", async ({ page }) => {
   await expect(dev.getByText("in", { exact: true })).toBeVisible();
   // The map service member on each node's host (D282).
   await expect(page.getByTestId("node-0-member")).toContainText("member 1 (leader)");
+  // And the host it runs on, as its node reports it (D348).
+  await expect(page.getByTestId("node-0-host")).not.toHaveText("–", { timeout: 40_000 });
   await page.getByRole("link", { name: "Pools" }).click();
   await expect(page.getByTestId("pool-1-space")).toContainText(/free of \d/, { timeout: 20_000 });
   await expect(page.getByTestId("pool-1")).toBeVisible();

@@ -38,6 +38,19 @@ fn status_and_tables() {
         "{}",
         n.out
     );
+    // Each node names the host it runs on (D348), at start: all three
+    // here are this machine.
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap();
+    wait_for("every node's host name", 10, || {
+        let s = c.ctl(&["status", "--json"]).ok();
+        (s.out
+            .matches(&format!("\"host\":\"{}\"", host.trim()))
+            .count()
+            == 3)
+            .then_some(())
+    });
+    let n = c.ctl(&["nodes"]).ok();
+    assert!(n.has(&format!(" {} ", host.trim())), "{}", n.out);
     let t = c.ctl(&["status"]).ok();
     assert!(
         t.has("health  ok")

@@ -133,6 +133,10 @@ const HEAD: &str = "head";
 /// PG rows sort between these two keys.
 const PG_FIRST: &str = "pg/";
 const PG_END: &str = "pg0";
+/// Nodes' host names (D348), `host/{node}`: rows beside the head, so the
+/// encoded map clients read stays as it was; older members ignore them.
+const HOST_FIRST: &str = "host/";
+const HOST_END: &str = "host0";
 
 fn pg_key(pool: u32, pg: u32) -> String {
     format!("pg/{pool:010}/{pg:010}")
@@ -201,6 +205,7 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         tenant_realms: map.tenant_realms.clone(),
         project_tenants: map.project_tenants.clone(),
         upgrades: map.upgrades.clone(),
+        host_names: Default::default(),
     }
     .encode()
 }
@@ -239,6 +244,13 @@ pub fn map_from_rows(rows: &[(String, Vec<u8>)]) -> Result<Option<ClusterMap>, S
         let info = decode_pg(v).map_err(|e| format!("stored map, {k}: {e}"))?;
         map.pgs.insert(key, info);
     }
+    for (k, v) in rows.iter().filter(|(k, _)| k.starts_with(HOST_FIRST)) {
+        let node = k[HOST_FIRST.len()..]
+            .parse()
+            .map_err(|_| format!("stored map: row {k}"))?;
+        let name = String::from_utf8(v.clone()).map_err(|_| format!("stored map: row {k}"))?;
+        map.host_names.insert(node, name);
+    }
     Ok(Some(map))
 }
 
@@ -275,6 +287,28 @@ pub fn save(db: &Db, map: &ClusterMap) -> Result<(), StoreError> {
         for (k, v) in &want {
             t.insert(k, v)?;
         }
+        let mut hosts: BTreeMap<String, &[u8]> = map
+            .host_names
+            .iter()
+            .map(|(n, h)| (format!("{HOST_FIRST}{n}"), h.as_bytes()))
+            .collect();
+        let mut gone = Vec::new();
+        for row in t.range(HOST_FIRST..HOST_END)? {
+            let (k, v) = row?;
+            match hosts.get(k.value()) {
+                Some(w) if *w == v.value() => {
+                    hosts.remove(k.value());
+                }
+                Some(_) => {}
+                None => gone.push(k.value().to_string()),
+            }
+        }
+        for k in gone {
+            t.remove(&k)?;
+        }
+        for (k, v) in &hosts {
+            t.insert(k.as_str(), v)?;
+        }
         Ok(())
     })
 }
@@ -300,6 +334,31 @@ mod tests {
         let db = Db::create(&path).unwrap();
         let back = load(&db).unwrap().unwrap();
         assert_eq!(back.encode(), m.encode());
+    }
+
+    /// D348: nodes' host names are rows beside the head, kept across a
+    /// reopen, changed and removed with the map, and not in the head.
+    #[test]
+    fn host_names_are_rows_beside_the_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("map.db")).unwrap();
+        let mut m = crate::parse_cluster(
+            "cluster 7\nnode 0 rack 0 127.0.0.1:7000\nnode 1 rack 0 127.0.0.1:7001\npool 1 vol replicated size 2 min 1 pgs 8\n",
+        )
+        .unwrap();
+        m.recompute();
+        let plain = head(&m);
+        m.host_names.insert(0, "storage-a".into());
+        m.host_names.insert(1, "storage-b".into());
+        assert_eq!(head(&m), plain, "names stay out of the head");
+        save(&db, &m).unwrap();
+        assert_eq!(load(&db).unwrap().unwrap().host_names, m.host_names);
+        m.host_names.insert(1, "storage-c".into());
+        m.host_names.remove(&0);
+        save(&db, &m).unwrap();
+        let back = load(&db).unwrap().unwrap();
+        assert_eq!(back.host_names, [(1, "storage-c".to_string())].into());
+        assert_eq!(back.pgs, m.pgs);
     }
 
     /// Applies what it is given, as a group of one would: proposals go
