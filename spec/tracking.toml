@@ -384,8 +384,6 @@ status = "done"
 tests = [
     "hyperstor_meta::tests::nodes_report_their_host_names",
     "hyperstor_meta::store::tests::host_names_are_rows_beside_the_map",
-    "hyperstor_ctl::tests::tables_list_every_device_and_pool",
-    "manage::status_and_tables",
 ]
 
 [[milestone.item]]
