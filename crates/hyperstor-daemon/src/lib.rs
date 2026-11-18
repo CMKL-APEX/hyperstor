@@ -597,6 +597,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                                 .and_then(|v| v.parse().ok())
                                 .map_or(PORTS_EVERY, Duration::from_millis);
                             spawn(st.clone().port_report(node, every));
+                            spawn(st.clone().host_report(node));
                         }
                         rx.recv().await;
                         Ok::<(), String>(())
@@ -4931,6 +4932,37 @@ impl ShardState {
                 .client
                 .call_meta(&Msg::PortReport { node, ports })
                 .await;
+        }
+    }
+
+    /// Reports the host this node runs on, by its host name, to the map
+    /// service (D348): at start, again after 500 ms while no leader takes
+    /// it, then every 30 s, so a new leader or a renamed host is caught
+    /// up. An older map service refuses it as unknown and is asked again
+    /// only at the next period.
+    async fn host_report(self: Rc<Self>, node: u32) {
+        loop {
+            let mut wait = Duration::from_secs(30);
+            let name = std::fs::read_to_string("/proc/sys/kernel/hostname")
+                .map(|h| h.trim().to_string())
+                .unwrap_or_default();
+            if !name.is_empty() && !self.cut_off() {
+                let r = self.client.call_meta(&Msg::NodeHost { node, name }).await;
+                if !matches!(
+                    r,
+                    Ok((Msg::Noted { .. }, _))
+                        | Ok((
+                            Msg::Error {
+                                code: hyperstor_proto::Code::Invalid,
+                                ..
+                            },
+                            _
+                        ))
+                ) {
+                    wait = Duration::from_millis(500);
+                }
+            }
+            sleep(wait).await;
         }
     }
 

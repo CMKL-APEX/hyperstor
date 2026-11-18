@@ -4207,7 +4207,8 @@ impl Meta {
                     | Msg::ScrubAges { .. }
                     | Msg::PgUsage { .. }
                     | Msg::PerfReport { .. }
-                    | Msg::PortReport { .. })
+                    | Msg::PortReport { .. }
+                    | Msg::NodeHost { .. })
             )
         {
             return Msg::Error {
@@ -4320,6 +4321,27 @@ impl Meta {
                 if self.beats.borrow().contains_key(&node) {
                     self.fabric.borrow_mut().note(node, ports, Instant::now());
                 }
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
+            // D348: a node's host name, kept with the map once it changes.
+            Ok(Msg::NodeHost { node, name }) => {
+                if !crate::realms::valid_host(&name) {
+                    return Msg::Error {
+                        code: Code::Invalid,
+                        map_epoch: self.published.borrow().epoch,
+                        detail: format!(
+                            "host name {name:?}: 1 to 64 letters, digits, '.', '-' and '_'"
+                        ),
+                    };
+                }
+                let mut map = self.map.borrow_mut();
+                if map.nodes.contains_key(&node) && map.host_names.get(&node) != Some(&name) {
+                    map.host_names.insert(node, name);
+                    map.epoch += 1;
+                }
+                drop(map);
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
                 }
@@ -6103,6 +6125,47 @@ mod tests {
         }
         assert_eq!(m.space.borrow().get(&7), Some(&(1000, 500)));
         assert_eq!(m.map.borrow().epoch, epoch);
+    }
+
+    /// D348: a node's host name goes into the map once it changes; the
+    /// same name again changes nothing, and a bad name or an unknown node
+    /// is not kept.
+    #[test]
+    fn nodes_report_their_host_names() {
+        use hyperstor_proto::Msg;
+        let m = Meta::new(map());
+        let node = *m.map.borrow().nodes.keys().next().unwrap();
+        let report = |node: u32, name: &str| {
+            m.handle(Ok(Msg::NodeHost {
+                node,
+                name: name.into(),
+            }))
+        };
+        let epoch = m.map.borrow().epoch;
+        assert!(matches!(report(node, "storage-a"), Msg::Noted { .. }));
+        assert_eq!(
+            m.map.borrow().host_names.get(&node).map(String::as_str),
+            Some("storage-a")
+        );
+        assert_eq!(m.map.borrow().epoch, epoch + 1);
+        report(node, "storage-a");
+        assert_eq!(m.map.borrow().epoch, epoch + 1, "the same name again");
+        report(node, "storage-b");
+        assert_eq!(m.map.borrow().host_names[&node], "storage-b");
+        assert_eq!(m.map.borrow().epoch, epoch + 2);
+        assert!(matches!(
+            report(node, "bad name"),
+            Msg::Error {
+                code: hyperstor_proto::Code::Invalid,
+                ..
+            }
+        ));
+        report(9999, "elsewhere");
+        assert_eq!(m.map.borrow().host_names.len(), 1);
+        assert_eq!(m.map.borrow().epoch, epoch + 2);
+        // Not in the encoding clients read: their maps are as before.
+        let back = hyperstor_map::ClusterMap::decode(&m.map.borrow().encode()).unwrap();
+        assert!(back.host_names.is_empty());
     }
 
     /// D274: devices convert only once each has reported its format,

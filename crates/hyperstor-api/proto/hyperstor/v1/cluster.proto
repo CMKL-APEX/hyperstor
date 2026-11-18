@@ -413,6 +413,9 @@ message Node {
   // Milliseconds since its last heartbeat reached this map service;
   // absent if none has since it started.
   optional uint64 last_heard_ms = 5 [json_name = "last_heard_ms"];
+  // The host it runs on, by the host name its node last reported
+  // (04-decisions.md D348); empty until it has.
+  string host = 6;
 }
 
 message Device {

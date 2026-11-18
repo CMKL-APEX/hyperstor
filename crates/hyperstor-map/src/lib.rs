@@ -388,6 +388,10 @@ pub struct ClusterMap {
     /// the next time it opens them, and the map service drops a device
     /// once it reports the new format.
     pub upgrades: BTreeSet<u32>,
+    /// Each node's host name, as it reports it (D348): for people, to find
+    /// the machine. Not in the encoding, which clients read: the map
+    /// service keeps them as rows of its own beside the map.
+    pub host_names: BTreeMap<u32, String>,
 }
 
 /// An orchestrator's claim on a port (D205).
@@ -1005,6 +1009,7 @@ impl ClusterMap {
         if last {
             self.nodes.remove(&node);
             self.removed_nodes.insert(node);
+            self.host_names.remove(&node);
             let prefix = format!("{node}/");
             self.ports.retain(|id, _| !id.starts_with(&prefix));
             self.claims.retain(|id, _| !id.starts_with(&prefix));

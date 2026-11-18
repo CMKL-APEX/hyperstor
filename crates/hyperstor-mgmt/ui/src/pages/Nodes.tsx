@@ -1,4 +1,4 @@
-// Storage nodes and their devices: state, last heartbeat, the map
+// Storage nodes and their devices: host name (D348), state, last heartbeat, the map
 // service member on the same host (D282); take a device
 // out and in, set its weight and class, add and remove devices, drain a
 // node (operators). Below, each device's load and drive (D220): the
@@ -100,11 +100,14 @@ export default function Nodes() {
         </p>
       )}
       {result && <p className="text-sm text-emerald-700 mb-2">{result}</p>}
-      <Table head={["Node", "Rack", "State", "Heard", "Map service", "Device", "Address", "Class", "Weight", "Space", "Placement", ""]}>
+      <Table head={["Node", "Host", "Rack", "State", "Heard", "Map service", "Device", "Address", "Class", "Weight", "Space", "Placement", ""]}>
         {(status.data?.nodes ?? []).flatMap((n) =>
           n.devices.map((d, i) => (
             <tr key={`${n.id}-${d.id}`} data-testid={`device-${d.id}`}>
               <td className={td}>{i === 0 ? n.id : ""}</td>
+              <td className={td} data-testid={i === 0 ? `node-${n.id}-host` : undefined}>
+                {i === 0 && (n.host || <span className="text-slate-500">–</span>)}
+              </td>
               <td className={td}>{i === 0 ? n.rack : ""}</td>
               <td className={td}>{i === 0 && <Pill tone={n.up ? "ok" : "error"}>{n.up ? "up" : "down"}</Pill>}</td>
               <td className={`${td} text-slate-500`}>

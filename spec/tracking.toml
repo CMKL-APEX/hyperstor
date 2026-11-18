@@ -378,6 +378,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page"
+spec = ["D348", "I419", "19-administration.md §23.7"]
+status = "done"
+tests = [
+    "hyperstor_meta::tests::nodes_report_their_host_names",
+    "hyperstor_meta::store::tests::host_names_are_rows_beside_the_map",
+]
+
+[[milestone.item]]
 what = "Volume metadata: headers, directories and volume leases"
 spec = ["06-metadata.md §4.2", "06-metadata.md §9", "D28", "D75", "D77", "I68", "I70", "I71", "I72", "I73", "I74", "I77"]
 status = "done"

@@ -1079,6 +1079,7 @@ pub fn status(
                 id: n.id,
                 rack: n.rack,
                 up: n.up,
+                host: map.host_names.get(&n.id).cloned().unwrap_or_default(),
                 last_heard_ms: heard
                     .and_then(|h| h.get(&n.id))
                     .map(|d| d.as_millis() as u64),
@@ -4928,6 +4929,21 @@ mod tests {
         );
         assert_eq!(s.nodes[0].last_heard_ms, Some(40));
         assert_eq!(s.nodes[1].last_heard_ms, None);
+        // Host names, once nodes report them (D348).
+        assert_eq!(s.nodes[0].host, "");
+        let mut named = m.clone();
+        named.host_names.insert(s.nodes[1].id, "storage-b".into());
+        let n = super::status(
+            &named,
+            Some(&heard),
+            &Default::default(),
+            &Default::default(),
+            "127.0.0.1:8849",
+        );
+        assert_eq!(
+            (n.nodes[0].host.as_str(), n.nodes[1].host.as_str()),
+            ("", "storage-b")
+        );
         // A follower hears no heartbeats: no warning for that, a note
         // naming the leader, and no time heard.
         let empty = Default::default();
