@@ -379,7 +379,7 @@ tests = [
 
 [[milestone.item]]
 what = "Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page"
-spec = ["D348", "I416", "19-administration.md §23.7"]
+spec = ["D348", "I419", "19-administration.md §23.7"]
 status = "done"
 tests = [
     "hyperstor_meta::tests::nodes_report_their_host_names",
@@ -1337,10 +1337,11 @@ tests = [
 
 [[milestone.item]]
 what = "A device removed once its PGs have moved, its node with its last device, ids never given again"
-spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I226"]
+spec = ["24-pools-and-devices.md §27.2.5", "D175", "D186", "I224", "I226", "I418"]
 status = "done"
 tests = [
     "hyperstor_map::tests::removed_devices_and_nodes_keep_their_ids",
+    "hyperstor_map::network_tests::a_cluster_file_doesnt_bring_back_what_was_removed",
     "hyperstor_install::tests::removed_devices_get_no_shard",
     "manage::the_installer_drops_a_removed_device",
     "hyperstor_meta::tests::devices_are_removed_once_no_pg_lists_them",
@@ -2034,8 +2035,13 @@ tests = [
 
 [[milestone.item]]
 what = "A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523)"
-spec = ["19-administration.md §23.12", "20-tenants.md §24.9", "D345", "D346", "D347"]
-status = "planned"
+spec = ["19-administration.md §23.12", "20-tenants.md §24.9", "D345", "D346", "D347", "I416"]
+status = "done"
+tests = [
+    "hyperstor_meta::trust::tests::a_directory_trusted_as_a_whole_admits_by_its_setting",
+    "hyperstor_meta::trust::tests::a_pending_tenant_s_rows_are_not_kept",
+    "directory_whole::a_directory_trusted_as_a_whole_admits_its_tenants_opt_ins",
+]
 
 [[milestone.item]]
 what = "glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311)"

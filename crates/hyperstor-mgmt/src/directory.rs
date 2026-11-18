@@ -464,6 +464,7 @@ mod tests {
                 tenants: Vec::new(),
                 created_at: 0,
                 max_staleness_minutes: max,
+                whole: None,
             },
             realm: "acme".into(),
             feed: FeedState {

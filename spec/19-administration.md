@@ -614,7 +614,7 @@ cluster, through glidex's own handshake and feed:
 | Records | the directory owns its tenants' and projects' names and membership | the map service refuses renaming, moving, a tenant's realm and deleting a trusted directory's tenant or linked project to every caller (`from_directory`, D342); the feed changes them by its own path; unlinked, they are local |
 
 **Trusting a directory, not one tenant at a time (D345–D347; #386,
-glidex#523; not built).** Each tenant offer admits one tenant, so a
+glidex#523; built, I416).** Each tenant offer admits one tenant, so a
 directory with many tenants takes one offer each. The operator may
 instead trust the directory once:
 
@@ -622,9 +622,9 @@ instead trust the directory once:
 |---|---|---|
 | Directory offer | `hyperstorctl admission offer --directory ISSUER [--realm R] --cap POOL=BYTES,… [--admit open\|approval]`, no `--tenant`; the Tenancy page's Directories tab too (security administrators) | the `gxo_` token gains `scope: "directory"` and no `tenant`; one with no `scope` is a tenant offer |
 | Redeem | the map service checks it (D315) and stores the `TrustedDirectory` with no tenant, its realm (made, or the one named), admission setting and default caps; a directory already trusted by tenant offers gains them, if issuer and keys match | the directory's owner (`gxctl directory trust-cluster --offer`, `directory.tenants`, step-up); `POST /trust/v1/redeem` with no `tenant`; one directory-level `TrustedCluster` and OIDC client registration |
-| Opt-in | `POST /trust/v1/admit {tenant}`, signed by the directory: `open` admits it with a copy of the default caps (D347); `approval` keeps it pending (`trust/pending/<trusted id>/<glidex tenant>`) for `hyperstorctl admission pending\|approve\|reject`; answers `admitted` or `pending`, and the reports carry it after | the tenant's admin (`gxctl tenant opt-in <t> --cluster ID`, `tenant.clusters`, step-up), for clusters its directory trusts as a whole |
+| Opt-in | `POST /trust/v1/admit {tenant}`, signed by the directory: `open` admits it with a copy of the default caps (D347); `approval` keeps it pending (in the directory's record, `trust/dir/<trusted id>`, one entry per tenant, I416) for `hyperstorctl admission pending\|approve\|reject`; answers `admitted` or `pending`, and the reports carry it after | the tenant's admin (`gxctl tenant opt-in <t> --cluster ID`, `tenant.clusters`, step-up), for clusters its directory trusts as a whole |
 | Feed | unchanged: it makes the tenants admitted (§24.9) | a tenant is in the snapshot only once admitted, so a pending tenant's members aren't sent |
-| Settings | `hyperstorctl admission directory <id> [--admit …] [--cap …]`; defaults apply to later admissions only | — |
+| Settings | `hyperstorctl admission directory --directory <issuer or id> [--admit …] [--cap …]`; defaults apply to later admissions only | — |
 | Ending | a tenant as now; the directory as a whole by either side (`POST /trust/v1/end` with no tenant): every admission ends, its tenants unlinked (D316); the directory stays trusted when its last tenant leaves | `gxctl directory untrust-cluster` |
 
 Why: each tenant still decides whether its members and projects reach

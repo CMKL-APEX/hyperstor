@@ -235,7 +235,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -458,6 +458,11 @@ struct Args {
     ui: Option<String>,
     /// `admission staleness`: a directory's max_staleness (D309).
     minutes: Option<u32>,
+    /// `admission offer` with no tenant, `admission directory`: how a
+    /// directory trusted as a whole admits its tenants, and the caps they
+    /// start with (D346, D347); `--cap none` is no caps.
+    admit: Option<String>,
+    caps: Option<Vec<(String, u64)>>,
     /// `auth login`: the directory's certificate, pinned.
     directory_pin: Option<String>,
     /// `realm tenant|pool|host`, `s3 placement set|delete`: a realm, or
@@ -485,6 +490,21 @@ fn parse_size(s: &str) -> Option<u64> {
         _ => (s, 1),
     };
     n.parse::<u64>().ok()?.checked_mul(mul)
+}
+
+/// `--cap`: `POOL=BYTES[,POOL=BYTES...]` (sizes as `--size` takes them),
+/// or `none`.
+fn parse_caps(s: &str) -> Option<Vec<(String, u64)>> {
+    if s == "none" {
+        return Some(Vec::new());
+    }
+    s.split(',')
+        .map(|c| {
+            let (pool, bytes) = c.split_once('=')?;
+            let bytes = parse_size(bytes).filter(|b| *b > 0)?;
+            (!pool.is_empty()).then(|| (pool.to_string(), bytes))
+        })
+        .collect()
 }
 
 fn main() {
@@ -588,6 +608,8 @@ fn main() {
         days: None,
         ui: None,
         minutes: None,
+        admit: None,
+        caps: None,
         directory_pin: None,
         description: None,
         data_pool: None,
@@ -630,6 +652,17 @@ fn main() {
             "--days" => a.days = Some(num(it.next())),
             "--ui" => a.ui = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--minutes" => a.minutes = Some(num(it.next())),
+            "--admit" => match it.next().map(String::as_str) {
+                Some(v @ ("open" | "approval")) => a.admit = Some(v.to_string()),
+                _ => usage(),
+            },
+            "--cap" => {
+                a.caps = Some(
+                    it.next()
+                        .and_then(|s| parse_caps(s))
+                        .unwrap_or_else(|| usage()),
+                )
+            }
             "--directory-pin" => {
                 a.directory_pin = Some(it.next().cloned().unwrap_or_else(|| usage()))
             }
@@ -865,7 +898,18 @@ fn main() {
                     "tenant" => matches!(sub, Some("create" | "list" | "rename" | "delete")),
                     "admission" => matches!(
                         sub,
-                        Some("offer" | "list" | "revoke" | "directories" | "end" | "staleness")
+                        Some(
+                            "offer"
+                                | "list"
+                                | "revoke"
+                                | "directories"
+                                | "end"
+                                | "staleness"
+                                | "pending"
+                                | "approve"
+                                | "reject"
+                                | "directory"
+                        )
                     ),
                     "cluster" => matches!(sub, Some("set-operator")),
                     "auth" => matches!(sub, Some("login")),
@@ -909,18 +953,33 @@ fn main() {
     hint(format!(
         "wrong or missing options for `{cmd}`; `hyperstorctl help {cmd}` lists them"
     ));
-    // Trust in directories (D306): `admission offer|end` name a glidex
-    // tenant by its slug; everything else a tenant by its number.
-    let admission = matches!(cmd.as_str(), "admission offer" | "admission end");
+    // Trust in directories (D306): `admission offer|end|approve|reject`
+    // name a glidex tenant by its slug (offer and end may name none: the
+    // directory as a whole, D345); everything else a tenant by its number.
+    let admission = matches!(
+        cmd.as_str(),
+        "admission offer" | "admission end" | "admission approve" | "admission reject"
+    );
+    let decide = matches!(cmd.as_str(), "admission approve" | "admission reject");
     if admission {
         a.tenant = None;
     } else if a.tenant_text.is_some() && a.tenant.is_none() {
         usage();
     }
-    // A directory alone: its max_staleness, or a login through it (D307,
-    // D309).
-    let one_directory = matches!(cmd.as_str(), "admission staleness" | "auth login");
-    if (admission && (a.tenant_text.is_none() || a.directory.is_none()))
+    // A directory alone: its max_staleness, its admission, or a login
+    // through it (D307, D309, D346).
+    let one_directory = matches!(
+        cmd.as_str(),
+        "admission staleness" | "admission directory" | "auth login"
+    );
+    // A directory offer, or a directory's admission: a setting and caps
+    // (D346, D347).
+    let settings =
+        (cmd == "admission offer" && a.tenant_text.is_none()) || cmd == "admission directory";
+    if (admission && a.directory.is_none())
+        || (decide && a.tenant_text.is_none())
+        || (!settings && (a.admit.is_some() || a.caps.is_some()))
+        || (cmd == "admission directory" && a.admit.is_none() && a.caps.is_none())
         || (cmd == "admission offer") != a.url.is_some()
         || (cmd != "admission offer" && (a.pin.is_some() || a.days.is_some() || a.ui.is_some()))
         || (!admission && !one_directory && a.directory.is_some())
@@ -3506,11 +3565,32 @@ where
                     pin,
                     days: a.days.unwrap_or_default(),
                     ui: a.ui.clone().unwrap_or_default(),
+                    admit: a.admit.clone().unwrap_or_default(),
+                    caps: caps_pb(a),
                     ..Default::default()
                 })
                 .await?
                 .into_owned();
             let o = r.offer.as_option().cloned().unwrap_or_default();
+            if slug.is_empty() {
+                show(a, &r, || {
+                    format!(
+                        "offer {} made for directory {} as a whole (realm {}), until {}\nIts tenants' opt-ins: {}; each admitted one's caps: {}\nIts token, shown once: the directory's owner redeems it at the directory\n(gxctl directory trust-cluster --offer TOKEN):\n{}\n",
+                        o.id,
+                        o.directory,
+                        o.realm,
+                        utc(o.expires_unix),
+                        if o.admit == "approval" {
+                            "pending until approved (admission approve)"
+                        } else {
+                            "admitted at once"
+                        },
+                        hyperstor_ctl::caps_text(&o.caps),
+                        r.token
+                    )
+                });
+                return Ok(Next::Exit(0));
+            }
             show(a, &r, || {
                 format!(
                     "offer {} made for tenant {slug} of {} (tenant {} here, realm {}), until {}\nIts token, shown once: the tenant's administrator redeems it at the directory\n(gxctl tenant opt-in --offer TOKEN):\n{}\n",
@@ -3558,9 +3638,62 @@ where
                     ..Default::default()
                 })
                 .await?;
-            println!(
-                "trust in tenant {slug} of {directory} ended; its tenant here stays, unlinked, and the directory is told"
-            );
+            if slug.is_empty() {
+                println!(
+                    "trust in {directory} ended, with every admission of it; its tenants here stay, unlinked, and the directory is told"
+                );
+            } else {
+                println!(
+                    "trust in tenant {slug} of {directory} ended; its tenant here stays, unlinked, and the directory is told"
+                );
+            }
+        }
+        "admission pending" => {
+            let r = client
+                .list_trusted_directories(pb::ListTrustedDirectoriesRequest::default())
+                .await?
+                .into_owned();
+            show(a, &r, || hyperstor_ctl::pending_text(&r));
+        }
+        "admission approve" | "admission reject" => {
+            let approve = cmd == "admission approve";
+            let r = client
+                .decide_admission(pb::DecideAdmissionRequest {
+                    directory: directory.clone(),
+                    tenant: slug.clone(),
+                    approve,
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            if approve {
+                println!(
+                    "tenant {slug} of {directory} admitted: tenant {} here, with the directory's default caps",
+                    r.tenant
+                );
+            } else {
+                println!("tenant {slug} of {directory} refused; it may ask again");
+            }
+        }
+        "admission directory" => {
+            client
+                .set_directory_admission(pb::SetDirectoryAdmissionRequest {
+                    directory: directory.clone(),
+                    admit: a.admit.clone().unwrap_or_default(),
+                    set_caps: a.caps.is_some(),
+                    caps: caps_pb(a),
+                    ..Default::default()
+                })
+                .await?;
+            if let Some(admit) = &a.admit {
+                println!("{directory}'s tenants are admitted {admit} from now on");
+            }
+            if a.caps.is_some() {
+                println!(
+                    "{directory}'s tenants admitted from now on start with caps {}; those admitted keep theirs",
+                    hyperstor_ctl::caps_text(&caps_pb(a))
+                );
+            }
         }
         "admission staleness" => {
             let m = a.minutes.expect("checked with the arguments");
@@ -3598,6 +3731,19 @@ where
         _ => usage(),
     }
     Ok(Next::Exit(0))
+}
+
+/// `--cap` as the API takes it.
+fn caps_pb(a: &Args) -> Vec<pb::PoolCap> {
+    a.caps
+        .iter()
+        .flatten()
+        .map(|(pool, bytes)| pb::PoolCap {
+            pool: pool.clone(),
+            bytes: *bytes,
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// The SHA-256 of the certificate `url` (`https://host[:port]`) serves:

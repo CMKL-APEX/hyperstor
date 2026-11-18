@@ -10,6 +10,12 @@
 //!   member that answers, the leader. A redeem spends the offer first,
 //!   then makes the directory's realm if it has none, the tenant, and the
 //!   trust record.
+//! - **A directory trusted as a whole** (D345–D347) redeemed a directory
+//!   offer, which named no tenant; its tenants opt in (`POST
+//!   /trust/v1/admit`, relayed by mgmt as redeems are) and are admitted by
+//!   its setting: at once (`open`), or once a security administrator
+//!   approves (`approval`). An admitted tenant is made as a tenant offer's
+//!   is, with a copy of the directory's default caps.
 //! - **The feed** is pulled by the leader's mgmt (D306), signed with the
 //!   cluster key towards directories, which this service hands mgmt alone:
 //!   an ES256 key made on first use and kept sealed with the cluster key
@@ -26,10 +32,13 @@
 
 use super::{Api, Need, with_reason};
 use crate::tenancy::{self, NewTenant, Tenancy};
-use crate::trust::{self, DirRec, OfferRec, Step};
+use crate::trust::{self, DirRec, OfferRec, PoolCap, Step};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use glidex_trust::cluster::{self as gt_cluster, Offer};
-use glidex_trust::{EndAtCluster, OfferToken, RedeemAnswer, RedeemRequest, Snapshot};
+use glidex_trust::{
+    AdmissionStatus, AdmitAnswer, AdmitRequest, AdmitSetting, EndAtCluster, OfferScope, OfferToken,
+    RedeemAnswer, RedeemRequest, RemoteTenant, Snapshot,
+};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{TrustService, TrustServiceExt};
 use std::sync::Arc;
@@ -99,6 +108,75 @@ pub fn realm_for(issuer: &str) -> String {
     trust::name_of(last)
 }
 
+/// An admission setting as the API names it.
+fn admit_name(a: AdmitSetting) -> &'static str {
+    match a {
+        AdmitSetting::Open => "open",
+        AdmitSetting::Approval => "approval",
+    }
+}
+
+/// An admission setting as given: `open`, `approval`, or empty for `none`.
+fn admit_of(s: &str, none: Option<AdmitSetting>) -> Result<Option<AdmitSetting>, ConnectError> {
+    match s {
+        "" => Ok(none),
+        "open" => Ok(Some(AdmitSetting::Open)),
+        "approval" => Ok(Some(AdmitSetting::Approval)),
+        _ => Err(invalid(format!(
+            "{s:?}: a directory admits its tenants \"open\" or by \"approval\""
+        ))),
+    }
+}
+
+fn status_name(s: AdmissionStatus) -> &'static str {
+    match s {
+        AdmissionStatus::Admitted => "admitted",
+        AdmissionStatus::Pending => "pending",
+        AdmissionStatus::Refused => "refused",
+    }
+}
+
+fn caps_pb(c: &[PoolCap]) -> Vec<pb::PoolCap> {
+    c.iter()
+        .map(|c| pb::PoolCap {
+            pool: c.pool.clone(),
+            bytes: c.bytes,
+            ..Default::default()
+        })
+        .collect()
+}
+
+/// Caps as given: one per pool, each of a pool the map has, more than 0
+/// bytes; sorted.
+fn caps_of(
+    c: impl IntoIterator<Item = (String, u64)>,
+    pools: &[String],
+) -> Result<Vec<PoolCap>, ConnectError> {
+    let mut out: Vec<PoolCap> = Vec::new();
+    for (pool, bytes) in c {
+        if !pools.iter().any(|p| p == &pool) {
+            return Err(invalid(format!("no pool {pool:?} for a cap")));
+        }
+        if bytes == 0 {
+            return Err(invalid(format!("pool {pool}'s cap is 0 bytes")));
+        }
+        if out.iter().any(|y| y.pool == pool) {
+            return Err(invalid(format!("pool {pool} capped twice")));
+        }
+        out.push(PoolCap { pool, bytes });
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Whether two JWKS share a key: a directory trusted already that redeems
+/// a directory offer must sign with keys it is known by (D345).
+fn share_a_key(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    let keys = |v: &serde_json::Value| v["keys"].as_array().cloned().unwrap_or_default();
+    let b = keys(b);
+    keys(a).iter().any(|k| b.contains(k))
+}
+
 fn offer_pb(o: &OfferRec, now: u64) -> pb::TrustOffer {
     pb::TrustOffer {
         id: o.id.clone(),
@@ -113,6 +191,16 @@ fn offer_pb(o: &OfferRec, now: u64) -> pb::TrustOffer {
         expires_unix: o.expires_unix,
         state: o.shown_state(now).to_string(),
         ui: o.ui.clone(),
+        scope: match o.scope {
+            OfferScope::Tenant => "tenant".into(),
+            OfferScope::Directory => "directory".into(),
+        },
+        admit: if o.scope == OfferScope::Directory {
+            admit_name(o.admit).into()
+        } else {
+            String::new()
+        },
+        caps: caps_pb(&o.caps),
         ..Default::default()
     }
 }
@@ -367,6 +455,73 @@ impl Api {
         Ok(in_use)
     }
 
+    /// The tenant here of glidex tenant `glidex` of directory `issuer`, in
+    /// realm `realm`: the one linked to it, else one made, named `name` or
+    /// (with `name` empty) after its slug, with a suffix if that is taken
+    /// (§24.9). Its id.
+    async fn linked_tenant(
+        &self,
+        issuer: &str,
+        glidex: &RemoteTenant,
+        name: &str,
+        realm: u32,
+        now: u64,
+    ) -> Result<u32, ConnectError> {
+        let t = self.tenancy().await?;
+        if let Some(x) = t
+            .tenants
+            .iter()
+            .find(|x| x.directory == issuer && x.glidex_id == glidex.id)
+        {
+            return Ok(x.id);
+        }
+        let name = if name.is_empty() {
+            trust::free_name(&trust::name_of(&glidex.slug), |n| {
+                t.tenant_named(n).is_some()
+            })
+        } else {
+            name.to_string()
+        };
+        let n = NewTenant {
+            name,
+            id: None,
+            directory: issuer.to_string(),
+            glidex_id: glidex.id.clone(),
+            created_unix: now,
+            created_by: format!("directory {issuer}"),
+        };
+        let in_use = self.bare_tenants().await?;
+        let id = self
+            .realm_rows("tenant", move |db| {
+                let (id, _) = tenancy::create_tenant(db, &n, &in_use)?;
+                crate::realms::set_tenant(db, id, realm, &[])?;
+                Ok(id)
+            })
+            .await?;
+        self.sync_realms().await?;
+        Ok(id)
+    }
+
+    /// The directory trusted with issuer or id `d`, else `not_found`.
+    async fn trusted(&self, d: &str) -> Result<DirRec, ConnectError> {
+        let dirs = self.realm_rows("directory", trust::directories).await?;
+        let issuer = glidex_trust::normalize_issuer(d).unwrap_or_default();
+        dirs.into_iter()
+            .find(|x| x.dir.id == d || x.dir.issuer == issuer)
+            .ok_or_else(|| {
+                with_reason(
+                    ConnectError::not_found(format!("no trusted directory {d}")),
+                    "not_found",
+                )
+            })
+    }
+
+    /// The pools' names, for caps.
+    async fn pool_names(&self) -> Result<Vec<String>, ConnectError> {
+        let (map, ..) = self.published().await?;
+        Ok(map.pools.values().map(|p| p.name.clone()).collect())
+    }
+
     /// Unlinks the tenants here of glidex tenant `glidex` of directory
     /// `issuer`, and their projects: they stay, local from now on.
     async fn unlink_tenant(&self, issuer: &str, glidex: &str) -> Result<(), ConnectError> {
@@ -418,7 +573,9 @@ impl Api {
                 open: o.open_at(now),
                 secret_hash: &o.secret_hash,
                 directory: &o.directory,
+                scope: o.scope,
                 tenant: &o.tenant,
+                admit: o.admit,
             }),
             &cluster_id,
             &self.replays,
@@ -448,6 +605,17 @@ impl Api {
             .realm_rows("directory", move |db| trust::directory_of(db, &issuer))
             .await
             .map_err(fail)?;
+        // A directory trusted already gains the whole trust only with
+        // keys it is known by (D345).
+        if let Some(e) = &existing
+            && checked.whole.is_some()
+            && !share_a_key(&e.dir.jwks, &b.jwks)
+        {
+            return Err((
+                "a directory offer redeemed with keys the directory isn't known by".into(),
+                None,
+            ));
+        }
         let realm = match &existing {
             Some(d) => d.realm,
             None => {
@@ -485,30 +653,13 @@ impl Api {
                 made
             }
         };
-        // The tenant: the one linked to this glidex tenant, else a new
-        // one by the offer's name.
-        let t = self.tenancy().await.map_err(fail)?;
-        if !t
-            .tenants
-            .iter()
-            .any(|x| x.directory == checked.issuer && x.glidex_id == b.tenant.id)
-        {
-            let n = NewTenant {
-                name: offer.name.clone(),
-                id: None,
-                directory: checked.issuer.clone(),
-                glidex_id: b.tenant.id.clone(),
-                created_unix: now,
-                created_by: format!("directory {}", checked.issuer),
-            };
-            let in_use = self.bare_tenants().await.map_err(fail)?;
-            self.realm_rows("tenant", move |db| {
-                let (id, _) = tenancy::create_tenant(db, &n, &in_use)?;
-                crate::realms::set_tenant(db, id, realm, &[])
-            })
-            .await
-            .map_err(fail)?;
-            self.sync_realms().await.map_err(fail)?;
+        // A tenant offer's tenant: the one linked to this glidex tenant,
+        // else a new one by the offer's name. A directory offer admits
+        // none (D345).
+        if let Some(gt) = &b.tenant {
+            self.linked_tenant(&checked.issuer, gt, &offer.name, realm, now)
+                .await
+                .map_err(fail)?;
         }
         // Logins come back to the address this offer names for people
         // (the last redeemed offer's), else to the directories' own.
@@ -517,10 +668,21 @@ impl Api {
         } else {
             &offer.ui
         });
+        let (caps, tenant_caps) = match existing.as_ref() {
+            Some(e) => (e.caps.clone(), e.tenant_caps.clone()),
+            None => Default::default(),
+        };
         let d = DirRec {
             dir: gt_cluster::redeemed_directory(existing.map(|e| e.dir), b, &checked, now),
             realm,
             ui_callback: ui_callback.clone(),
+            // A directory offer's caps are the defaults from now on (D347).
+            caps: if checked.whole.is_some() {
+                offer.caps.clone()
+            } else {
+                caps
+            },
+            tenant_caps,
         };
         self.realm_rows("directory", move |db| trust::put_directory(db, &d))
             .await
@@ -529,7 +691,51 @@ impl Api {
             cluster_id,
             cluster_key: glidex_trust::key::jwks(&[&key]),
             ui_callback: Some(ui_callback),
+            admit: checked.whole,
         })
+    }
+
+    /// A directory's opt-in, checked (D346): admitted, with its tenant made
+    /// here, or pending. `Err` says why it was refused, for the audit.
+    async fn admit_tenant(
+        &self,
+        assertion: &str,
+        b: &AdmitRequest,
+        now: u64,
+    ) -> Result<AdmissionStatus, (String, Option<ConnectError>)> {
+        let fail = |e: ConnectError| (e.message.clone().unwrap_or_default(), Some(e));
+        let cluster_id = self.cluster_id().map_err(fail)?;
+        let dirs = self
+            .realm_rows("directory", trust::directories)
+            .await
+            .map_err(fail)?;
+        let d = gt_cluster::check_admit(
+            assertion,
+            b,
+            |iss| {
+                dirs.iter()
+                    .find(|d| d.dir.issuer == iss)
+                    .map(|d| d.dir.clone())
+            },
+            &cluster_id,
+            &self.replays,
+            now,
+        )
+        .map_err(|why| (why, None))?;
+        let (id, t) = (d.id.clone(), b.tenant.clone());
+        let Some((rec, status)) = self
+            .realm_rows("directory", move |db| trust::admit(db, &id, &t))
+            .await
+            .map_err(fail)?
+        else {
+            return Err(("not trusted as a whole any more".into(), None));
+        };
+        if status.is_admitted() {
+            self.linked_tenant(&rec.dir.issuer, &b.tenant, "", rec.realm, now)
+                .await
+                .map_err(fail)?;
+        }
+        Ok(status)
     }
 }
 
@@ -540,17 +746,41 @@ impl TrustService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::CreateOfferRequest>,
     ) -> ServiceResult<pb::CreateOfferResponse> {
-        let target = format!("tenant {} of {}", req.tenant, req.directory);
+        // No tenant: an offer to the directory as a whole (D345).
+        let whole = req.tenant.trim().is_empty();
+        let target = if whole {
+            format!("directory {}", req.directory)
+        } else {
+            format!("tenant {} of {}", req.tenant, req.directory)
+        };
         let who = self.authorize(&ctx, "CreateOffer", &target, true)?;
         let r = async {
             let cluster_id = self.cluster_id()?;
             let slug = req.tenant.trim().to_string();
-            if slug.is_empty()
-                || slug.len() > 63
-                || slug.chars().any(|c| c.is_control() || c.is_whitespace())
+            if !whole
+                && (slug.len() > 63 || slug.chars().any(|c| c.is_control() || c.is_whitespace()))
             {
                 return Err(invalid("a tenant's slug is 1 to 63 characters, no spaces"));
             }
+            if !whole && (!req.admit.is_empty() || !req.caps.is_empty()) {
+                return Err(invalid(
+                    "an admission setting and caps are a directory offer's (no tenant)",
+                ));
+            }
+            if whole && !req.name.is_empty() {
+                return Err(invalid(
+                    "a directory offer names no tenant: its tenants are named after their slugs",
+                ));
+            }
+            let admit = admit_of(req.admit, Some(AdmitSetting::Open))?.unwrap_or_default();
+            let caps = if req.caps.is_empty() {
+                Vec::new()
+            } else {
+                caps_of(
+                    req.caps.iter().map(|c| (c.pool.to_string(), c.bytes)),
+                    &self.pool_names().await?,
+                )?
+            };
             let Some(issuer) = glidex_trust::normalize_issuer(req.directory) else {
                 return Err(invalid(format!(
                     "{:?} isn't a directory's issuer (https://host/d/NAME)",
@@ -574,12 +804,14 @@ impl TrustService for Api {
                     "a certificate's SHA-256 is 64 hex digits (hyperstorctl reads it from --url)",
                 ));
             };
-            let name = if req.name.is_empty() {
+            let name = if whole {
+                String::new()
+            } else if req.name.is_empty() {
                 trust::name_of(&slug)
             } else {
                 req.name.to_string()
             };
-            if !tenancy::valid_tenant_name(&name) {
+            if !whole && !tenancy::valid_tenant_name(&name) {
                 return Err(invalid(format!(
                     "{name:?}: a tenant is named by 1-63 of a-z, 0-9 and -, and isn't \"default\""
                 )));
@@ -625,7 +857,8 @@ impl TrustService for Api {
             }
             // A local tenant keeps its name (§24.9): pass another.
             let t = self.tenancy().await?;
-            if let Some(x) = t.tenant_named(&name)
+            if !whole
+                && let Some(x) = t.tenant_named(&name)
                 && !(x.directory == issuer && !x.glidex_id.is_empty())
             {
                 return Err(with_reason(
@@ -658,6 +891,13 @@ impl TrustService for Api {
                 expires_unix: now + days * 86400,
                 state: trust::OPEN.into(),
                 ui: req.ui.trim_end_matches('/').to_string(),
+                scope: if whole {
+                    OfferScope::Directory
+                } else {
+                    OfferScope::Tenant
+                },
+                admit,
+                caps,
             };
             let row = o.clone();
             self.realm_rows("offer", move |db| trust::create_offer(db, &row))
@@ -667,6 +907,7 @@ impl TrustService for Api {
                 cluster_name: cluster_id,
                 api: o.url.clone(),
                 tls_sha256: o.pin.clone(),
+                scope: o.scope,
                 tenant: slug,
                 directory: issuer,
                 offer: id,
@@ -739,6 +980,23 @@ impl TrustService for Api {
             .await?;
         let t = self.tenancy().await?;
         let realms = self.realms().await?;
+        let tenant_pb = |d: &DirRec, x: &RemoteTenant, s: AdmissionStatus| {
+            let here = t
+                .tenants
+                .iter()
+                .find(|y| y.directory == d.dir.issuer && y.glidex_id == x.id)
+                .filter(|_| s.is_admitted());
+            pb::TrustedTenant {
+                id: x.id.clone(),
+                slug: x.slug.clone(),
+                tenant: here.map_or(0, |y| y.id),
+                name: here.map(|y| y.name.clone()).unwrap_or_default(),
+                operator: here.is_some_and(|y| y.id == operator),
+                admission: status_name(s).into(),
+                caps: caps_pb(d.tenant_caps.get(&x.id).map_or(&[][..], |c| c)),
+                ..Default::default()
+            }
+        };
         let directories = dirs
             .iter()
             .zip(feeds)
@@ -751,20 +1009,29 @@ impl TrustService for Api {
                     .dir
                     .tenants
                     .iter()
-                    .map(|x| {
-                        let here = t
-                            .tenants
-                            .iter()
-                            .find(|y| y.directory == d.dir.issuer && y.glidex_id == x.id);
-                        pb::TrustedTenant {
-                            id: x.id.clone(),
-                            slug: x.slug.clone(),
-                            tenant: here.map_or(0, |y| y.id),
-                            name: here.map(|y| y.name.clone()).unwrap_or_default(),
-                            operator: here.is_some_and(|y| y.id == operator),
-                            ..Default::default()
-                        }
-                    })
+                    .map(|x| tenant_pb(d, x, AdmissionStatus::Admitted))
+                    .collect(),
+                whole: d.whole(),
+                admit: d
+                    .dir
+                    .whole
+                    .as_ref()
+                    .map(|w| admit_name(w.admit).to_string())
+                    .unwrap_or_default(),
+                caps: caps_pb(&d.caps),
+                pending: d
+                    .dir
+                    .whole
+                    .iter()
+                    .flat_map(|w| w.pending.iter())
+                    .map(|x| tenant_pb(d, x, AdmissionStatus::Pending))
+                    .collect(),
+                refused: d
+                    .dir
+                    .whole
+                    .iter()
+                    .flat_map(|w| w.refused.iter())
+                    .map(|x| tenant_pb(d, x, AdmissionStatus::Refused))
                     .collect(),
                 revision: f.state.revision,
                 applied_unix: f.state.applied_at,
@@ -792,40 +1059,50 @@ impl TrustService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::EndTrustRequest>,
     ) -> ServiceResult<pb::EndTrustResponse> {
-        let target = format!("tenant {} of {}", req.tenant, req.directory);
+        // No tenant: the whole directory's trust (D345).
+        let target = if req.tenant.is_empty() {
+            format!("directory {}", req.directory)
+        } else {
+            format!("tenant {} of {}", req.tenant, req.directory)
+        };
         let who = self.authorize(&ctx, "EndTrust", &target, true)?;
         let r = async {
-            let dirs = self.realm_rows("directory", trust::directories).await?;
-            let issuer = glidex_trust::normalize_issuer(req.directory).unwrap_or_default();
-            let Some(d) = dirs
-                .iter()
-                .find(|d| d.dir.id == req.directory || d.dir.issuer == issuer)
-            else {
-                return Err(with_reason(
-                    ConnectError::not_found(format!("no trusted directory {}", req.directory)),
-                    "not_found",
-                ));
+            let d = self.trusted(req.directory).await?;
+            let gid = if req.tenant.is_empty() {
+                String::new()
+            } else {
+                let Some((x, _)) = d
+                    .dir
+                    .admissions()
+                    .into_iter()
+                    .find(|(x, _)| x.id == req.tenant)
+                    .or_else(|| {
+                        d.dir
+                            .admissions()
+                            .into_iter()
+                            .find(|(x, _)| x.slug == req.tenant)
+                    })
+                else {
+                    return Err(with_reason(
+                        ConnectError::not_found(format!(
+                            "{} has no tenant {} here",
+                            d.dir.issuer, req.tenant
+                        )),
+                        "not_found",
+                    ));
+                };
+                x.id.clone()
             };
-            let Some(x) = d
-                .dir
-                .tenants
-                .iter()
-                .find(|x| x.id == req.tenant || x.slug == req.tenant)
-            else {
-                return Err(with_reason(
-                    ConnectError::not_found(format!(
-                        "{} has no tenant {} admitted here",
-                        d.dir.issuer, req.tenant
-                    )),
-                    "not_found",
-                ));
-            };
-            let (id, gid) = (d.dir.id.clone(), x.id.clone());
-            self.realm_rows("directory", move |db| {
-                trust::end_tenant(db, &id, &gid, true).map(|_| ())
-            })
-            .await?;
-            self.unlink_tenant(&d.dir.issuer, &x.id).await
+            let id = d.dir.id.clone();
+            let ended = self
+                .realm_rows("directory", move |db| {
+                    trust::end_tenant(db, &id, &gid, true)
+                })
+                .await?;
+            for g in ended.map(|e| e.unlink).unwrap_or_default() {
+                self.unlink_tenant(&d.dir.issuer, &g).await?;
+            }
+            Ok(())
         }
         .await;
         Self::audited(&who, "EndTrust", &target, r)?;
@@ -896,10 +1173,10 @@ impl TrustService for Api {
                 trust_refused()
             }
             Ok(b) => {
-                let target = format!(
-                    "offer {} by {} for tenant {}",
-                    b.offer, b.issuer, b.tenant.slug
-                );
+                let target = match &b.tenant {
+                    Some(t) => format!("offer {} by {} for tenant {}", b.offer, b.issuer, t.slug),
+                    None => format!("offer {} by {} for the directory", b.offer, b.issuer),
+                };
                 match self.redeem_offer(req.assertion, &b, now).await {
                     Ok(a) => {
                         super::audit(&who, "RedeemOffer", &target, "ok");
@@ -949,7 +1226,11 @@ impl TrustService for Api {
             }
             .into());
         };
-        let target = format!("tenant {} of {}", b.tenant, b.issuer);
+        let target = if b.tenant.is_empty() {
+            format!("directory {}", b.issuer)
+        } else {
+            format!("tenant {} of {}", b.tenant, b.issuer)
+        };
         let dirs = self.realm_rows("directory", trust::directories).await?;
         let checked = gt_cluster::check_end(
             req.assertion,
@@ -974,12 +1255,27 @@ impl TrustService for Api {
                 trust_refused()
             }
             Ok(d) => {
+                // One tenant leaves, or with none the whole directory
+                // (D345): every tenant admitted is unlinked (D316).
                 let (id, tenant) = (d.id.clone(), b.tenant.clone());
-                self.realm_rows("directory", move |db| {
-                    trust::end_tenant(db, &id, &tenant, false).map(|_| ())
-                })
-                .await?;
-                let r = self.unlink_tenant(&d.issuer, &b.tenant).await;
+                let ended = self
+                    .realm_rows("directory", move |db| {
+                        trust::end_tenant(db, &id, &tenant, false)
+                    })
+                    .await?;
+                let unlink = match ended {
+                    Some(e) => e.unlink,
+                    // Nothing here of it: unlinked already, or again.
+                    None if !b.tenant.is_empty() => vec![b.tenant.clone()],
+                    None => Vec::new(),
+                };
+                let r = async {
+                    for g in unlink {
+                        self.unlink_tenant(&d.issuer, &g).await?;
+                    }
+                    Ok(())
+                }
+                .await;
                 Self::audited(&who, "EndFromDirectory", &target, r)?;
                 (200, b"{}".to_vec())
             }
@@ -990,6 +1286,171 @@ impl TrustService for Api {
             ..Default::default()
         }
         .into())
+    }
+
+    async fn relay_admit(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::RelayAdmitRequest>,
+    ) -> ServiceResult<pb::RelayAdmitResponse> {
+        let who = self.authorize_as(&ctx, "RelayAdmit", "admit", Need::Mgmt)?;
+        let now = super::admin::now_unix();
+        let (status, body) = match serde_json::from_slice::<AdmitRequest>(req.body) {
+            Err(e) => {
+                super::audit(&who, "AdmitFromDirectory", "?", &format!("refused: {e}"));
+                trust_refused()
+            }
+            Ok(b) => {
+                let target = format!("tenant {} ({}) of {}", b.tenant.slug, b.tenant.id, b.issuer);
+                match self.admit_tenant(req.assertion, &b, now).await {
+                    Ok(status) => {
+                        super::audit(
+                            &who,
+                            "AdmitFromDirectory",
+                            &target,
+                            &format!("ok: {}", status_name(status)),
+                        );
+                        (
+                            200,
+                            serde_json::to_vec(&AdmitAnswer { status }).expect("json"),
+                        )
+                    }
+                    Err((why, e)) => {
+                        let why = match &e {
+                            Some(e) => e.message.clone().unwrap_or(why),
+                            None => why,
+                        };
+                        super::audit(
+                            &who,
+                            "AdmitFromDirectory",
+                            &target,
+                            &format!("refused: {why}"),
+                        );
+                        match e {
+                            Some(e) if e.code == connectrpc::ErrorCode::Unavailable => {
+                                return Err(e);
+                            }
+                            _ => trust_refused(),
+                        }
+                    }
+                }
+            }
+        };
+        Ok(pb::RelayAdmitResponse {
+            status,
+            body,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn decide_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::DecideAdmissionRequest>,
+    ) -> ServiceResult<pb::DecideAdmissionResponse> {
+        let (op, done) = if req.approve {
+            ("ApproveAdmission", "admitted")
+        } else {
+            ("RefuseAdmission", "refused")
+        };
+        let target = format!("tenant {} of {}", req.tenant, req.directory);
+        let who = self.authorize(&ctx, op, &target, true)?;
+        let approve = req.approve;
+        let r = async {
+            let d = self.trusted(req.directory).await?;
+            let (id, tenant) = (d.dir.id.clone(), req.tenant.to_string());
+            let Some((rec, x)) = self
+                .realm_rows("directory", move |db| {
+                    trust::decide(db, &id, &tenant, approve)
+                })
+                .await?
+            else {
+                return Err(with_reason(
+                    ConnectError::not_found(format!(
+                        "{} has no tenant {} pending here",
+                        d.dir.issuer, req.tenant
+                    )),
+                    "not_found",
+                ));
+            };
+            let here = if approve {
+                self.linked_tenant(&rec.dir.issuer, &x, "", rec.realm, super::admin::now_unix())
+                    .await?
+            } else {
+                0
+            };
+            Ok((x, here))
+        }
+        .await;
+        let target = match &r {
+            Ok((x, _)) => format!("tenant {} ({}) of {}: {done}", x.slug, x.id, req.directory),
+            Err(_) => target,
+        };
+        let (_, here) = Self::audited(&who, op, &target, r)?;
+        Ok(pb::DecideAdmissionResponse {
+            tenant: here,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn set_directory_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDirectoryAdmissionRequest>,
+    ) -> ServiceResult<pb::SetDirectoryAdmissionResponse> {
+        let caps_text = if req.set_caps {
+            let c: Vec<String> = req
+                .caps
+                .iter()
+                .map(|c| format!("{}={}", c.pool, c.bytes))
+                .collect();
+            format!(", caps [{}]", c.join(","))
+        } else {
+            String::new()
+        };
+        let target = format!(
+            "admission of {}: {}{caps_text}",
+            req.directory,
+            if req.admit.is_empty() {
+                "unchanged"
+            } else {
+                req.admit
+            }
+        );
+        let who = self.authorize(&ctx, "SetDirectoryAdmission", &target, true)?;
+        let r = async {
+            let admit = admit_of(req.admit, None)?;
+            let caps = if req.set_caps {
+                Some(caps_of(
+                    req.caps.iter().map(|c| (c.pool.to_string(), c.bytes)),
+                    &self.pool_names().await?,
+                )?)
+            } else {
+                None
+            };
+            let d = self.trusted(req.directory).await?;
+            let id = d.dir.id.clone();
+            let set = self
+                .realm_rows("directory", move |db| {
+                    trust::set_admission(db, &id, admit, caps)
+                })
+                .await?;
+            if !set {
+                return Err(with_reason(
+                    ConnectError::failed_precondition(format!(
+                        "{} isn't trusted as a whole: offer it a directory offer (admission offer with no --tenant)",
+                        d.dir.issuer
+                    )),
+                    "not_whole",
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        Self::audited(&who, "SetDirectoryAdmission", &target, r)?;
+        Ok(pb::SetDirectoryAdmissionResponse::default().into())
     }
 
     async fn get_feed_work(
@@ -1170,19 +1631,35 @@ impl TrustService for Api {
                 c.s3_keys += 1;
             }
         }
+        let mut reported: Vec<glidex_trust::StorageTenantReport> = here
+            .iter()
+            .map(|(gid, id)| glidex_trust::StorageTenantReport {
+                tenant: gid.clone(),
+                suspended: tenants.iter().any(|x| &x.id == gid && x.suspended),
+                admission: AdmissionStatus::Admitted,
+                storage: counts.remove(id).unwrap_or_default(),
+                // Per project (glidex D89): not sent yet, so the
+                // directory blocks no project's delete (I415, #390).
+                project_storage: Vec::new(),
+            })
+            .collect();
+        // Opt-ins not admitted: their status, nothing held (D346).
+        reported.extend(
+            d.dir
+                .admissions()
+                .into_iter()
+                .filter(|(_, s)| !s.is_admitted())
+                .map(|(x, s)| glidex_trust::StorageTenantReport {
+                    tenant: x.id.clone(),
+                    suspended: false,
+                    admission: s,
+                    storage: Default::default(),
+                    project_storage: Vec::new(),
+                }),
+        );
         let report = glidex_trust::ClusterReport {
             at: super::admin::now_unix(),
-            tenants: here
-                .iter()
-                .map(|(gid, id)| glidex_trust::StorageTenantReport {
-                    tenant: gid.clone(),
-                    suspended: tenants.iter().any(|x| &x.id == gid && x.suspended),
-                    storage: counts.remove(id).unwrap_or_default(),
-                    // Per project (glidex D89): not sent yet, so the
-                    // directory blocks no project's delete (I415, #390).
-                    project_storage: Vec::new(),
-                })
-                .collect(),
+            tenants: reported,
         };
         Ok(pb::GetTrustReportResponse {
             report: serde_json::to_vec(&report).expect("json"),

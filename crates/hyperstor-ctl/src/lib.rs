@@ -1151,10 +1151,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TrustService.EndTrust", "admission end"),
     ("TrustService.SetOperator", "cluster set-operator"),
     ("TrustService.SetDirectoryStaleness", "admission staleness"),
+    ("TrustService.DecideAdmission", "admission approve|reject"),
+    ("TrustService.SetDirectoryAdmission", "admission directory"),
     // hyperstor-mgmt's own calls for directories (D306): no command.
     ("TrustService.GetTrustKey", "hyperstor-mgmt"),
     ("TrustService.RelayRedeem", "hyperstor-mgmt"),
     ("TrustService.RelayEnd", "hyperstor-mgmt"),
+    ("TrustService.RelayAdmit", "hyperstor-mgmt"),
     ("TrustService.GetFeedWork", "hyperstor-mgmt"),
     ("TrustService.ApplyFeed", "hyperstor-mgmt"),
     ("TrustService.GetTrustReport", "hyperstor-mgmt"),
@@ -1480,7 +1483,11 @@ pub fn offers_text(r: &pb::ListOffersResponse) -> String {
             "{:<18}  {:<9}  {:<16}  {:<16}  {:<12}  {:<16}  {}",
             x.id,
             x.state,
-            x.tenant,
+            if x.scope == "directory" {
+                "(the directory)"
+            } else {
+                &x.tenant
+            },
             x.name,
             x.realm,
             utc(x.expires_unix),
@@ -1515,6 +1522,18 @@ pub fn directories_text(r: &pb::ListTrustedDirectoriesResponse, now: u64) -> Str
                 d.revision.get(..12).unwrap_or(&d.revision)
             }
         );
+        if d.whole {
+            let _ = writeln!(
+                o,
+                "  trusted as a whole: tenants admitted {}, starting with caps {}",
+                if d.admit == "approval" {
+                    "once approved"
+                } else {
+                    "when they opt in"
+                },
+                caps_text(&d.caps)
+            );
+        }
         for t in &d.tenants {
             let here = if t.tenant == 0 {
                 "not made yet".to_string()
@@ -1522,7 +1541,15 @@ pub fn directories_text(r: &pb::ListTrustedDirectoriesResponse, now: u64) -> Str
                 format!("tenant {} (id {})", t.name, t.tenant)
             };
             let op = if t.operator { ", the operator" } else { "" };
-            let _ = writeln!(o, "  {} ({}): {here}{op}", t.slug, t.id);
+            let caps = if t.caps.is_empty() {
+                String::new()
+            } else {
+                format!(", caps {}", caps_text(&t.caps))
+            };
+            let _ = writeln!(o, "  {} ({}): {here}{op}{caps}", t.slug, t.id);
+        }
+        for t in d.pending.iter().chain(&d.refused) {
+            let _ = writeln!(o, "  {} ({}): {}", t.slug, t.id, t.admission);
         }
         let stale = if d.max_staleness_minutes == 0 {
             "the cluster's default".to_string()
@@ -1541,6 +1568,41 @@ pub fn directories_text(r: &pb::ListTrustedDirectoriesResponse, now: u64) -> Str
         for b in &d.blocked {
             let _ = writeln!(o, "  not done yet: {b}");
         }
+    }
+    o
+}
+
+/// Caps as `POOL=BYTES,...`, or `none`.
+pub fn caps_text(c: &[pb::PoolCap]) -> String {
+    if c.is_empty() {
+        return "none".into();
+    }
+    c.iter()
+        .map(|c| format!("{}={}", c.pool, c.bytes))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// `admission pending`: the opt-ins waiting for a security administrator,
+/// and those refused, of each directory trusted as a whole (D346).
+pub fn pending_text(r: &pb::ListTrustedDirectoriesResponse) -> String {
+    let mut o = format!(
+        "{:<10}  {:<20}  {:<24}  {}\n",
+        "STATUS", "TENANT", "ID", "DIRECTORY"
+    );
+    let mut any = false;
+    for d in &r.directories {
+        for t in d.pending.iter().chain(&d.refused) {
+            any = true;
+            let _ = writeln!(
+                o,
+                "{:<10}  {:<20}  {:<24}  {}",
+                t.admission, t.slug, t.id, d.issuer
+            );
+        }
+    }
+    if !any {
+        return "No opt-ins pending.\n".into();
     }
     o
 }
