@@ -15,7 +15,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use vhost::vhost_user::message::{VhostUserConfigFlags, VhostUserProtocolFeatures};
 use vhost::vhost_user::{Frontend, VhostUserFrontend};
-use vhost::{VhostBackend, VhostUserMemoryRegionInfo, VringConfigData};
+use vhost::{VhostBackend, VhostUserDirtyLogRegion, VhostUserMemoryRegionInfo, VringConfigData};
 use vm_memory::{Bytes, FileOffset, GuestAddress, GuestMemoryMmap, GuestRegionMmap, MmapRegion};
 use vmm_sys_util::eventfd::EventFd;
 
@@ -153,7 +153,11 @@ const MEM: usize = 16 << 20;
 pub struct Guest {
     mem: GuestMemoryMmap,
     /// The connection: dropping it disconnects, as a hypervisor exiting.
-    _front: Frontend,
+    front: Frontend,
+    /// The virtio features acked.
+    features: u64,
+    /// The guest's memory as the frontend maps it.
+    host: u64,
     kick: EventFd,
     call: EventFd,
     avail: u16,
@@ -240,11 +244,14 @@ impl Guest {
         front.set_features(want).unwrap();
         let pf = front.get_protocol_features().unwrap();
         assert!(pf.contains(VhostUserProtocolFeatures::CONFIG));
+        // The dirty-page log too, when offered (D349), as a hypervisor
+        // that migrates takes it.
         front
             .set_protocol_features(
                 VhostUserProtocolFeatures::MQ
                     | VhostUserProtocolFeatures::CONFIG
-                    | VhostUserProtocolFeatures::REPLY_ACK,
+                    | VhostUserProtocolFeatures::REPLY_ACK
+                    | (pf & VhostUserProtocolFeatures::LOG_SHMFD),
             )
             .unwrap();
         assert!(front.get_queue_num().unwrap() >= 1);
@@ -283,7 +290,9 @@ impl Guest {
         front.set_vring_enable(0, true).unwrap();
         Guest {
             mem,
-            _front: front,
+            front,
+            features: want,
+            host,
             kick,
             call,
             avail: 0,
@@ -293,6 +302,91 @@ impl Guest {
             late_kicks: 0,
             config: config.to_vec(),
         }
+    }
+
+    /// Turns dirty-page logging on, as a hypervisor starting a live
+    /// migration does (D349): a log for the guest's memory
+    /// (`SET_LOG_BASE`), `VHOST_F_LOG_ALL`, and the used ring logged at its
+    /// own address. Returns the log.
+    pub fn start_log(&mut self) -> File {
+        // SAFETY: memfd_create with a static name; the descriptor is owned
+        // by the File below.
+        let fd = unsafe { libc::memfd_create(c"dirty-log".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(fd >= 0);
+        // SAFETY: a fresh descriptor nothing else owns.
+        let log = unsafe { File::from_raw_fd(fd) };
+        let size = (MEM as u64 / 4096).div_ceil(8);
+        log.set_len(4096).unwrap();
+        self.front
+            .set_log_base(
+                0,
+                Some(VhostUserDirtyLogRegion {
+                    mmap_size: size,
+                    mmap_offset: 0,
+                    mmap_handle: log.as_raw_fd(),
+                }),
+            )
+            .unwrap();
+        self.front.set_features(self.features | 1 << 26).unwrap();
+        self.front
+            .set_vring_addr(
+                0,
+                &VringConfigData {
+                    queue_max_size: QSIZE,
+                    queue_size: QSIZE,
+                    flags: 1,
+                    desc_table_addr: self.host + DESC,
+                    used_ring_addr: self.host + USED,
+                    avail_ring_addr: self.host + AVAIL,
+                    log_addr: Some(USED),
+                },
+            )
+            .unwrap();
+        log
+    }
+
+    /// The guest pages marked in a dirty-page log, in order.
+    pub fn dirty_pages(log: &File) -> Vec<u64> {
+        use std::os::unix::fs::FileExt;
+        let mut b = vec![0u8; (MEM / 4096).div_ceil(8)];
+        log.read_exact_at(&mut b, 0).unwrap();
+        (0..b.len() as u64 * 8)
+            .filter(|p| b[(*p / 8) as usize] & (1 << (p % 8)) != 0)
+            .collect()
+    }
+
+    /// Clears a dirty-page log, as a hypervisor does between its copies.
+    pub fn clear_log(log: &File) {
+        use std::os::unix::fs::FileExt;
+        log.write_all_at(&vec![0u8; (MEM / 4096).div_ceil(8)], 0)
+            .unwrap();
+    }
+
+    /// The pages of `len` bytes from guest address `gpa`.
+    pub fn pages(gpa: u64, len: u64) -> std::ops::RangeInclusive<u64> {
+        gpa / 4096..=(gpa + len - 1) / 4096
+    }
+
+    /// Where requests' buffers, status bytes and the used ring are in the
+    /// guest's memory: (headers, data, the status of [`Guest::request`],
+    /// the used ring).
+    pub fn layout() -> (u64, u64, u64, u64) {
+        (BUFS, BUFS + 0x1000, MEM as u64 - 1, USED)
+    }
+
+    /// Stops queue 0 (`GET_VRING_BASE`), as a hypervisor pausing the
+    /// guest does: the ring's next available index.
+    pub fn stop_ring(&mut self) -> u32 {
+        self.front.get_vring_base(0).unwrap()
+    }
+
+    /// The used ring's index, as the device last wrote it.
+    pub fn used_idx(&self) -> u16 {
+        let mut idx = [0u8; 2];
+        self.mem
+            .read_slice(&mut idx, GuestAddress(USED + 2))
+            .unwrap();
+        u16::from_le_bytes(idx)
     }
 
     /// A little-endian field of the device's configuration space.
@@ -486,6 +580,13 @@ impl Guest {
     /// requests in flight in little guest memory. Waits for every one;
     /// returns the bytes the device said each wrote.
     pub fn read_together(&mut self, n: u16, off: u64, len: u32) -> Vec<u32> {
+        self.post_reads(n, off, len);
+        self.wait_reads(n)
+    }
+
+    /// [`Guest::read_together`]'s reads made available and notified,
+    /// without waiting for them: [`Guest::wait_reads`] does.
+    pub fn post_reads(&mut self, n: u16, off: u64, len: u32) {
         assert!(n <= QSIZE / 2 && (len as u64) < (MEM as u64) - BUFS - 0x1000);
         let data = BUFS + 0x1000;
         for k in 0..n {
@@ -506,6 +607,11 @@ impl Guest {
             .write_slice(&self.avail.to_le_bytes(), GuestAddress(AVAIL + 2))
             .unwrap();
         self.kick.write(1).unwrap();
+    }
+
+    /// Waits for the next `n` completions; the bytes the device said each
+    /// wrote.
+    pub fn wait_reads(&mut self, n: u16) -> Vec<u32> {
         let want = self.used.wrapping_add(n);
         let t = Instant::now();
         loop {

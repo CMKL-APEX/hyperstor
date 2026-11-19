@@ -787,3 +787,60 @@ fn a_host_bound_to_a_realm_attaches_only_its_volumes() {
         .expect(1);
     svc.stop();
 }
+
+/// A guest migrating live (D349): once the hypervisor turns logging on,
+/// the pages each request writes (read data, the status byte, the used
+/// ring) are marked in its dirty-page log, and nothing before; and a ring
+/// stopped by `GET_VRING_BASE` with requests in flight answers only once
+/// they are done, their data and completions on the used ring and logged.
+#[test]
+fn a_migrating_guests_writes_are_logged_and_a_stop_finishes_its_requests() {
+    let c = Cluster::all_in_one("vhostlog", 3);
+    let id = volume(&c, "64M");
+    let svc = Service::start(&c, "vhost-log", &[]);
+    let r = svc.attach(&id, "attach");
+    let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
+    let mut g = Guest::connect(&socket, false);
+    let data = pattern(7, 64 << 10);
+    g.write(0, &data);
+    let log = g.start_log();
+    assert!(
+        Guest::dirty_pages(&log).is_empty(),
+        "nothing before logging"
+    );
+    let (_, buf, status, used) = Guest::layout();
+    let used_pages: Vec<u64> = Guest::pages(used, 4 + 8 * 64 + 2).collect();
+    let want = |more: &[u64]| {
+        let mut w: Vec<u64> = Guest::pages(status, 1).chain(used_pages.clone()).collect();
+        w.extend_from_slice(more);
+        w.sort_unstable();
+        w.dedup();
+        w
+    };
+    // A write: the device writes only its status and the used ring.
+    g.write(1 << 20, &data);
+    assert_eq!(Guest::dirty_pages(&log), want(&[]));
+    // A read: its data's pages too.
+    Guest::clear_log(&log);
+    assert!(g.read(0, data.len() as u32) == data);
+    let read: Vec<u64> = Guest::pages(buf, data.len() as u64).collect();
+    assert_eq!(Guest::dirty_pages(&log), want(&read));
+    // Reads in flight when the ring stops: the stop answers once each is
+    // on the used ring, with the next available index after them all.
+    Guest::clear_log(&log);
+    g.post_reads(16, 0, 1 << 20);
+    let base = g.stop_ring();
+    assert_eq!(base, 19, "the ring's next available request");
+    assert_eq!(
+        g.used_idx(),
+        19,
+        "every request taken completed before the stop"
+    );
+    let mut read: Vec<u64> = Guest::pages(buf, (1 << 20) + 1).collect();
+    read.extend(used_pages.iter());
+    read.sort_unstable();
+    read.dedup();
+    assert_eq!(Guest::dirty_pages(&log), read);
+    drop(g);
+    svc.stop();
+}

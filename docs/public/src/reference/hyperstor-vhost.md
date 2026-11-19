@@ -119,6 +119,16 @@ request that would go past that waits for the connection's earlier ones
 to finish, and none is refused for it. Linux guests send at most
 1280 KiB per request, so they don't reach it.
 
+## Live migration
+
+The service logs the guest pages it writes while a hypervisor migrates
+a VM live: it offers vhost-user's dirty-page log (`LOG_SHMFD`,
+`VHOST_F_LOG_ALL`), and marks the pages each request writes and the
+used ring's. When the hypervisor stops a queue, the service finishes the
+requests in flight on it first (for up to 35 s), so none is lost and
+their data reaches the new host. The new host's disk, attached as a
+delegate of this one's lease, is not built yet.
+
 ## Restarts
 
 Stopping or restarting the service doesn't detach its volumes. It keeps
