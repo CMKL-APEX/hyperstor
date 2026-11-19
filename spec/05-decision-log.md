@@ -1765,6 +1765,19 @@ beside its head instead, replicated and persistent as the map is.
 |---|---|---|---|
 | 312 | Where a storage node's host name is kept: in the map (recommended); the leader's memory; an operator's label | In the map, as rows beside its head | D348 |
 
+## Dirty-page logging for live migration (#397, 2026-11-19)
+
+glidex migrates Cloud Hypervisor VMs live (glidex's
+spec/32-live-migration.md); `hyperstor-vhost` didn't log the guest pages
+it writes, and a ring stopped by `GET_VRING_BASE` dropped its requests
+in flight (I161). Asked what a ring's stop does with them (finish them
+first, recommended; or answer at once and leave them for the target to
+resubmit from the in-flight buffer), the owner chose to finish them:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 313 | A ring stopped during a migration: finish its requests in flight, logging their writes, before answering (recommended); or answer at once, the target resubmitting them through `INFLIGHT_SHMFD` | Finish them first | D349 |
+
 ## Delegate handover for live migration (#398, 2026-11-19)
 
 glidex migrates Cloud Hypervisor VMs live (glidex spec/32-live-migration.md

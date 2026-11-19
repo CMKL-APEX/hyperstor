@@ -89,36 +89,6 @@ label of whoever holds the volume, `"holder"`: `vhost:<name>` for
 another node's service, `hyperstorctl` for a tool. `"poll": true`
 polls the disk (see [Polling](#polling)); it is kept across restarts.
 
-## Live migration
-
-glidex moves a running VM to another node with its disks attached
-throughout. The volume's lease passes from the source's service to the
-target's, which never writes before it holds it:
-
-1. **On the source,** `delegate` adds a delegate to the disk's lease and
-   answers its identity, `{"delegate": "<16 hex digits>"}`.
-2. **On the target,** `attach` with `"delegate"` set to it (and
-   `"holder"`) attaches the volume as that delegate, standing by: the
-   receiving hypervisor connects to its socket, reads work, writes are
-   refused. It is checked with the cluster first: a cluster whose
-   storage nodes can't hand a lease over (before v0.0.8) refuses it
-   (`invalid`), before any memory is copied. `list` shows it as
-   `"role": "delegate"`, which glidex's clean-up of stale holds leaves
-   alone; a holder's disk is `"role": "holder"`.
-3. **At the switch,** once the source's hypervisor has stopped its
-   rings (the service finishes the requests in flight first), `promote`
-   on the target makes it the volume's holder at once. The source's
-   lease is fenced in the background, `{"fencing": [...]}`; its renewals
-   fail from then on, and detaching it there fences nothing of the
-   target's.
-4. **A cancelled migration:** `detach` the target (with `force`, its
-   hypervisor connected) and `undelegate` it on the source, which fences
-   it. The source's VM goes on throughout.
-
-A delegate standing by isn't in the state file: a restart of the
-target's service before the switch drops it, and glidex starts the
-migration again. Once promoted, it is kept like any other disk.
-
 ## NUMA nodes
 
 The service runs a reactor, a thread doing all of a disk's I/O, on each
@@ -155,6 +125,43 @@ hypervisor's connection may hold up to 64 MiB in them at once; a
 request that would go past that waits for the connection's earlier ones
 to finish, and none is refused for it. Linux guests send at most
 1280 KiB per request, so they don't reach it.
+
+## Live migration
+
+The service logs the guest pages it writes while a hypervisor migrates
+a VM live: it offers vhost-user's dirty-page log (`LOG_SHMFD`,
+`VHOST_F_LOG_ALL`), and marks the pages each request writes and the
+used ring's. When the hypervisor stops a queue, the service finishes the
+requests in flight on it first (for up to 35 s), so none is lost and
+their data reaches the new host.
+
+glidex moves a running VM to another node with its disks attached
+throughout. The volume's lease passes from the source's service to the
+target's, which never writes before it holds it:
+
+1. **On the source,** `delegate` adds a delegate to the disk's lease and
+   answers its identity, `{"delegate": "<16 hex digits>"}`.
+2. **On the target,** `attach` with `"delegate"` set to it (and
+   `"holder"`) attaches the volume as that delegate, standing by: the
+   receiving hypervisor connects to its socket, reads work, writes are
+   refused. It is checked with the cluster first: a cluster whose
+   storage nodes can't hand a lease over (older builds) refuses it
+   (`invalid`), before any memory is copied. `list` shows it as
+   `"role": "delegate"`, which glidex's clean-up of stale holds leaves
+   alone; a holder's disk is `"role": "holder"`.
+3. **At the switch,** once the source's hypervisor has stopped its
+   rings (the service finishes the requests in flight first), `promote`
+   on the target makes it the volume's holder at once. The source's
+   lease is fenced in the background, `{"fencing": [...]}`; its renewals
+   fail from then on, and detaching it there fences nothing of the
+   target's.
+4. **A cancelled migration:** `detach` the target (with `force`, its
+   hypervisor connected) and `undelegate` it on the source, which fences
+   it. The source's VM goes on throughout.
+
+A delegate standing by isn't in the state file: a restart of the
+target's service before the switch drops it, and glidex starts the
+migration again. Once promoted, it is kept like any other disk.
 
 ## Restarts
 

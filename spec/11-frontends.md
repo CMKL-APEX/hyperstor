@@ -59,6 +59,18 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   sockets: QEMU with `reconnect`, Cloud Hypervisor on its own (G6). The
   requests in flight run again from the frontend's in-flight buffer
   (D143, D145).
+- **Live migration** (D349; glidex's live migration, which also needs
+  the target's delegate, §11.4). The service offers
+  `VHOST_USER_PROTOCOL_F_LOG_SHMFD` and `VHOST_F_LOG_ALL`: while the
+  hypervisor copies a running guest's memory to another host, every
+  guest page a request writes (read data, the status byte) and the used
+  ring's pages are marked in the dirty-page log it gives (one bit per
+  4 KiB page). A ring stopped by `GET_VRING_BASE` first finishes the
+  requests it has taken, up to 35 s, so their data and completions are
+  in the guest's memory, and logged, before the hypervisor reads the
+  ring's state. Why: a read finishing during the copy writes guest
+  memory the target would otherwise never receive, and a request in
+  flight at the stop would be lost.
 - **Detach.** A detach is refused (`busy`) while a hypervisor is
   connected to the disk, unless forced, so a client's mistake can't pull
   a running VM's disk (D256, I297). It waits up to 2 s for a hypervisor

@@ -116,6 +116,7 @@ covered by tests that run on every change.
 | Zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
 | A detach is refused while a hypervisor is connected, unless forced | Done |
+| hyperstor-vhost for live migration: dirty-page logging (LOG_SHMFD, VHOST_F_LOG_ALL) and ring stops that finish their requests in flight | Done |
 | A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused | Done |
 | hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |
 | Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
