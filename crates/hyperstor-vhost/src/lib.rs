@@ -160,6 +160,9 @@ struct Served {
     label: String,
     /// Its rings are polled while busy (D293).
     poll: bool,
+    /// Attached as a delegate waiting for promotion, a live migration's
+    /// target (D350): not in the state file, since it holds no lease.
+    delegate: Rc<Cell<bool>>,
     socket: PathBuf,
     listener: UnixListener,
     /// The connected frontend, if any, to cut off at detach.
@@ -407,13 +410,18 @@ impl Service {
                 take,
                 holder,
                 poll,
+                delegate,
             } => {
                 let label = if holder.is_empty() {
                     "vhost".to_string()
                 } else {
                     format!("vhost:{holder}")
                 };
-                match self.attach(volume, serial, take, &label, poll).await {
+                let attached = match delegate {
+                    Some(d) => self.attach_delegate(volume, serial, d, &label, poll).await,
+                    None => self.attach(volume, serial, take, &label, poll).await,
+                };
+                match attached {
                     Ok(v) => Reply::ok(id, v),
                     Err(Refused::Held { message, holder }) => Reply::held(id, &message, &holder),
                     Err(Refused::Other(code, msg)) => Reply::error(id, code, &msg),
@@ -423,11 +431,153 @@ impl Service {
                 Ok(()) => Reply::ok(id, control::detached()),
                 Err((code, msg)) => Reply::error(id, code, &msg),
             },
+            Request::Delegate { volume } => match self.delegate(volume, None).await {
+                Ok(d) => Reply::ok(id, control::delegated(d)),
+                Err((code, msg)) => Reply::error(id, code, &msg),
+            },
+            Request::Undelegate { volume, delegate } => {
+                match self.delegate(volume, Some(delegate)).await {
+                    Ok(_) => Reply::ok(id, control::detached()),
+                    Err((code, msg)) => Reply::error(id, code, &msg),
+                }
+            }
+            Request::Promote { volume } => match self.promote(volume).await {
+                Ok(fenced) => Reply::ok(id, control::promoted(&fenced)),
+                Err((code, msg)) => Reply::error(id, code, &msg),
+            },
         }
     }
 
+    /// On the source of a migration (D350): adds a delegate to the lease
+    /// of `volume`, attached here as its holder, and answers it; with
+    /// `remove`, removes and fences that delegate instead.
+    async fn delegate(
+        &self,
+        volume: u128,
+        remove: Option<u64>,
+    ) -> Result<u64, (&'static str, String)> {
+        let Some(home) = self.disks.borrow().get(&volume).map(|d| d.home.get()) else {
+            return Err((
+                "not_attached",
+                format!("volume {volume:032x} isn't attached here"),
+            ));
+        };
+        self.reactors
+            .run_on(home, move || async move {
+                let Some(disk) = device::local_disk(volume) else {
+                    return Err((
+                        "not_attached",
+                        format!("volume {volume:032x} isn't attached here"),
+                    ));
+                };
+                let v = &disk.volume;
+                if v.is_delegate() {
+                    return Err((
+                        "invalid",
+                        format!(
+                            "volume {volume:032x} is attached here as a delegate, not its holder"
+                        ),
+                    ));
+                }
+                let r = match remove {
+                    Some(d) => v.remove_delegate(d).await.map(|()| d),
+                    None => v.add_delegate().await,
+                };
+                r.map_err(|e| (control::error_code(&e), e.to_string()))
+            })
+            .await
+            .unwrap_or_else(|| Err(("internal", "its reactor stopped".into())))
+    }
+
+    /// On a migration's target (D350): attaches `volume` as delegate
+    /// `delegate` of its holder, standing by: its socket takes the
+    /// receiving hypervisor, and it writes nothing until promoted. Checked
+    /// first with the header's storage node, so a cluster that can't
+    /// promote refuses before the copy starts (D352).
+    async fn attach_delegate(
+        self: &Rc<Self>,
+        volume: u128,
+        serial: String,
+        delegate: u64,
+        label: &str,
+        poll: bool,
+    ) -> Result<control::Value, Refused> {
+        let found = self
+            .disks
+            .borrow()
+            .get(&volume)
+            .map(|d| (d.socket.clone(), d.lease, d.delegate.get()));
+        if let Some((socket, lease, standing)) = found {
+            match self.status(volume).await {
+                // A retry.
+                Some((false, size)) if standing && lease == delegate => {
+                    return Ok(control::attached(&socket, size));
+                }
+                Some((false, _)) => {
+                    return Err(Refused::Other(
+                        "invalid",
+                        format!("volume {volume:032x} is attached here already"),
+                    ));
+                }
+                _ => self.detach(volume, true).await.map_err(Refused::from)?,
+            }
+        }
+        let fail = |e: ClientError| Refused::Other(control::error_code(&e), e.to_string());
+        let att = self.client.delegate(volume, delegate).await.map_err(fail)?;
+        att.set_standby().map_err(fail)?;
+        *att.label_mut() = hyperstor_client::cut_label(label);
+        if let Err(e) = att.check_promote().await {
+            att.detach().await.ok();
+            return Err(fail(e));
+        }
+        self.open_disk(volume, serial, att, poll)
+            .await
+            .map_err(Refused::from)
+    }
+
+    /// On a migration's target, at the switch (D351): promotes the
+    /// delegate attached here to the volume's holder. Answers the
+    /// identities being fenced in the background.
+    async fn promote(&self, volume: u128) -> Result<Vec<u64>, (&'static str, String)> {
+        let Some((home, delegate)) = self
+            .disks
+            .borrow()
+            .get(&volume)
+            .map(|d| (d.home.get(), d.delegate.clone()))
+        else {
+            return Err((
+                "not_attached",
+                format!("volume {volume:032x} isn't attached here"),
+            ));
+        };
+        if !delegate.get() {
+            // Promoted already: a retry.
+            return Ok(Vec::new());
+        }
+        let fenced = self
+            .reactors
+            .run_on(home, move || async move {
+                let Some(disk) = device::local_disk(volume) else {
+                    return Err((
+                        "not_attached",
+                        format!("volume {volume:032x} isn't attached here"),
+                    ));
+                };
+                let label = disk.volume.label();
+                disk.volume
+                    .promote(&label)
+                    .await
+                    .map_err(|e| (control::error_code(&e), e.to_string()))
+            })
+            .await
+            .unwrap_or_else(|| Err(("internal", "its reactor stopped".into())))?;
+        delegate.set(false);
+        self.save_state();
+        Ok(fenced)
+    }
+
     async fn list(&self) -> Vec<control::Listed> {
-        let disks: Vec<(u128, PathBuf, bool, usize, bool)> = self
+        let disks: Vec<(u128, PathBuf, bool, usize, bool, bool)> = self
             .disks
             .borrow()
             .iter()
@@ -438,11 +588,12 @@ impl Service {
                     d.conn.borrow().is_some(),
                     d.home.get(),
                     d.poll,
+                    d.delegate.get(),
                 )
             })
             .collect();
         let mut out = Vec::new();
-        for (volume, socket, connected, home, poll) in disks {
+        for (volume, socket, connected, home, poll, delegate) in disks {
             let (lost, size) = self.status(volume).await.unwrap_or((true, 0));
             out.push(control::Listed {
                 volume,
@@ -453,6 +604,7 @@ impl Service {
                 reactor: home,
                 node: self.reactors.all[home].node,
                 poll,
+                delegate,
             });
         }
         out
@@ -479,6 +631,8 @@ impl Service {
                 .disks
                 .borrow()
                 .iter()
+                // A delegate holds no lease to take back (D350).
+                .filter(|(_, d)| !d.delegate.get())
                 .map(|(v, d)| (*v, d.serial.clone(), d.lease, d.label.clone(), d.poll))
                 .collect(),
         };
@@ -595,7 +749,8 @@ impl Service {
             }
         };
         let size = att.volume().size;
-        let (lease, label) = (att.lease(), att.label().to_string());
+        let (lease, label) = (att.lease(), att.label());
+        let delegate = Rc::new(Cell::new(att.is_delegate()));
         // Until a hypervisor connects, on this, the first, reactor (D292).
         device::hold_disk(new_disk(
             att,
@@ -623,6 +778,7 @@ impl Service {
                 lease,
                 label,
                 poll,
+                delegate,
                 socket: socket.clone(),
                 listener,
                 conn,
@@ -784,11 +940,16 @@ impl Service {
         if from == to {
             return to;
         }
-        let Some((serial, lease, label, poll)) = self
-            .disks
-            .borrow()
-            .get(&volume)
-            .map(|d| (d.serial.clone(), d.lease, d.label.clone(), d.poll))
+        let Some((serial, lease, label, poll, delegate)) =
+            self.disks.borrow().get(&volume).map(|d| {
+                (
+                    d.serial.clone(),
+                    d.lease,
+                    d.label.clone(),
+                    d.poll,
+                    d.delegate.get(),
+                )
+            })
         else {
             return from;
         };
@@ -797,10 +958,21 @@ impl Service {
             .reactors
             .run_on(to, move || async move {
                 let client = reactors::client(&spec).await?;
-                let att = client
-                    .adopt(volume, lease, &label)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                // A migration's target stands by on the new reactor too.
+                let att = if delegate {
+                    let att = client
+                        .delegate(volume, lease)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    att.set_standby().map_err(|e| e.to_string())?;
+                    *att.label_mut() = label;
+                    att
+                } else {
+                    client
+                        .adopt(volume, lease, &label)
+                        .await
+                        .map_err(|e| e.to_string())?
+                };
                 device::hold_disk(new_disk(att, serial, queues, hold, poll));
                 Ok::<(), String>(())
             })

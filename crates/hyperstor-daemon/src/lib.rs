@@ -2231,6 +2231,16 @@ impl ShardState {
                     self.lease_delegates(h.req, instance, to, key, delegates, tx.clone())
                         .await
                 }
+                Msg::LeasePromote {
+                    to,
+                    key,
+                    label,
+                    dry_run,
+                } => {
+                    let who = (instance, host.clone());
+                    self.lease_promote(h.req, who, to, key, label, dry_run, tx.clone())
+                        .await
+                }
                 Msg::LeaseRenew {
                     pool,
                     map_epoch,
@@ -3803,6 +3813,124 @@ impl ShardState {
                     version: version.get(),
                 },
                 Err(m) => m,
+            })
+        });
+    }
+
+    /// Makes delegate `to.lease` the holder of the volume's lease (D350,
+    /// D351; a live migration's switch), for `instance`, labelled
+    /// `label`: refused with [`Msg::LeaseHeld`] unless the holder lists
+    /// it. The holder's other delegates go with its lease; its renewals
+    /// fail from then on, and the new holder blocklists it. With
+    /// `dry_run`, only checks.
+    #[allow(clippy::too_many_arguments)]
+    async fn lease_promote(
+        self: &Rc<Self>,
+        req: u64,
+        who: (u64, String),
+        to: Target,
+        key: WireKey,
+        label: String,
+        dry_run: bool,
+        tx: Sender<Frame>,
+    ) {
+        let (instance, host) = who;
+        let send = move |m: Msg| {
+            let _ = tx.send(Frame::new(req, &m, &[]));
+        };
+        if instance == 0 {
+            return send(err(Code::Invalid, &self.map(), "no instance: send Hello"));
+        }
+        let lease = to.lease;
+        if lease == 0 {
+            return send(err(Code::Invalid, &self.map(), "no lease identity"));
+        }
+        if label.len() > hyperstor_proto::LABEL_MAX {
+            return send(err(Code::Invalid, &self.map(), "label too long"));
+        }
+        let version = Rc::new(Cell::new(0));
+        let v2 = version.clone();
+        let decide = move |me: &Self, okey: &ObjKey| {
+            let sh = me.shard.borrow();
+            let attrs = match sh.attrs(okey) {
+                Some(a) if sh.stat(okey).is_some() => a,
+                _ => return Err(err(Code::NotFound, &me.map(), "no such volume")),
+            };
+            v2.set(header_version(attrs));
+            if header_deleting(attrs) {
+                return Err(err(Code::Invalid, &me.map(), "the volume is being deleted"));
+            }
+            // The target host must be one that may attach it (D251, D259).
+            let map = me.map();
+            let tenant = map.volume_tenant(header_tenant(attrs), header_project(attrs));
+            if !map.host_may_attach(&host, tenant) {
+                let realm = map.tenant_realms.get(&tenant).copied().unwrap_or(0);
+                return Err(err(
+                    Code::Invalid,
+                    &map,
+                    format!("host {host} isn't bound to realm {realm} of tenant {tenant}"),
+                ));
+            }
+            let holder = attrs.get(LEASE_ATTR).and_then(|h| decode_holder(h));
+            let delegates = attrs
+                .get(DELEGATES_ATTR)
+                .map_or_else(Vec::new, |b| decode_delegates(b));
+            let Some(h) = holder else {
+                return Err(err(
+                    Code::Invalid,
+                    &map,
+                    "the volume has no holder to take the lease from",
+                ));
+            };
+            if !delegates.contains(&lease) {
+                return Err(Msg::LeaseHeld {
+                    holder: h.lease,
+                    delegates,
+                    remaining_ms: 0,
+                    label: h.label,
+                });
+            }
+            if dry_run {
+                return Ok(Vec::new());
+            }
+            me.leases.borrow_mut().insert(
+                okey.clone(),
+                (
+                    lease,
+                    std::time::Instant::now() + LEASE_EXPIRES,
+                    to.pg_epoch,
+                ),
+            );
+            let mine = Holder {
+                lease,
+                instance,
+                mode: LEASE_RW,
+                label: label.clone(),
+            };
+            Ok(vec![
+                WireOp::SetAttr(LEASE_ATTR.to_vec(), encode_holder(&mine)),
+                WireOp::RmAttr(DELEGATES_ATTR.to_vec()),
+            ])
+        };
+        let okey = engine_key(&to, &key).ok();
+        let done = self.decide_and_apply(instance, to, key, decide).await;
+        let me = self.clone();
+        spawn(async move {
+            send(match done.await {
+                Ok(()) => Msg::LeaseOk {
+                    version: version.get(),
+                },
+                Err(m) => {
+                    // Not known to have been written: the old holder's
+                    // renewals decide again from the header.
+                    if !dry_run
+                        && let Some(k) = okey
+                        && me.leases.borrow().get(&k).is_some_and(|l| l.0 == lease)
+                    {
+                        me.leases.borrow_mut().remove(&k);
+                    }
+                    m
+                }
             })
         });
     }

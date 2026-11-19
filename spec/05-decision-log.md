@@ -1764,3 +1764,20 @@ beside its head instead, replicated and persistent as the map is.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 312 | Where a storage node's host name is kept: in the map (recommended); the leader's memory; an operator's label | In the map, as rows beside its head | D348 |
+
+## Delegate handover for live migration (#398, 2026-11-19)
+
+glidex migrates Cloud Hypervisor VMs live (glidex spec/32-live-migration.md
+§7) and asked for 11-frontends.md §11.4's plan: the target attaches as a
+delegate during the copy and takes the lease at the switch. Delegates
+(D151) were added by the holder for clients of its own and never became
+holders. Asked how the target gets its delegate, how the source is
+fenced at the switch, and how glidex checks support, the owner chose the
+recommendations:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 314 | The target's delegate: handed out by the source's `hyperstor-vhost` on glidex's request (recommended); or asked of the header by the target, naming the holder's label | Handed out by the source | D350 |
+| 315 | The switch: promote, then fence the old holder in the background (recommended); fence first, then promote; the source hands the lease over itself | Promote, then fence | D351 |
+| 316 | glidex's check: `hello` on each host's control socket, and the target's attach checking the storage node (recommended); also a feature in `GetStatus` | `hello` and the attach's check | D352 |
+
