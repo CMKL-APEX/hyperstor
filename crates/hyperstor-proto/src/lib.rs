@@ -23,8 +23,11 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// peer may be sent depends on what it answered. 2: [`Target::lease`],
 /// delegates and per-volume fencing (D150, D152). 3: [`Msg::Host`], sent
 /// only to a peer whose `HelloOk` answers 3 or more (D261). 4:
-/// [`WireOp::WriteCrcs`] in operation lists (D279).
-pub const VERSION: u16 = 4;
+/// [`WireOp::WriteCrcs`] in operation lists (D279). 5:
+/// [`Msg::LeasePromote`] (D351).
+pub const VERSION: u16 = 5;
+/// The first version that decodes [`Msg::LeasePromote`] (D351).
+pub const PROMOTE_VERSION: u16 = 5;
 /// The first version that decodes [`WireOp::WriteCrcs`] (D279).
 pub const WRITE_CRCS_VERSION: u16 = 4;
 /// The oldest version this build still talks to: what it sends in
@@ -456,6 +459,18 @@ pub enum Msg {
         to: Target,
         key: WireKey,
         delegates: Vec<u64>,
+    },
+    /// A delegate (`to.lease`) to its header's primary: make it the
+    /// lease's holder, for the instance named at `Hello`, labelled
+    /// `label` (D350, D351; a live migration's switch). Refused with
+    /// [`Msg::LeaseHeld`] unless the holder lists it; the holder's other
+    /// delegates go. With `dry_run`, only checked. Answered `LeaseOk`.
+    /// Sent only to a peer of [`PROMOTE_VERSION`] or later.
+    LeasePromote {
+        to: Target,
+        key: WireKey,
+        label: String,
+        dry_run: bool,
     },
     /// Client to the primary of a volume's header: give the lease
     /// `to.lease` up.
@@ -901,6 +916,7 @@ mod kind {
     pub const PG_SPACE_OK: u16 = 98;
     pub const ERROR: u16 = 99;
     pub const NODE_HOST: u16 = 100;
+    pub const LEASE_PROMOTE: u16 = 101;
 }
 
 impl Msg {
@@ -916,6 +932,7 @@ impl Msg {
             | Msg::Flatten { to, .. }
             | Msg::Lease { to, .. }
             | Msg::LeaseDelegates { to, .. }
+            | Msg::LeasePromote { to, .. }
             | Msg::LeaseRelease { to, .. }
             | Msg::Lookup { to, .. }
             | Msg::Push { to, .. }
@@ -1020,6 +1037,7 @@ impl Msg {
             Msg::FetchPart { .. } => FETCH_PART,
             Msg::FetchPartOk { .. } => FETCH_PART_OK,
             Msg::LeaseDelegates { .. } => LEASE_DELEGATES,
+            Msg::LeasePromote { .. } => LEASE_PROMOTE,
             Msg::ReadAt { .. } => READ_AT,
             Msg::Versions { .. } => VERSIONS,
             Msg::VersionsOk { .. } => VERSIONS_OK,
@@ -1244,6 +1262,16 @@ impl Msg {
                 e.seq(delegates, |e, d| {
                     e.u64(*d);
                 });
+            }
+            Msg::LeasePromote {
+                to,
+                key,
+                label,
+                dry_run,
+            } => {
+                to.enc(e);
+                key.enc(e);
+                e.str(label).bool(*dry_run);
             }
             Msg::LeaseOk { version } => {
                 e.u64(*version);
@@ -1681,6 +1709,12 @@ impl Msg {
                 to: Target::dec(&mut d)?,
                 key: WireKey::dec(&mut d)?,
                 delegates: d.seq(8, |d| d.u64())?,
+            },
+            LEASE_PROMOTE => Msg::LeasePromote {
+                to: Target::dec(&mut d)?,
+                key: WireKey::dec(&mut d)?,
+                label: d.str()?.to_string(),
+                dry_run: d.bool()?,
             },
             LEASE_RELEASE => Msg::LeaseRelease {
                 to: Target::dec(&mut d)?,
@@ -2728,6 +2762,16 @@ mod tests {
                     version: 0,
                 },
                 delegates: vec![12],
+            },
+            Msg::LeasePromote {
+                to,
+                key: WireKey {
+                    ns: 3,
+                    name: b"h".to_vec(),
+                    version: 0,
+                },
+                label: "vhost:target".into(),
+                dry_run: true,
             },
             Msg::LeaseRelease {
                 to,

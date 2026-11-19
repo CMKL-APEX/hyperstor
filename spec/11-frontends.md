@@ -149,6 +149,9 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   virtio-blk or NVMe functions to the guest with no host CPU. Worth it
   at scale, but tied to one vendor and hard to combine with live
   migration.
-- **Live migration.** When glidex migrates VMs live, the destination
-  attaches as a delegate (D33) during the copy and takes over the lease
-  at switchover, with no blocklist round.
+- **Live migration** (built: D349–D352). The destination attaches as a
+  delegate (D33) during the copy, handed out by the source and standing
+  by without writing (D350), and is promoted to holder at switchover,
+  with the source fenced in the background rather than a blocklist round
+  first; its first write waits for the fence, its reads don't (D351). glidex checks each host's `hello` and the destination's
+  attach checks the storage node (D352).

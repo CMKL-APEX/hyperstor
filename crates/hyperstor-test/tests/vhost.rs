@@ -33,7 +33,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let svc = Service::start(&c, "vhost-a", &[]);
     assert_eq!(
         svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],
-        2
+        3
     );
     let r = svc.attach(&id, "attach");
     let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
@@ -843,4 +843,131 @@ fn a_migrating_guests_writes_are_logged_and_a_stop_finishes_its_requests() {
     assert_eq!(Guest::dirty_pages(&log), read);
     drop(g);
     svc.stop();
+}
+
+/// A live migration's handover, as glidex drives it (D350–D352): the
+/// source hands out a delegate, the target attaches it standing by and
+/// serves the receiving hypervisor, and `promote` at the switch makes the
+/// target the holder; the source's detach then leaves it alone, and its
+/// restart takes the volume back as any holder's. A cancelled migration:
+/// the target detaches and the source fences its delegate.
+#[test]
+fn a_disk_is_handed_to_a_migrations_target() {
+    let c = Cluster::all_in_one("vhost-migrate", 3);
+    let (v, w) = (volume(&c, "16M"), volume(&c, "16M"));
+    let src = Service::start(&c, "mig-src", &[]);
+    let mut dst = Service::start(&c, "mig-dst", &[]);
+    let ctl = |s: &Service, op: &str, args: serde_json::Value| {
+        s.ctl(serde_json::json!({"id": 9, "op": op, "args": args}))
+    };
+    let hello = ctl(&src, "hello", serde_json::json!({}));
+    assert_eq!(hello["ok"]["protocol"], 3, "{hello}");
+    assert!(
+        hello["ok"]["features"]
+            .to_string()
+            .contains("live_migration"),
+        "{hello}"
+    );
+    let attached = ctl(
+        &src,
+        "attach",
+        serde_json::json!({"volume": v, "holder": "n1"}),
+    );
+    let ss = PathBuf::from(attached["ok"]["socket"].as_str().unwrap());
+    let a = pattern(1, 64 << 10);
+    let mut gs = Guest::connect(&ss, true);
+    gs.write(0, &a);
+    // The copy: the target stands by with a delegate the source handed out.
+    let d = ctl(&src, "delegate", serde_json::json!({"volume": v}));
+    let id = d["ok"]["delegate"]
+        .as_str()
+        .expect("a delegate")
+        .to_string();
+    let t = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": v, "delegate": id, "holder": "n2", "serial": "disk-under-test"}),
+    );
+    let ts = PathBuf::from(t["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{t}")));
+    let role =
+        |s: &Service| ctl(s, "list", serde_json::json!({}))["ok"]["disks"][0]["role"].clone();
+    assert_eq!(
+        (role(&src), role(&dst)),
+        ("holder".into(), "delegate".into())
+    );
+    // Asked again (glidex retrying), the same answer.
+    let again = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": v, "delegate": id, "holder": "n2"}),
+    );
+    assert_eq!(again["ok"]["socket"], t["ok"]["socket"], "{again}");
+    // A delegate of a volume that isn't held here can't be had.
+    let none = ctl(&dst, "delegate", serde_json::json!({"volume": v}));
+    assert_eq!(none["error"]["code"], "invalid", "{none}");
+    let mut gt = Guest::connect(&ts, true);
+    assert!(gt.read(0, a.len() as u32) == a);
+    // The switch: the source's hypervisor stops, the target's is promoted.
+    drop(gs);
+    let p = ctl(&dst, "promote", serde_json::json!({"volume": v}));
+    assert_eq!(p["ok"]["fencing"].as_array().map(Vec::len), Some(1), "{p}");
+    assert_eq!(role(&dst), "holder");
+    let b = pattern(2, 64 << 10);
+    gt.write(0, &b);
+    let gone = ctl(&src, "detach", serde_json::json!({"volume": v}));
+    assert!(gone.get("ok").is_some(), "{gone}");
+    let cc = pattern(3, 64 << 10);
+    gt.write(4096, &cc);
+    assert!(gt.read(4096, cc.len() as u32) == cc);
+    // Promoted, it is the target's like any holder's: a restart keeps it.
+    drop(gt);
+    dst.restart();
+    assert_eq!(dst.listed(), vec![v.clone()]);
+    // A cancelled migration: the target lets go, the source fences it,
+    // and the source's guest goes on.
+    let sw = PathBuf::from(
+        ctl(
+            &src,
+            "attach",
+            serde_json::json!({"volume": w, "holder": "n1"}),
+        )["ok"]["socket"]
+            .as_str()
+            .unwrap(),
+    );
+    let mut gw = Guest::connect(&sw, true);
+    gw.write(0, &a);
+    let d = ctl(&src, "delegate", serde_json::json!({"volume": w}));
+    let id = d["ok"]["delegate"].as_str().unwrap().to_string();
+    let t = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": w, "delegate": id, "holder": "n2"}),
+    );
+    assert!(t.get("ok").is_some(), "{t}");
+    let off = ctl(
+        &dst,
+        "detach",
+        serde_json::json!({"volume": w, "force": true}),
+    );
+    assert!(off.get("ok").is_some(), "{off}");
+    let u = ctl(
+        &src,
+        "undelegate",
+        serde_json::json!({"volume": w, "delegate": id}),
+    );
+    assert!(u.get("ok").is_some(), "{u}");
+    let late = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": w, "delegate": id, "holder": "n2"}),
+    );
+    assert!(
+        late.get("error").is_some(),
+        "a fenced delegate attaches no more: {late}"
+    );
+    gw.write(0, &b);
+    assert!(gw.read(0, b.len() as u32) == b);
+    drop(gw);
+    src.stop();
+    dst.stop();
 }
