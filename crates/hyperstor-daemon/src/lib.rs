@@ -155,6 +155,29 @@ impl DeviceSpec {
     }
 }
 
+/// Where udev links a device by its filesystem label, which the patched
+/// libblkid reads from a Hyperstor superblock as `device-<id>` (D333).
+pub const BY_LABEL: &str = "/dev/disk/by-label";
+
+/// Where the drive of device `device` is now, when its configured block
+/// device path `path` is gone (D353): a drive that came back under
+/// another `/dev/disk/by-id/` name, its connection changed (a SATA drive
+/// behind a SAS controller or in a USB enclosure). Found by its label in
+/// `by_label`, `device-<id>`; the caller's open still checks the
+/// superblock names this device of this cluster (I203). None while the
+/// path exists, for a path outside `/dev` (a file), or with no such
+/// label.
+pub fn find_moved(
+    path: &std::path::Path,
+    device: u32,
+    by_label: &std::path::Path,
+) -> Option<PathBuf> {
+    if !path.starts_with("/dev/") || path.exists() {
+        return None;
+    }
+    std::fs::canonicalize(by_label.join(format!("device-{device}"))).ok()
+}
+
 pub struct ShardSpec {
     pub device_id: u32,
     pub device: DeviceSpec,
@@ -6938,6 +6961,38 @@ mod tests {
 
     /// Checksummed writes are checked whole (D279), and a node of the
     /// protocol before reads a list with one as malformed.
+    /// D353: a block device path that is gone is looked up by its
+    /// drive's label; an existing path, a file's path or a missing label
+    /// is left as it is.
+    #[test]
+    fn a_drive_whose_path_is_gone_is_found_by_its_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let labels = dir.path().join("by-label");
+        std::fs::create_dir(&labels).unwrap();
+        let drive = dir.path().join("sdz");
+        std::fs::write(&drive, b"").unwrap();
+        std::os::unix::fs::symlink(&drive, labels.join("device-1002")).unwrap();
+        let gone = std::path::Path::new("/dev/disk/by-id/hyperstor-test-no-such-drive");
+        let found = super::find_moved(gone, 1002, &labels);
+        assert_eq!(found, Some(std::fs::canonicalize(&drive).unwrap()));
+        assert_eq!(
+            super::find_moved(gone, 1003, &labels),
+            None,
+            "no such label"
+        );
+        assert_eq!(
+            super::find_moved(std::path::Path::new("/dev/null"), 1002, &labels),
+            None,
+            "the path is there"
+        );
+        let file = dir.path().join("gone.img");
+        assert_eq!(
+            super::find_moved(&file, 1002, &labels),
+            None,
+            "a file is never looked for"
+        );
+    }
+
     #[test]
     fn checksummed_writes_are_checked_and_unknown_to_older_nodes() {
         use super::{check_write_crcs, decode_ops_as};

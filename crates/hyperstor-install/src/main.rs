@@ -3570,16 +3570,28 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
     }
     // The devices added (D167): the service user may open each, and no
     // other disk (not the `disk` group, which would open every one).
+    // Each also by its superblock (D353), as the patched libblkid reads
+    // it: a drive that comes back under another by-id name (its
+    // connection changed) is still the service's to open, and only a
+    // drive holding that device of this cluster.
+    let cluster: Option<u128> = p.cluster_id.parse().ok();
     let rules: String = s
         .devices()
         .iter()
-        .filter_map(|(_, _, path)| path.strip_prefix("/dev/disk/by-id/"))
-        .map(|name| {
+        .filter_map(|(id, _, path)| Some((id, path.strip_prefix("/dev/disk/by-id/")?)))
+        .map(|(id, name)| {
             // DEVLINKS lists the disk's links, space-separated: the name
             // last, or followed by a space.
-            format!(
+            let mut r = format!(
                 "SUBSYSTEM==\"block\", ENV{{DEVTYPE}}==\"disk\", ENV{{DEVLINKS}}==\"*/dev/disk/by-id/{name}|*/dev/disk/by-id/{name} *\", OWNER=\"hyperstor\", GROUP=\"hyperstor\", MODE=\"0660\"\n"
-            )
+            );
+            if let Some(c) = cluster {
+                r.push_str(&format!(
+                    "SUBSYSTEM==\"block\", ENV{{DEVTYPE}}==\"disk\", ENV{{ID_FS_TYPE}}==\"hyperstor\", ENV{{ID_FS_UUID}}==\"{}\", ENV{{ID_FS_LABEL}}==\"device-{id}\", OWNER=\"hyperstor\", GROUP=\"hyperstor\", MODE=\"0660\"\n",
+                    cluster_uuid(c)
+                ));
+            }
+            r
         })
         .collect();
     if !rules.is_empty() {
@@ -3600,6 +3612,20 @@ const UDEV_RULES: &str = "/etc/udev/rules.d/61-hyperstor.rules";
 /// Where they were, read before the by-id links existed, so they never
 /// matched (I333): removed.
 const OLD_UDEV_RULES: &str = "/etc/udev/rules.d/60-hyperstor.rules";
+
+/// A cluster id as the patched libblkid reports a device's UUID (D333):
+/// the number in hex, as 8-4-4-4-12 digits.
+fn cluster_uuid(cluster: u128) -> String {
+    let h = format!("{cluster:032x}");
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
+}
 
 /// The cluster id: kept from an existing cluster file, else fresh.
 fn cluster_id(root: &Path) -> u64 {
@@ -5943,6 +5969,18 @@ mod tests {
             "{rules}"
         );
         assert!(!rules.contains("extra.img"), "files need no rule");
+        // And by its superblock (D353): a drive under another by-id name.
+        assert!(
+            rules.contains(
+                "ENV{ID_FS_TYPE}==\"hyperstor\", ENV{ID_FS_UUID}==\"00000000-0000-0000-0000-000000000009\", ENV{ID_FS_LABEL}==\"device-2\""
+            ),
+            "{rules}"
+        );
+        assert_eq!(
+            cluster_uuid(0x0123_4567_89ab_cdef_0011_2233_4455_6677),
+            "01234567-89ab-cdef-0011-223344556677",
+            "as scripts/build-libblkid-deb.sh checks blkid's"
+        );
     }
 
     /// D288: a demote joins its node through the leader, even when the

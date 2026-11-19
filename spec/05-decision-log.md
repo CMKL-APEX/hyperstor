@@ -1764,3 +1764,19 @@ beside its head instead, replicated and persistent as the map is.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 312 | Where a storage node's host name is kept: in the map (recommended); the leader's memory; an operator's label | In the map, as rows beside its head | D348 |
+
+## A drive under another name (2026-11-19)
+
+The owner asked whether a device UUID in the superblock would let the
+system recognise a drive moved to another port. The superblock already
+names its device and cluster, `hyperstord` checks both at open, and
+devices are named by `/dev/disk/by-id/`, which follows the drive across
+ports; what a port change can break is the by-id name itself, when the
+transport changes. Offered finding the drive by its superblock's label
+when its path is gone (no format change), or moving drives between
+hosts (a map operation), the owner chose the first:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 317 | A drive whose by-id name changed: found by its superblock's label (recommended); a UUID of its own in the superblock; moving drives between hosts | Found by its label | D353 |
+
