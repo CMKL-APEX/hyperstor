@@ -152,9 +152,11 @@ target's, which never writes before it holds it:
 3. **At the switch,** once the source's hypervisor has stopped its
    rings (the service finishes the requests in flight first), `promote`
    on the target makes it the volume's holder at once. The source's
-   lease is fenced in the background, `{"fencing": [...]}`; its renewals
-   fail from then on, and detaching it there fences nothing of the
-   target's.
+   lease is fenced in the background, `{"fencing": [...]}`; the guest
+   reads at once, and its first write waits until the fence is in place
+   (one blocklist round). The source's renewals fail from then on, and
+   detaching it there fences nothing of the target's. A `promote` sent
+   again after a lost answer succeeds.
 4. **A cancelled migration:** `detach` the target (with `force`, its
    hypervisor connected) and `undelegate` it on the source, which fences
    it. The source's VM goes on throughout.

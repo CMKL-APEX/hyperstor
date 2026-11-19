@@ -781,6 +781,13 @@ pub struct Attached {
     /// A delegate waiting to be promoted, a live migration's target
     /// (D350): it writes nothing until [`Attached::promote`].
     standby: Cell<bool>,
+    /// The identities a promotion fences (D351), kept from the first try
+    /// so that a promotion tried again still knows the old holder (I421).
+    promote_fence: RefCell<Vec<u64>>,
+    /// The old holder and its delegates, after a promotion: writes wait
+    /// until this client's map has them blocklisted (I421), so no write of
+    /// the old holder's can land after one of this handle's.
+    fencing: RefCell<Vec<u64>>,
     /// The holder's delegates, as last recorded (D151).
     delegates: RefCell<Vec<u64>>,
     /// The label the lease was taken with (D153).
@@ -921,6 +928,7 @@ impl Attached {
                 v.id
             )));
         }
+        self.wait_fenced().await?;
         self.inflight.set(self.inflight.get() + 1);
         self.writes.set(self.writes.get() + 1);
         if let Some(blocks) = self.blocks(&v, off, data.len() as u64) {
@@ -944,6 +952,33 @@ impl Attached {
         self.writes.set(self.writes.get() + 1);
         self.inflight.set(self.inflight.get() - 1);
         self.check(r)
+    }
+
+    /// After a promotion, waits until the old holder and its delegates are
+    /// blocklisted (I421): a write of the old holder's that a storage node
+    /// still holds (a full pool's, D183) is refused from then on, so none
+    /// lands after one of this handle's. Reads don't wait.
+    async fn wait_fenced(&self) -> Result<(), ClientError> {
+        loop {
+            if self.fencing.borrow().is_empty() {
+                return Ok(());
+            }
+            if self.lost.get() {
+                return Err(ClientError::LeaseLost(self.volume.borrow().id));
+            }
+            let map = self.client.map();
+            if self.fencing.borrow().iter().all(|d| map.blocked(*d)) {
+                self.fencing.borrow_mut().clear();
+                return Ok(());
+            }
+            sleep(Duration::from_millis(2)).await;
+        }
+    }
+
+    /// Whether this handle's writes still wait for a promotion's fence
+    /// (I421).
+    pub fn is_fencing(&self) -> bool {
+        !self.fencing.borrow().is_empty()
     }
 
     /// The (chunk, block in chunk) of each block of `[off, off + len)`;
@@ -1180,10 +1215,17 @@ impl Attached {
             Some(v) => v,
             None => return Err(ClientError::NoVolume(id)),
         };
+        // Tried before, and the reply lost: the header may name this
+        // handle already, so the old holder is the one the first try saw.
+        if self.promote_fence.borrow().is_empty() {
+            let mut fence: Vec<u64> = v.holder.into_iter().collect();
+            fence.extend(v.delegates.iter().copied());
+            fence.retain(|d| *d != self.lease && *d != 0);
+            *self.promote_fence.borrow_mut() = fence;
+        }
         self.send_promote(&label, false).await?;
-        let mut fence: Vec<u64> = v.holder.into_iter().collect();
-        fence.extend(v.delegates.iter().copied().filter(|d| *d != self.lease));
-        fence.retain(|d| *d != self.lease && *d != 0);
+        let fence = self.promote_fence.take();
+        *self.fencing.borrow_mut() = fence.clone();
         self.delegate.set(false);
         self.standby.set(false);
         *self.label.borrow_mut() = label;
@@ -1198,12 +1240,23 @@ impl Attached {
         }
         if !fence.is_empty() {
             let ids = fence.clone();
+            let me = Rc::downgrade(self);
+            // Tried until it is done: this handle's writes wait for it.
             hyperstor_reactor::spawn(async move {
-                if let Err(e) = client.blocklist(&ids).await {
-                    eprintln!(
-                        "hyperstor-client: volume {:032x}: fencing the old holder after a promotion: {e}",
-                        v.id
-                    );
+                let mut wait = 10;
+                loop {
+                    match client.blocklist(&ids).await {
+                        Ok(()) => break,
+                        Err(e) => eprintln!(
+                            "hyperstor-client: volume {:032x}: fencing the old holder after a promotion: {e}; trying again",
+                            v.id
+                        ),
+                    }
+                    if me.upgrade().is_none_or(|a| a.lost.get()) {
+                        break;
+                    }
+                    sleep(Duration::from_millis(wait)).await;
+                    wait = (wait * 2).min(1000);
                 }
             });
         }
@@ -1392,6 +1445,8 @@ impl Client {
             lease,
             delegate: Cell::new(false),
             standby: Cell::new(false),
+            promote_fence: RefCell::new(Vec::new()),
+            fencing: RefCell::new(Vec::new()),
             delegates: RefCell::new(delegates),
             label: RefCell::new(crate::cut_label(label)),
             lost: Cell::new(false),
@@ -1447,6 +1502,8 @@ impl Client {
             lease,
             delegate: Cell::new(true),
             standby: Cell::new(false),
+            promote_fence: RefCell::new(Vec::new()),
+            fencing: RefCell::new(Vec::new()),
             delegates: RefCell::new(Vec::new()),
             label: RefCell::new(String::new()),
             lost: Cell::new(false),
@@ -1578,6 +1635,8 @@ impl Client {
             lease,
             delegate: Cell::new(false),
             standby: Cell::new(false),
+            promote_fence: RefCell::new(Vec::new()),
+            fencing: RefCell::new(Vec::new()),
             delegates: RefCell::new(Vec::new()),
             label: RefCell::new(label.clone()),
             lost: Cell::new(false),

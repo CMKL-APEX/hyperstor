@@ -384,6 +384,8 @@ status = "done"
 tests = [
     "cluster::a_delegate_is_promoted_and_the_old_holder_fenced",
     "cluster::a_delegate_is_not_promoted_by_older_storage_nodes",
+    "cluster::a_promotion_sent_again_after_a_lost_reply_succeeds",
+    "cluster::a_promoted_holders_first_write_waits_for_the_fence",
     "vhost::a_disk_is_handed_to_a_migrations_target",
 ]
 

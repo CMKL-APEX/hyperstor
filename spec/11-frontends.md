@@ -153,5 +153,5 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   delegate (D33) during the copy, handed out by the source and standing
   by without writing (D350), and is promoted to holder at switchover,
   with the source fenced in the background rather than a blocklist round
-  first (D351). glidex checks each host's `hello` and the destination's
+  first; its first write waits for the fence, its reads don't (D351). glidex checks each host's `hello` and the destination's
   attach checks the storage node (D352).

@@ -2238,6 +2238,21 @@ impl ShardState {
                     dry_run,
                 } => {
                     let who = (instance, host.clone());
+                    // A reply lost (the fault rig): handled, and the
+                    // connection dropped once it is.
+                    let lose = self
+                        .older
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(node, o)| o.take_lost_reply(*node, h.kind));
+                    if lose {
+                        let (lost, mut rx) = channel::<Frame>();
+                        self.lease_promote(h.req, who, to, key, label, dry_run, lost)
+                            .await;
+                        let _ = rx.recv().await;
+                        let _ = s.shutdown();
+                        return;
+                    }
                     self.lease_promote(h.req, who, to, key, label, dry_run, tx.clone())
                         .await
                 }
@@ -3882,6 +3897,11 @@ impl ShardState {
                     "the volume has no holder to take the lease from",
                 ));
             };
+            // Promoted already, by this client: a request sent again after
+            // its reply was lost (I421). Answered as the first was.
+            if h.lease == lease && h.instance == instance {
+                return Ok(Vec::new());
+            }
             if !delegates.contains(&lease) {
                 return Err(Msg::LeaseHeld {
                     holder: h.lease,
