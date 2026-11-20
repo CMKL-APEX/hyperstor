@@ -36,9 +36,11 @@ def milestone_status(m):
     return "planned"
 
 
-# Test executables are in target/<profile>/deps, or with Cargo's newer
-# layout in target/<profile>/build/<crate>/<hash>/out.
-RUNNING = re.compile(r"^\s+Running (?:unittests )?\S+ \(.*/(?:deps|out)/(.+)-[0-9a-f]+(?:\.exe)?\)$")
+# Test executables: target/<profile>/deps/<name>-<hash>, or, in cargo's
+# newer layout, target/<profile>/build/<crate>/<hash>/out/<name>-<hash>.
+RUNNING = re.compile(
+    r"^\s+Running (?:unittests )?\S+ \(.*/(?:deps|build/[^/]+/[0-9a-f]+/out)/(.+)-[0-9a-f]+(?:\.exe)?\)$"
+)
 RESULT = re.compile(r"^test (\S+)(?: - should panic(?: with [^.]*)?)? \.\.\. (ok|FAILED|ignored)")
 # Colour codes, which cargo writes with CARGO_TERM_COLOR=always (as in CI).
 ANSI = re.compile(r"\x1b\[[0-9;]*m")

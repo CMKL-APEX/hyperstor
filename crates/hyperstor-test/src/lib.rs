@@ -51,18 +51,7 @@ pub fn workspace() -> PathBuf {
 pub fn bin_dir() -> PathBuf {
     let dir = std::env::var_os("HS_BIN_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // The nearest directory above the test executable that holds
-            // the binaries: target/<profile> from target/<profile>/deps/<test>,
-            // from Cargo's newer target/<profile>/build/<crate>/<hash>/out/<test>,
-            // or for a binary of this crate (ui-e2e-cluster) its own.
-            let exe = std::env::current_exe().expect("test executable");
-            let dir = exe.parent().expect("build directory");
-            dir.ancestors()
-                .find(|d| d.join(BINARIES[0]).exists())
-                .unwrap_or(dir)
-                .to_path_buf()
-        });
+        .unwrap_or_else(|| profile_dir(&std::env::current_exe().expect("test executable")));
     for b in BINARIES {
         let p = dir.join(b);
         let built = std::fs::metadata(&p)
@@ -90,6 +79,31 @@ pub fn bin_dir() -> PathBuf {
         }
     }
     dir
+}
+
+/// The profile directory (`target/<profile>`) a test executable was
+/// built for, where cargo puts the workspace's binaries. Cargo's layouts:
+/// `target/<profile>/deps/<test>` (up to Rust 1.99), and
+/// `target/<profile>/build/<crate>/<hash>/out/<test>` (CI's newer
+/// toolchain, 2026-11-20); a binary of this crate (ui-e2e-cluster) is in
+/// `target/<profile>` itself.
+fn profile_dir(exe: &Path) -> PathBuf {
+    let dir = exe.parent().expect("build directory");
+    fn name(p: Option<&Path>) -> Option<&str> {
+        p?.file_name()?.to_str()
+    }
+    if name(Some(dir)) == Some("deps") {
+        return dir.parent().expect("build directory").to_path_buf();
+    }
+    // out <- <hash> <- <crate> <- build <- <profile>
+    let build = dir.ancestors().nth(3);
+    if name(Some(dir)) == Some("out") && name(build) == Some("build") {
+        return build
+            .and_then(Path::parent)
+            .expect("build directory")
+            .to_path_buf();
+    }
+    dir.to_path_buf()
 }
 
 /// The first port the kernel hands out to outgoing connections; test
@@ -1248,6 +1262,27 @@ impl Drop for Cluster {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn binaries_are_found_from_either_cargo_layout() {
+        use super::profile_dir;
+        use std::path::Path;
+        let r = Path::new("/w/target/release");
+        assert_eq!(
+            profile_dir(Path::new("/w/target/release/deps/audit-0123abcd")),
+            r
+        );
+        assert_eq!(
+            profile_dir(Path::new(
+                "/w/target/release/build/hyperstor-test/578957c1323bf3b8/out/audit-578957c1323bf3b8"
+            )),
+            r
+        );
+        assert_eq!(
+            profile_dir(Path::new("/w/target/release/ui-e2e-cluster")),
+            r
+        );
+    }
+
     #[test]
     fn test_ports_stay_below_the_ephemeral_range() {
         let low = super::ephemeral_low();

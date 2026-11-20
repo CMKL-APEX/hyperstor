@@ -644,7 +644,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again"
-spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174", "I422"]
+spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174", "I424"]
 status = "done"
 tests = [
     "vhost::a_restarted_service_takes_its_volumes_back",
@@ -1935,6 +1935,12 @@ what = "A write refused for space held by hyperstor-vhost, retried every second 
 spec = ["D183", "G46", "I228"]
 status = "done"
 tests = ["vhost::a_write_refused_for_space_is_held", "vm::a_guest_waits_on_a_write_held_while_full"]
+
+[[milestone.item]]
+what = "Reads and writes held by hyperstor-vhost while the cluster can't serve them, retried every second for up to an hour (--hold-outage), before the guest gets an I/O error"
+spec = ["D354", "I423", "11-frontends.md §11.1"]
+status = "done"
+tests = ["vhost::requests_are_held_through_an_outage"]
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"

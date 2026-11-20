@@ -17,7 +17,7 @@ cargo build --release --workspace -j"$jobs"
 cargo test --release -j"$jobs" -p hyperstor-test
 if [ "${1:-}" = "--installed" ]; then
   bin=$(cargo test --release -j"$jobs" -p hyperstor-test --test installed --no-run 2>&1 \
-        | grep -oE "$CARGO_TARGET_DIR/release/(deps|build/hyperstor-test/[0-9a-f]+/out)/installed-[0-9a-f]+" | head -1)
+        | grep -oE "[^ (]*/(deps|out)/installed-[0-9a-f]+" | head -1)
   # The binary under sudo, not cargo: cargo as root leaves root-owned files.
   sudo "$bin" --ignored
 fi
