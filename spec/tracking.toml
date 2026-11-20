@@ -644,7 +644,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again"
-spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174", "I424"]
+spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174", "I424", "I425"]
 status = "done"
 tests = [
     "vhost::a_restarted_service_takes_its_volumes_back",
@@ -682,7 +682,7 @@ tests = [
 
 [[milestone.item]]
 what = "hyperstor-install --vhost / --role vhost: the service and its unit, for the users named"
-spec = ["19-administration.md §23.4", "D142", "D144", "I175"]
+spec = ["19-administration.md §23.4", "D142", "D144", "I175", "I425"]
 status = "done"
 tests = [
     "install::hyperstor_vhost_is_installed_for_its_users",
