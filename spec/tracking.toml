@@ -644,11 +644,12 @@ status = "planned"
 
 [[milestone.item]]
 what = "A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again"
-spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174"]
+spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174", "I424"]
 status = "done"
 tests = [
     "vhost::a_restarted_service_takes_its_volumes_back",
     "hyperstor_vhost::tests::the_state_file_round_trips_and_bad_ones_say_why",
+    "hyperstor_vhost::tests::a_socket_appears_only_once_its_group_can_open_it",
     "hyperstor_vhost::inflight::tests::requests_taken_and_not_answered_are_found_after_a_restart",
 ]
 
