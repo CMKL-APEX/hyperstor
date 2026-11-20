@@ -6,6 +6,7 @@
 //! ```sh
 //! cargo build --release -p hyperstor-test --tests
 //! sudo target/release/deps/installed-* --ignored   # the test binary, not cargo
+//! # (cargo's newer layout: target/release/build/hyperstor-test/*/out/installed-*)
 //! ```
 //!
 //! (Running cargo itself as root leaves root-owned files in `target`.)
