@@ -725,6 +725,96 @@ fn a_write_refused_for_space_is_held() {
     b.stop();
 }
 
+/// D354: while the cluster can't serve a request (every storage node down,
+/// the map service stopped), the service holds the guest's reads and
+/// writes and tries them again every second; once the cluster is back
+/// they finish, and the guest saw no error. Past `--hold-outage` the guest
+/// sees `IOERR`.
+#[test]
+fn requests_are_held_through_an_outage() {
+    let mut c = Cluster::all_in_one("vhostout", 3);
+    let id = volume(&c, "256M");
+    let svc = Service::start(&c, "out-a", &["--hold-outage", "120"]);
+    let r = svc.attach(&id, "attach");
+    let mut g = Guest::connect(&PathBuf::from(r["ok"]["socket"].as_str().unwrap()), false);
+    g.wait = std::time::Duration::from_secs(150);
+    g.write(0, &pattern(1, 8192));
+    assert!(g.read(0, 8192) == pattern(1, 8192));
+
+    // The whole cluster goes away.
+    let outage = |c: &mut Cluster| {
+        c.stop_meta();
+        for n in 0..3 {
+            c.kill_node(n);
+        }
+    };
+    let back = |c: &mut Cluster| {
+        c.start_meta();
+        for n in 0..3 {
+            c.start_node(n);
+        }
+    };
+    outage(&mut c);
+    let data = pattern(2, 64 << 10);
+    let down = std::time::Duration::from_secs(5);
+    let (status, t) = std::thread::scope(|s| {
+        let w = s.spawn(|| {
+            let t = std::time::Instant::now();
+            let (status, _, _) = g.request(T_OUT, (4 << 20) / 512, &data, 0);
+            (status, t.elapsed())
+        });
+        std::thread::sleep(down);
+        back(&mut c);
+        w.join().unwrap()
+    });
+    assert_eq!(status, S_OK, "held until the cluster was back");
+    assert!(t >= down, "held {t:?}");
+    // A read waits the same way.
+    outage(&mut c);
+    let (got, t) = std::thread::scope(|s| {
+        let r = s.spawn(|| {
+            let t = std::time::Instant::now();
+            (g.read(4 << 20, data.len() as u32), t.elapsed())
+        });
+        std::thread::sleep(down);
+        back(&mut c);
+        r.join().unwrap()
+    });
+    assert!(
+        got == data,
+        "the held write landed, and the held read saw it"
+    );
+    assert!(t >= down, "held {t:?}");
+    assert!(g.read(0, 8192) == pattern(1, 8192));
+
+    // Held for 2 s, then an I/O error.
+    let short = Service::start(&c, "out-b", &["--hold-outage", "2"]);
+    let other = volume(&c, "256M");
+    let r = short.attach(&other, "attach");
+    let mut g2 = Guest::connect(&PathBuf::from(r["ok"]["socket"].as_str().unwrap()), false);
+    g2.wait = std::time::Duration::from_secs(60);
+    g2.write(0, &pattern(3, 8192));
+    outage(&mut c);
+    let t = std::time::Instant::now();
+    let (status, _, _) = g2.request(T_OUT, 0, &pattern(4, 8192), 0);
+    assert_eq!(status, S_IOERR, "past the hold");
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
+    back(&mut c);
+    // A bad value is refused at start.
+    let o = std::process::Command::new(hyperstor_test::bin_dir().join("hyperstor-vhost"))
+        .args(["serve", "--meta", &c.map, "--hold-outage", "86401"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    drop((g, g2));
+    svc.stop();
+    short.stop();
+}
+
 /// A host bound to a realm (D251, D259) attaches only volumes of its
 /// realm's tenants, on the name it gives (`--host`, D261); unbound, or
 /// bound to "default" too, it attaches the others. A realm with a host

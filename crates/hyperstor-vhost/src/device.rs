@@ -77,94 +77,141 @@ pub struct Disk {
     pub locks: Locks,
     /// How long a write refused for space is held (04-decisions.md D183).
     pub hold: Duration,
+    /// How long a request is held while the cluster can't serve it (no
+    /// primary, no map service, nodes unreachable; D354).
+    pub hold_outage: Duration,
     /// Writes held for space now.
     pub held: Cell<u32>,
+    /// Requests held for an outage now.
+    pub stalled: Cell<u32>,
 }
 
-/// One write held for space: the first held, and the last let go, are
-/// logged, not each one.
-struct Holding<'a>(&'a Disk);
+/// Why a request is held.
+#[derive(Clone, Copy, PartialEq)]
+enum Why {
+    /// A write refused for space (D183).
+    Space,
+    /// The cluster can't serve it now (D354).
+    Outage,
+}
+
+/// One request held: the first held, and the last let go, of each kind
+/// are logged, not each one.
+struct Holding<'a>(&'a Disk, Why);
 
 impl<'a> Holding<'a> {
-    fn new(disk: &'a Disk) -> Holding<'a> {
-        if disk.held.get() == 0 {
+    fn new(disk: &'a Disk, why: Why) -> Holding<'a> {
+        let (count, limit, what) = match why {
+            Why::Space => (
+                &disk.held,
+                disk.hold,
+                "a write refused for space; holding writes",
+            ),
+            Why::Outage => (
+                &disk.stalled,
+                disk.hold_outage,
+                "the cluster can't serve a request now; holding requests",
+            ),
+        };
+        if count.get() == 0 {
             eprintln!(
-                "hyperstor-vhost: volume {:032x}: a write refused for space; holding writes up to {} s",
+                "hyperstor-vhost: volume {:032x}: {what} up to {} s",
                 disk.volume.volume().id,
-                disk.hold.as_secs()
+                limit.as_secs()
             );
         }
-        disk.held.set(disk.held.get() + 1);
-        Holding(disk)
+        count.set(count.get() + 1);
+        Holding(disk, why)
     }
 }
 
 impl Drop for Holding<'_> {
     fn drop(&mut self) {
         let d = self.0;
-        d.held.set(d.held.get() - 1);
-        if d.held.get() == 0 {
+        let (count, what) = match self.1 {
+            Why::Space => (&d.held, "no write held for space now"),
+            Why::Outage => (&d.stalled, "no request held for an outage now"),
+        };
+        count.set(count.get() - 1);
+        if count.get() == 0 {
             eprintln!(
-                "hyperstor-vhost: volume {:032x}: no write held for space now",
+                "hyperstor-vhost: volume {:032x}: {what}",
                 d.volume.volume().id
             );
         }
     }
 }
 
-/// Whether a write failed for want of space (D27): a device past full.
-fn no_space(e: &ClientError) -> bool {
-    matches!(
-        e,
+/// Why a failure is held, if it is: a write refused for space (D27), or a
+/// request the cluster can't serve now (D354): no primary for its PG, the
+/// client's tries used up, nodes or the map service unreachable, the PG
+/// busy past the client's own wait (D296). A lost lease, a fence, a
+/// blocklist, a bad checksum or a bad request fail at once.
+fn why(e: &ClientError) -> Option<Why> {
+    use hyperstor_proto::Code;
+    match e {
         ClientError::Server {
-            code: hyperstor_proto::Code::NoSpace,
+            code: Code::NoSpace,
+            ..
+        } => Some(Why::Space),
+        ClientError::Server {
+            code: Code::Unavailable | Code::StaleMap | Code::NotPrimary,
             ..
         }
-    )
+        | ClientError::Rpc(_)
+        | ClientError::Exhausted(..)
+        | ClientError::NoPrimary(..) => Some(Why::Outage),
+        _ => None,
+    }
 }
 
-/// Does a write, holding it while it is refused for space (D183):
-/// `attempt` is tried again every second for up to the disk's `hold`, so
-/// space freed meanwhile (trash purged, a device added) lets it finish.
-/// virtio-blk has no status for "no space": past the hold it fails, and
-/// the guest sees `IOERR`. `attempt` answers `Err(None)` when the guest's
+/// Does a request, holding it while it fails for space (D183, writes) or
+/// for an outage (D354): `attempt` is tried again every second, for up to
+/// the disk's `hold` while refused for space and its `hold_outage` while
+/// the cluster can't serve it, each counted from the first such failure.
+/// Past either the guest sees `IOERR`: virtio-blk has no status for "no
+/// space" or "try later". `attempt` answers `Err(None)` when the guest's
 /// buffers can't be read; it reads the data from guest memory each time,
 /// which stays the guest's until the request completes.
-async fn held<F, Fut>(disk: &Disk, mut attempt: F) -> Result<(), ()>
+async fn held<T, F, Fut>(disk: &Disk, what: &str, mut attempt: F) -> Result<T, ()>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<(), Option<ClientError>>>,
+    Fut: std::future::Future<Output = Result<T, Option<ClientError>>>,
 {
-    match attempt().await {
-        Ok(()) => return Ok(()),
-        Err(Some(e)) if no_space(&e) => {}
-        Err(_) => return Err(()),
-    }
-    let until = Instant::now() + disk.hold;
-    let _holding = Holding::new(disk);
+    let id = disk.volume.volume().id;
+    let mut space: Option<Instant> = None;
+    let mut outage: Option<Instant> = None;
+    let mut holding: Option<Holding> = None;
     loop {
-        let left = until.saturating_duration_since(Instant::now());
+        let e = match attempt().await {
+            Ok(t) => return Ok(t),
+            Err(None) => return Err(()),
+            Err(Some(e)) => e,
+        };
+        let Some(w) = why(&e) else {
+            if holding.is_some() {
+                eprintln!("hyperstor-vhost: volume {id:032x}: a held {what} failed otherwise: {e}");
+            }
+            return Err(());
+        };
+        let (since, limit) = match w {
+            Why::Space => (*space.get_or_insert_with(Instant::now), disk.hold),
+            Why::Outage => (*outage.get_or_insert_with(Instant::now), disk.hold_outage),
+        };
+        let left = (since + limit).saturating_duration_since(Instant::now());
         if left.is_zero() {
             eprintln!(
-                "hyperstor-vhost: volume {:032x}: a write held {} s for space failed: an I/O error to the guest",
-                disk.volume.volume().id,
-                disk.hold.as_secs()
+                "hyperstor-vhost: volume {id:032x}: a {what} held {} s failed: an I/O error to the guest ({e})",
+                limit.as_secs()
             );
             return Err(());
         }
-        sleep(left.min(Duration::from_secs(1))).await;
-        match attempt().await {
-            Ok(()) => return Ok(()),
-            Err(Some(e)) if no_space(&e) => {}
-            Err(e) => {
-                eprintln!(
-                    "hyperstor-vhost: volume {:032x}: a write held for space failed otherwise: {}",
-                    disk.volume.volume().id,
-                    e.map_or("guest memory unreadable".into(), |e| e.to_string())
-                );
-                return Err(());
-            }
+        if holding.as_ref().is_none_or(|h| h.1 != w) {
+            // The other kind let go first, so the logs pair up.
+            drop(holding.take());
+            holding = Some(Holding::new(disk, w));
         }
+        sleep(left.min(Duration::from_secs(1))).await;
     }
 }
 
@@ -222,9 +269,9 @@ impl Drop for Held<'_> {
 
 /// Reads bytes `off..off + len` (whole sectors) through the volume blocks
 /// they are in.
-async fn read_at(v: &Attached, off: u64, len: u64) -> Result<Vec<u8>, ()> {
+async fn read_at(v: &Attached, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
     let (start, end) = blk::blocks(off, len);
-    let mut data = v.read(start, end - start).await.map_err(drop)?;
+    let mut data = v.read(start, end - start).await?;
     if start != off || end != off + len {
         let at = (off - start) as usize;
         data.drain(..at);
@@ -967,8 +1014,11 @@ async fn run_request(
             let mut at = off;
             while at < off + len {
                 let n = blk::piece(at, off + len);
-                let _taken = budget.take(buffer_bytes(at, n)).await;
-                let Ok(data) = read_at(&disk.volume, at, n).await else {
+                let read = || async {
+                    let _taken = budget.take(buffer_bytes(at, n)).await;
+                    read_at(&disk.volume, at, n).await.map_err(Some)
+                };
+                let Ok(data) = held(disk, "read", read).await else {
                     return (blk::S_IOERR, 1);
                 };
                 if write_stream(shared, mem, &segs.writable, at - off, &data).is_none() {
@@ -987,7 +1037,7 @@ async fn run_request(
                     let data = read_stream(mem, &segs.readable, 16 + (at - off), n).ok_or(None)?;
                     write_at(disk, at, data).await.map_err(Some)
                 };
-                if held(disk, write).await.is_err() {
+                if held(disk, "write", write).await.is_err() {
                     return (blk::S_IOERR, 1);
                 }
                 at += n;
@@ -1015,7 +1065,7 @@ async fn run_request(
                         let _taken = budget.take(buffer_bytes(at, n)).await;
                         write_at(disk, at, vec![0; n as usize]).await.map_err(Some)
                     };
-                    if held(disk, zero).await.is_err() {
+                    if held(disk, "write", zero).await.is_err() {
                         return (blk::S_IOERR, 1);
                     }
                     at += n;

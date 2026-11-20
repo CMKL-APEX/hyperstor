@@ -19,6 +19,14 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   file in one request, so a request of up to 1 GiB is served, 8 MiB at a
   time (D297). Why: a VM's firmware loads large files (a unified kernel
   image), and a request holds one piece's buffer however long it is.
+- **Outages** (D354). While the cluster can't serve a request (no
+  primary for its PG, the map service without a leader, storage nodes
+  unreachable), the service holds the guest's reads and writes and tries
+  them again every second, for up to an hour (`--hold-outage`), before
+  answering `IOERR`; a write refused for space is held the same way for
+  up to `--hold-full` (D183). Why: virtio-blk has no "try later" status,
+  and a guest's filesystem turns read-only at its first failed write,
+  until the VM restarts.
 - **The disk's serial number** is the first 20 characters of the glidex
   disk id without dashes, unique within the VM. Tools in the guest, and
   the guest library (D33), find the volume behind a disk by it.
