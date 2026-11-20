@@ -247,13 +247,7 @@ pub fn serve(
         Err(_) => None,
     };
     let path = control_path(&opts.dir);
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if let Some(g) = opts.group {
-        chown_group(&path, g)?;
-    }
+    let listener = bind_shared(&path, opts.group)?;
     let (tx, mut rx) = hyperstor_reactor::chan::channel::<()>();
     std::thread::spawn(move || {
         let _ = stop.recv();
@@ -321,6 +315,26 @@ fn instance_id() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     (t.as_nanos() as u64) ^ ((std::process::id() as u64) << 40)
+}
+
+/// Binds a socket at `path` that `group` can open from the moment it is
+/// there: bound under a temporary name, given mode 0660 and the group, then
+/// renamed over `path`. A hypervisor reconnecting after a restart finds the
+/// old socket (refused) or the new one, never one it can't open: Cloud
+/// Hypervisor gives up on EACCES and the guest loses its disk (glidex #584).
+fn bind_shared(path: &Path, group: Option<u32>) -> Result<UnixListener, String> {
+    let tmp = path.with_extension("part");
+    let _ = std::fs::remove_file(&tmp);
+    let listener = UnixListener::bind(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let shared = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o660))
+        .map_err(|e| format!("{}: {e}", tmp.display()))
+        .and_then(|()| group.map_or(Ok(()), |g| chown_group(&tmp, g)))
+        .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display())));
+    if let Err(e) = shared {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(listener)
 }
 
 fn chown_group(path: &Path, gid: u32) -> Result<(), String> {
@@ -728,18 +742,12 @@ impl Service {
             return Ok(control::attached(&d.socket, att.volume().size));
         }
         let socket = disk_path(&self.opts.dir, volume);
-        let _ = std::fs::remove_file(&socket);
-        let opened = UnixListener::bind(&socket)
-            .and_then(|l| Ok((l.try_clone()?, l)))
-            .map_err(|e| format!("{}: {e}", socket.display()))
-            .and_then(|l| {
-                std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))
-                    .map_err(|e| format!("{}: {e}", socket.display()))?;
-                self.opts
-                    .group
-                    .map_or(Ok(()), |g| chown_group(&socket, g))?;
-                Ok(l)
-            });
+        let opened = bind_shared(&socket, self.opts.group).and_then(|l| {
+            let accepting = l
+                .try_clone()
+                .map_err(|e| format!("{}: {e}", socket.display()))?;
+            Ok((accepting, l))
+        });
         let (listener, accepting) = match opened {
             Ok(l) => l,
             Err(e) => {
@@ -1023,5 +1031,44 @@ mod tests {
                 .unwrap_err()
                 .contains("serial")
         );
+    }
+
+    /// A socket is never seen at its path before it has its mode and group
+    /// (glidex #584), even while it is replaced again and again.
+    #[test]
+    fn a_socket_appears_only_once_its_group_can_open_it() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("hs-vhost-bind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gid = std::fs::metadata(&dir).unwrap().gid();
+        let path = dir.join("v.sock");
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                let (mut seen, mut wrong) = (0u64, Vec::new());
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(m) = std::fs::symlink_metadata(&path) {
+                        seen += 1;
+                        if m.mode() & 0o777 != 0o660 || m.gid() != gid {
+                            wrong.push(format!("{:o}", m.mode() & 0o777));
+                        }
+                    }
+                }
+                (seen, wrong)
+            })
+        };
+        for _ in 0..2000 {
+            drop(bind_shared(&path, Some(gid)).unwrap());
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (seen, wrong) = watcher.join().unwrap();
+        assert!(seen > 0);
+        assert!(wrong.is_empty(), "seen with modes {wrong:?}");
+        let m = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(m.mode() & 0o777, 0o660);
+        assert!(!dir.join("v.part").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
