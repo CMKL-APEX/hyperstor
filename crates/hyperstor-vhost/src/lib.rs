@@ -53,6 +53,10 @@ pub struct Options {
     /// How long a write refused for space is held before the guest sees
     /// an I/O error (04-decisions.md D183; 0: at once).
     pub hold_full: std::time::Duration,
+    /// How long a request is held while the cluster can't serve it (no
+    /// primary, no map service, nodes unreachable) before the guest sees
+    /// an I/O error (D354; 0: the client's own tries only).
+    pub hold_outage: std::time::Duration,
     /// The data networks it reaches storage nodes on, in order
     /// (26-networks.md §29.5, D207); none: devices' addresses.
     pub networks: Vec<String>,
@@ -197,7 +201,7 @@ fn new_disk(
     volume: Rc<hyperstor_client::volume::Attached>,
     serial: String,
     queues: u16,
-    hold: std::time::Duration,
+    (hold, hold_outage): (std::time::Duration, std::time::Duration),
     poll: bool,
 ) -> Rc<Disk> {
     Rc::new(Disk {
@@ -207,7 +211,9 @@ fn new_disk(
         poll,
         locks: Default::default(),
         hold,
+        hold_outage,
         held: Default::default(),
+        stalled: Default::default(),
     })
 }
 
@@ -756,7 +762,7 @@ impl Service {
             att,
             serial.clone(),
             self.opts.queues,
-            self.opts.hold_full,
+            (self.opts.hold_full, self.opts.hold_outage),
             poll,
         ));
         let home = Rc::new(Cell::new(0));
@@ -953,7 +959,8 @@ impl Service {
         else {
             return from;
         };
-        let (spec, queues, hold) = (self.reactors.spec(), self.opts.queues, self.opts.hold_full);
+        let (spec, queues) = (self.reactors.spec(), self.opts.queues);
+        let hold = (self.opts.hold_full, self.opts.hold_outage);
         let taken = self
             .reactors
             .run_on(to, move || async move {

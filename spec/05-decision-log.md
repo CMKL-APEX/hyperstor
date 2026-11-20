@@ -1794,3 +1794,15 @@ recommendations:
 | 315 | The switch: promote, then fence the old holder in the background (recommended); fence first, then promote; the source hands the lease over itself | Promote, then fence | D351 |
 | 316 | glidex's check: `hello` on each host's control socket, and the target's attach checking the storage node (recommended); also a feature in `GetStatus` | `hello` and the attach's check | D352 |
 
+
+## Holding I/O through outages (2026-11-20)
+
+A pilot VM's root filesystem turned read-only on 2026-11-17: two of the
+map service's three members went down together for 31 minutes, writes
+failed after the client's 30 s (D296), and ext4 aborted its journal. The
+owner asked for `hyperstor-vhost` to hold requests until the cluster
+recovers, with a longer limit, and chose the recommendations:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 318 | How long `hyperstor-vhost` holds a request the cluster can't serve: 1 hour (recommended), 10 or 30 minutes, or no limit; and whether reads are held too (recommended) or only writes | 1 hour, `--hold-outage`; reads, writes and write-zeroes | D354 |

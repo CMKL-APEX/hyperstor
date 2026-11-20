@@ -7,7 +7,7 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
 ```
 
 | Command | Does |
@@ -30,6 +30,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--group GID` | | `serve`: the group given the sockets (mode 0660), so a hypervisor running as that group can connect |
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |
 | `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/pools-and-devices.md#full-devices) |
+| `--hold-outage SECS` | 3600 | `serve`: how long a read or write is held while the cluster can't serve it (no primary for its data, the map service without a leader, storage nodes unreachable), tried again every second, before the guest sees an I/O error (0–86400; 0: after the client's own tries, about 30 s). See [Outages](#outages) |
 | `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
 | `--networks NAME[,NAME...]` | none | `serve`: the data networks this host reaches storage nodes on, in order: a device's endpoint on the first network it has one on (see the [cluster file](cluster-file.md#endpoint)), else its address |
 | `--cpus LIST` | the first CPU of each NUMA node | `serve`: the CPUs its reactors run on, one reactor pinned to each (`0,64` or `0-1`). See [NUMA nodes](#numa-nodes) |
@@ -164,6 +165,30 @@ target's, which never writes before it holds it:
 A delegate standing by isn't in the state file: a restart of the
 target's service before the switch drops it, and glidex starts the
 migration again. Once promoted, it is kept like any other disk.
+
+## Outages
+
+A guest's filesystem treats a failed write as damage: ext4 aborts its
+journal and remounts read-only, and stays so until the VM restarts. So
+while the cluster can't serve a request (a PG without a primary, the map
+service without a leader because a majority of its members is down,
+storage nodes unreachable), the service holds the request and tries it
+again every second, for up to `--hold-outage` (an hour by default). The
+guest just waits: virtio-blk has no request timeout, though Linux logs
+"task blocked" warnings after 2 minutes. Once the cluster answers, the
+held requests finish in order and the guest goes on.
+
+- Reads, writes and write-zeroes are held; a flush has nothing to wait
+  for (writes are durable once acknowledged).
+- The first request held and the last let go are logged
+  (`holding requests up to 3600 s`, `no request held for an outage now`).
+- Past the limit the guest sees an I/O error, as before.
+- A lost lease, a fence or blocklist, a bad checksum or a bad request
+  fail at once: waiting can't fix them.
+- A live migration's switch waits at most 35 s for requests in flight;
+  past that, a held request's answer is dropped, as for a write held for
+  space. Don't migrate a VM through an outage: the source's held writes
+  are fenced once the target is promoted.
 
 ## Restarts
 
