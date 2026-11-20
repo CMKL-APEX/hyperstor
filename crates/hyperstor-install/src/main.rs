@@ -3468,12 +3468,21 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
         if !v.cpus.is_empty() {
             args += &format!(" --cpus {}", glidex_topology::numa::format_list(&v.cpus));
         }
-        // It hands its sockets to these groups, so it is in them.
-        let groups = if v.gids.is_empty() {
-            "# No --vhost-user: only root and hyperstor use it.".to_string()
-        } else {
-            let g: Vec<String> = v.gids.iter().map(u32::to_string).collect();
-            format!("SupplementaryGroups={}", g.join(" "))
+        // It hands its sockets to these groups, so it is in them. The first
+        // is its main group: systemd resets a RuntimeDirectory's contents to
+        // User:Group at each start when the directory's owner differs, and
+        // the service gives the directory to that group. Under Group=hyperstor
+        // every restart took the sockets from the hypervisors until rebound,
+        // and Cloud Hypervisor gives up on EACCES (I425).
+        let groups = match v.gids.split_first() {
+            None => "# No --vhost-user: only root and hyperstor use it.".to_string(),
+            Some((first, rest)) => {
+                let g: Vec<String> = rest.iter().map(u32::to_string).collect();
+                format!(
+                    "Group={first}\nSupplementaryGroups=hyperstor{}",
+                    g.iter().map(|g| format!(" {g}")).collect::<String>()
+                )
+            }
         };
         out.extend([
             (
@@ -6581,7 +6590,10 @@ mod tests {
             "HS_ARGS=--meta 127.0.0.1:8849 --dir /run/hyperstor/vhost --allow-uid 0 --group 0\n"
         );
         let unit = file("/etc/systemd/system/hyperstor-vhost.service");
-        assert!(unit.contains("\nSupplementaryGroups=0\n"), "{unit}");
+        assert!(
+            unit.contains("\nUser=hyperstor\nGroup=0\nSupplementaryGroups=hyperstor\n"),
+            "{unit}"
+        );
         assert!(unit.contains("\nRuntimeDirectoryPreserve=yes\n"), "{unit}");
         // Only VMs here: the map service's members, nothing of the cluster's.
         let mut v = Settings::defaults();
@@ -6598,6 +6610,7 @@ mod tests {
         assert!(!env.contains("--allow-uid"), "{env}");
         let unit = &f.iter().find(|x| x.0.ends_with("vhost.service")).unwrap().1;
         assert!(!unit.contains("SupplementaryGroups="), "{unit}");
+        assert!(!unit.contains("Group="), "{unit}");
         assert!(
             !f.iter()
                 .any(|x| x.0.contains("cluster.txt") || x.0.contains("node-"))

@@ -33,7 +33,7 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let svc = Service::start(&c, "vhost-a", &[]);
     assert_eq!(
         svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],
-        2
+        3
     );
     let r = svc.attach(&id, "attach");
     let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
@@ -725,6 +725,96 @@ fn a_write_refused_for_space_is_held() {
     b.stop();
 }
 
+/// D354: while the cluster can't serve a request (every storage node down,
+/// the map service stopped), the service holds the guest's reads and
+/// writes and tries them again every second; once the cluster is back
+/// they finish, and the guest saw no error. Past `--hold-outage` the guest
+/// sees `IOERR`.
+#[test]
+fn requests_are_held_through_an_outage() {
+    let mut c = Cluster::all_in_one("vhostout", 3);
+    let id = volume(&c, "256M");
+    let svc = Service::start(&c, "out-a", &["--hold-outage", "120"]);
+    let r = svc.attach(&id, "attach");
+    let mut g = Guest::connect(&PathBuf::from(r["ok"]["socket"].as_str().unwrap()), false);
+    g.wait = std::time::Duration::from_secs(150);
+    g.write(0, &pattern(1, 8192));
+    assert!(g.read(0, 8192) == pattern(1, 8192));
+
+    // The whole cluster goes away.
+    let outage = |c: &mut Cluster| {
+        c.stop_meta();
+        for n in 0..3 {
+            c.kill_node(n);
+        }
+    };
+    let back = |c: &mut Cluster| {
+        c.start_meta();
+        for n in 0..3 {
+            c.start_node(n);
+        }
+    };
+    outage(&mut c);
+    let data = pattern(2, 64 << 10);
+    let down = std::time::Duration::from_secs(5);
+    let (status, t) = std::thread::scope(|s| {
+        let w = s.spawn(|| {
+            let t = std::time::Instant::now();
+            let (status, _, _) = g.request(T_OUT, (4 << 20) / 512, &data, 0);
+            (status, t.elapsed())
+        });
+        std::thread::sleep(down);
+        back(&mut c);
+        w.join().unwrap()
+    });
+    assert_eq!(status, S_OK, "held until the cluster was back");
+    assert!(t >= down, "held {t:?}");
+    // A read waits the same way.
+    outage(&mut c);
+    let (got, t) = std::thread::scope(|s| {
+        let r = s.spawn(|| {
+            let t = std::time::Instant::now();
+            (g.read(4 << 20, data.len() as u32), t.elapsed())
+        });
+        std::thread::sleep(down);
+        back(&mut c);
+        r.join().unwrap()
+    });
+    assert!(
+        got == data,
+        "the held write landed, and the held read saw it"
+    );
+    assert!(t >= down, "held {t:?}");
+    assert!(g.read(0, 8192) == pattern(1, 8192));
+
+    // Held for 2 s, then an I/O error.
+    let short = Service::start(&c, "out-b", &["--hold-outage", "2"]);
+    let other = volume(&c, "256M");
+    let r = short.attach(&other, "attach");
+    let mut g2 = Guest::connect(&PathBuf::from(r["ok"]["socket"].as_str().unwrap()), false);
+    g2.wait = std::time::Duration::from_secs(60);
+    g2.write(0, &pattern(3, 8192));
+    outage(&mut c);
+    let t = std::time::Instant::now();
+    let (status, _, _) = g2.request(T_OUT, 0, &pattern(4, 8192), 0);
+    assert_eq!(status, S_IOERR, "past the hold");
+    assert!(
+        t.elapsed() >= std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
+    back(&mut c);
+    // A bad value is refused at start.
+    let o = std::process::Command::new(hyperstor_test::bin_dir().join("hyperstor-vhost"))
+        .args(["serve", "--meta", &c.map, "--hold-outage", "86401"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    drop((g, g2));
+    svc.stop();
+    short.stop();
+}
+
 /// A host bound to a realm (D251, D259) attaches only volumes of its
 /// realm's tenants, on the name it gives (`--host`, D261); unbound, or
 /// bound to "default" too, it attaches the others. A realm with a host
@@ -786,4 +876,188 @@ fn a_host_bound_to_a_realm_attaches_only_its_volumes() {
     c.ctl(&["realm", "host", "--host", "bad host", "--realm", "acme"])
         .expect(1);
     svc.stop();
+}
+
+/// A guest migrating live (D349): once the hypervisor turns logging on,
+/// the pages each request writes (read data, the status byte, the used
+/// ring) are marked in its dirty-page log, and nothing before; and a ring
+/// stopped by `GET_VRING_BASE` with requests in flight answers only once
+/// they are done, their data and completions on the used ring and logged.
+#[test]
+fn a_migrating_guests_writes_are_logged_and_a_stop_finishes_its_requests() {
+    let c = Cluster::all_in_one("vhostlog", 3);
+    let id = volume(&c, "64M");
+    let svc = Service::start(&c, "vhost-log", &[]);
+    let r = svc.attach(&id, "attach");
+    let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
+    let mut g = Guest::connect(&socket, false);
+    let data = pattern(7, 64 << 10);
+    g.write(0, &data);
+    let log = g.start_log();
+    assert!(
+        Guest::dirty_pages(&log).is_empty(),
+        "nothing before logging"
+    );
+    let (_, buf, status, used) = Guest::layout();
+    let used_pages: Vec<u64> = Guest::pages(used, 4 + 8 * 64 + 2).collect();
+    let want = |more: &[u64]| {
+        let mut w: Vec<u64> = Guest::pages(status, 1).chain(used_pages.clone()).collect();
+        w.extend_from_slice(more);
+        w.sort_unstable();
+        w.dedup();
+        w
+    };
+    // A write: the device writes only its status and the used ring.
+    g.write(1 << 20, &data);
+    assert_eq!(Guest::dirty_pages(&log), want(&[]));
+    // A read: its data's pages too.
+    Guest::clear_log(&log);
+    assert!(g.read(0, data.len() as u32) == data);
+    let read: Vec<u64> = Guest::pages(buf, data.len() as u64).collect();
+    assert_eq!(Guest::dirty_pages(&log), want(&read));
+    // Reads in flight when the ring stops: the stop answers once each is
+    // on the used ring, with the next available index after them all.
+    Guest::clear_log(&log);
+    g.post_reads(16, 0, 1 << 20);
+    let base = g.stop_ring();
+    assert_eq!(base, 19, "the ring's next available request");
+    assert_eq!(
+        g.used_idx(),
+        19,
+        "every request taken completed before the stop"
+    );
+    let mut read: Vec<u64> = Guest::pages(buf, (1 << 20) + 1).collect();
+    read.extend(used_pages.iter());
+    read.sort_unstable();
+    read.dedup();
+    assert_eq!(Guest::dirty_pages(&log), read);
+    drop(g);
+    svc.stop();
+}
+
+/// A live migration's handover, as glidex drives it (D350–D352): the
+/// source hands out a delegate, the target attaches it standing by and
+/// serves the receiving hypervisor, and `promote` at the switch makes the
+/// target the holder; the source's detach then leaves it alone, and its
+/// restart takes the volume back as any holder's. A cancelled migration:
+/// the target detaches and the source fences its delegate.
+#[test]
+fn a_disk_is_handed_to_a_migrations_target() {
+    let c = Cluster::all_in_one("vhost-migrate", 3);
+    let (v, w) = (volume(&c, "16M"), volume(&c, "16M"));
+    let src = Service::start(&c, "mig-src", &[]);
+    let mut dst = Service::start(&c, "mig-dst", &[]);
+    let ctl = |s: &Service, op: &str, args: serde_json::Value| {
+        s.ctl(serde_json::json!({"id": 9, "op": op, "args": args}))
+    };
+    let hello = ctl(&src, "hello", serde_json::json!({}));
+    assert_eq!(hello["ok"]["protocol"], 3, "{hello}");
+    assert!(
+        hello["ok"]["features"]
+            .to_string()
+            .contains("live_migration"),
+        "{hello}"
+    );
+    let attached = ctl(
+        &src,
+        "attach",
+        serde_json::json!({"volume": v, "holder": "n1"}),
+    );
+    let ss = PathBuf::from(attached["ok"]["socket"].as_str().unwrap());
+    let a = pattern(1, 64 << 10);
+    let mut gs = Guest::connect(&ss, true);
+    gs.write(0, &a);
+    // The copy: the target stands by with a delegate the source handed out.
+    let d = ctl(&src, "delegate", serde_json::json!({"volume": v}));
+    let id = d["ok"]["delegate"]
+        .as_str()
+        .expect("a delegate")
+        .to_string();
+    let t = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": v, "delegate": id, "holder": "n2", "serial": "disk-under-test"}),
+    );
+    let ts = PathBuf::from(t["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{t}")));
+    let role =
+        |s: &Service| ctl(s, "list", serde_json::json!({}))["ok"]["disks"][0]["role"].clone();
+    assert_eq!(
+        (role(&src), role(&dst)),
+        ("holder".into(), "delegate".into())
+    );
+    // Asked again (glidex retrying), the same answer.
+    let again = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": v, "delegate": id, "holder": "n2"}),
+    );
+    assert_eq!(again["ok"]["socket"], t["ok"]["socket"], "{again}");
+    // A delegate of a volume that isn't held here can't be had.
+    let none = ctl(&dst, "delegate", serde_json::json!({"volume": v}));
+    assert_eq!(none["error"]["code"], "invalid", "{none}");
+    let mut gt = Guest::connect(&ts, true);
+    assert!(gt.read(0, a.len() as u32) == a);
+    // The switch: the source's hypervisor stops, the target's is promoted.
+    drop(gs);
+    let p = ctl(&dst, "promote", serde_json::json!({"volume": v}));
+    assert_eq!(p["ok"]["fencing"].as_array().map(Vec::len), Some(1), "{p}");
+    assert_eq!(role(&dst), "holder");
+    let b = pattern(2, 64 << 10);
+    gt.write(0, &b);
+    let gone = ctl(&src, "detach", serde_json::json!({"volume": v}));
+    assert!(gone.get("ok").is_some(), "{gone}");
+    let cc = pattern(3, 64 << 10);
+    gt.write(4096, &cc);
+    assert!(gt.read(4096, cc.len() as u32) == cc);
+    // Promoted, it is the target's like any holder's: a restart keeps it.
+    drop(gt);
+    dst.restart();
+    assert_eq!(dst.listed(), vec![v.clone()]);
+    // A cancelled migration: the target lets go, the source fences it,
+    // and the source's guest goes on.
+    let sw = PathBuf::from(
+        ctl(
+            &src,
+            "attach",
+            serde_json::json!({"volume": w, "holder": "n1"}),
+        )["ok"]["socket"]
+            .as_str()
+            .unwrap(),
+    );
+    let mut gw = Guest::connect(&sw, true);
+    gw.write(0, &a);
+    let d = ctl(&src, "delegate", serde_json::json!({"volume": w}));
+    let id = d["ok"]["delegate"].as_str().unwrap().to_string();
+    let t = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": w, "delegate": id, "holder": "n2"}),
+    );
+    assert!(t.get("ok").is_some(), "{t}");
+    let off = ctl(
+        &dst,
+        "detach",
+        serde_json::json!({"volume": w, "force": true}),
+    );
+    assert!(off.get("ok").is_some(), "{off}");
+    let u = ctl(
+        &src,
+        "undelegate",
+        serde_json::json!({"volume": w, "delegate": id}),
+    );
+    assert!(u.get("ok").is_some(), "{u}");
+    let late = ctl(
+        &dst,
+        "attach",
+        serde_json::json!({"volume": w, "delegate": id, "holder": "n2"}),
+    );
+    assert!(
+        late.get("error").is_some(),
+        "a fenced delegate attaches no more: {late}"
+    );
+    gw.write(0, &b);
+    assert!(gw.read(0, b.len() as u32) == b);
+    drop(gw);
+    src.stop();
+    dst.stop();
 }

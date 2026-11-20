@@ -53,6 +53,10 @@ pub struct Options {
     /// How long a write refused for space is held before the guest sees
     /// an I/O error (04-decisions.md D183; 0: at once).
     pub hold_full: std::time::Duration,
+    /// How long a request is held while the cluster can't serve it (no
+    /// primary, no map service, nodes unreachable) before the guest sees
+    /// an I/O error (D354; 0: the client's own tries only).
+    pub hold_outage: std::time::Duration,
     /// The data networks it reaches storage nodes on, in order
     /// (26-networks.md §29.5, D207); none: devices' addresses.
     pub networks: Vec<String>,
@@ -160,6 +164,9 @@ struct Served {
     label: String,
     /// Its rings are polled while busy (D293).
     poll: bool,
+    /// Attached as a delegate waiting for promotion, a live migration's
+    /// target (D350): not in the state file, since it holds no lease.
+    delegate: Rc<Cell<bool>>,
     socket: PathBuf,
     listener: UnixListener,
     /// The connected frontend, if any, to cut off at detach.
@@ -194,7 +201,7 @@ fn new_disk(
     volume: Rc<hyperstor_client::volume::Attached>,
     serial: String,
     queues: u16,
-    hold: std::time::Duration,
+    (hold, hold_outage): (std::time::Duration, std::time::Duration),
     poll: bool,
 ) -> Rc<Disk> {
     Rc::new(Disk {
@@ -204,7 +211,9 @@ fn new_disk(
         poll,
         locks: Default::default(),
         hold,
+        hold_outage,
         held: Default::default(),
+        stalled: Default::default(),
     })
 }
 
@@ -244,13 +253,7 @@ pub fn serve(
         Err(_) => None,
     };
     let path = control_path(&opts.dir);
-    let _ = std::fs::remove_file(&path);
-    let listener = UnixListener::bind(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    if let Some(g) = opts.group {
-        chown_group(&path, g)?;
-    }
+    let listener = bind_shared(&path, opts.group)?;
     let (tx, mut rx) = hyperstor_reactor::chan::channel::<()>();
     std::thread::spawn(move || {
         let _ = stop.recv();
@@ -318,6 +321,26 @@ fn instance_id() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     (t.as_nanos() as u64) ^ ((std::process::id() as u64) << 40)
+}
+
+/// Binds a socket at `path` that `group` can open from the moment it is
+/// there: bound under a temporary name, given mode 0660 and the group, then
+/// renamed over `path`. A hypervisor reconnecting after a restart finds the
+/// old socket (refused) or the new one, never one it can't open: Cloud
+/// Hypervisor gives up on EACCES and the guest loses its disk (glidex #584).
+fn bind_shared(path: &Path, group: Option<u32>) -> Result<UnixListener, String> {
+    let tmp = path.with_extension("part");
+    let _ = std::fs::remove_file(&tmp);
+    let listener = UnixListener::bind(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    let shared = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o660))
+        .map_err(|e| format!("{}: {e}", tmp.display()))
+        .and_then(|()| group.map_or(Ok(()), |g| chown_group(&tmp, g)))
+        .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display())));
+    if let Err(e) = shared {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(listener)
 }
 
 fn chown_group(path: &Path, gid: u32) -> Result<(), String> {
@@ -407,13 +430,18 @@ impl Service {
                 take,
                 holder,
                 poll,
+                delegate,
             } => {
                 let label = if holder.is_empty() {
                     "vhost".to_string()
                 } else {
                     format!("vhost:{holder}")
                 };
-                match self.attach(volume, serial, take, &label, poll).await {
+                let attached = match delegate {
+                    Some(d) => self.attach_delegate(volume, serial, d, &label, poll).await,
+                    None => self.attach(volume, serial, take, &label, poll).await,
+                };
+                match attached {
                     Ok(v) => Reply::ok(id, v),
                     Err(Refused::Held { message, holder }) => Reply::held(id, &message, &holder),
                     Err(Refused::Other(code, msg)) => Reply::error(id, code, &msg),
@@ -423,11 +451,153 @@ impl Service {
                 Ok(()) => Reply::ok(id, control::detached()),
                 Err((code, msg)) => Reply::error(id, code, &msg),
             },
+            Request::Delegate { volume } => match self.delegate(volume, None).await {
+                Ok(d) => Reply::ok(id, control::delegated(d)),
+                Err((code, msg)) => Reply::error(id, code, &msg),
+            },
+            Request::Undelegate { volume, delegate } => {
+                match self.delegate(volume, Some(delegate)).await {
+                    Ok(_) => Reply::ok(id, control::detached()),
+                    Err((code, msg)) => Reply::error(id, code, &msg),
+                }
+            }
+            Request::Promote { volume } => match self.promote(volume).await {
+                Ok(fenced) => Reply::ok(id, control::promoted(&fenced)),
+                Err((code, msg)) => Reply::error(id, code, &msg),
+            },
         }
     }
 
+    /// On the source of a migration (D350): adds a delegate to the lease
+    /// of `volume`, attached here as its holder, and answers it; with
+    /// `remove`, removes and fences that delegate instead.
+    async fn delegate(
+        &self,
+        volume: u128,
+        remove: Option<u64>,
+    ) -> Result<u64, (&'static str, String)> {
+        let Some(home) = self.disks.borrow().get(&volume).map(|d| d.home.get()) else {
+            return Err((
+                "not_attached",
+                format!("volume {volume:032x} isn't attached here"),
+            ));
+        };
+        self.reactors
+            .run_on(home, move || async move {
+                let Some(disk) = device::local_disk(volume) else {
+                    return Err((
+                        "not_attached",
+                        format!("volume {volume:032x} isn't attached here"),
+                    ));
+                };
+                let v = &disk.volume;
+                if v.is_delegate() {
+                    return Err((
+                        "invalid",
+                        format!(
+                            "volume {volume:032x} is attached here as a delegate, not its holder"
+                        ),
+                    ));
+                }
+                let r = match remove {
+                    Some(d) => v.remove_delegate(d).await.map(|()| d),
+                    None => v.add_delegate().await,
+                };
+                r.map_err(|e| (control::error_code(&e), e.to_string()))
+            })
+            .await
+            .unwrap_or_else(|| Err(("internal", "its reactor stopped".into())))
+    }
+
+    /// On a migration's target (D350): attaches `volume` as delegate
+    /// `delegate` of its holder, standing by: its socket takes the
+    /// receiving hypervisor, and it writes nothing until promoted. Checked
+    /// first with the header's storage node, so a cluster that can't
+    /// promote refuses before the copy starts (D352).
+    async fn attach_delegate(
+        self: &Rc<Self>,
+        volume: u128,
+        serial: String,
+        delegate: u64,
+        label: &str,
+        poll: bool,
+    ) -> Result<control::Value, Refused> {
+        let found = self
+            .disks
+            .borrow()
+            .get(&volume)
+            .map(|d| (d.socket.clone(), d.lease, d.delegate.get()));
+        if let Some((socket, lease, standing)) = found {
+            match self.status(volume).await {
+                // A retry.
+                Some((false, size)) if standing && lease == delegate => {
+                    return Ok(control::attached(&socket, size));
+                }
+                Some((false, _)) => {
+                    return Err(Refused::Other(
+                        "invalid",
+                        format!("volume {volume:032x} is attached here already"),
+                    ));
+                }
+                _ => self.detach(volume, true).await.map_err(Refused::from)?,
+            }
+        }
+        let fail = |e: ClientError| Refused::Other(control::error_code(&e), e.to_string());
+        let att = self.client.delegate(volume, delegate).await.map_err(fail)?;
+        att.set_standby().map_err(fail)?;
+        *att.label_mut() = hyperstor_client::cut_label(label);
+        if let Err(e) = att.check_promote().await {
+            att.detach().await.ok();
+            return Err(fail(e));
+        }
+        self.open_disk(volume, serial, att, poll)
+            .await
+            .map_err(Refused::from)
+    }
+
+    /// On a migration's target, at the switch (D351): promotes the
+    /// delegate attached here to the volume's holder. Answers the
+    /// identities being fenced in the background.
+    async fn promote(&self, volume: u128) -> Result<Vec<u64>, (&'static str, String)> {
+        let Some((home, delegate)) = self
+            .disks
+            .borrow()
+            .get(&volume)
+            .map(|d| (d.home.get(), d.delegate.clone()))
+        else {
+            return Err((
+                "not_attached",
+                format!("volume {volume:032x} isn't attached here"),
+            ));
+        };
+        if !delegate.get() {
+            // Promoted already: a retry.
+            return Ok(Vec::new());
+        }
+        let fenced = self
+            .reactors
+            .run_on(home, move || async move {
+                let Some(disk) = device::local_disk(volume) else {
+                    return Err((
+                        "not_attached",
+                        format!("volume {volume:032x} isn't attached here"),
+                    ));
+                };
+                let label = disk.volume.label();
+                disk.volume
+                    .promote(&label)
+                    .await
+                    .map_err(|e| (control::error_code(&e), e.to_string()))
+            })
+            .await
+            .unwrap_or_else(|| Err(("internal", "its reactor stopped".into())))?;
+        delegate.set(false);
+        self.save_state();
+        Ok(fenced)
+    }
+
     async fn list(&self) -> Vec<control::Listed> {
-        let disks: Vec<(u128, PathBuf, bool, usize, bool)> = self
+        let disks: Vec<(u128, PathBuf, bool, usize, bool, bool)> = self
             .disks
             .borrow()
             .iter()
@@ -438,11 +608,12 @@ impl Service {
                     d.conn.borrow().is_some(),
                     d.home.get(),
                     d.poll,
+                    d.delegate.get(),
                 )
             })
             .collect();
         let mut out = Vec::new();
-        for (volume, socket, connected, home, poll) in disks {
+        for (volume, socket, connected, home, poll, delegate) in disks {
             let (lost, size) = self.status(volume).await.unwrap_or((true, 0));
             out.push(control::Listed {
                 volume,
@@ -453,6 +624,7 @@ impl Service {
                 reactor: home,
                 node: self.reactors.all[home].node,
                 poll,
+                delegate,
             });
         }
         out
@@ -479,6 +651,8 @@ impl Service {
                 .disks
                 .borrow()
                 .iter()
+                // A delegate holds no lease to take back (D350).
+                .filter(|(_, d)| !d.delegate.get())
                 .map(|(v, d)| (*v, d.serial.clone(), d.lease, d.label.clone(), d.poll))
                 .collect(),
         };
@@ -574,18 +748,12 @@ impl Service {
             return Ok(control::attached(&d.socket, att.volume().size));
         }
         let socket = disk_path(&self.opts.dir, volume);
-        let _ = std::fs::remove_file(&socket);
-        let opened = UnixListener::bind(&socket)
-            .and_then(|l| Ok((l.try_clone()?, l)))
-            .map_err(|e| format!("{}: {e}", socket.display()))
-            .and_then(|l| {
-                std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660))
-                    .map_err(|e| format!("{}: {e}", socket.display()))?;
-                self.opts
-                    .group
-                    .map_or(Ok(()), |g| chown_group(&socket, g))?;
-                Ok(l)
-            });
+        let opened = bind_shared(&socket, self.opts.group).and_then(|l| {
+            let accepting = l
+                .try_clone()
+                .map_err(|e| format!("{}: {e}", socket.display()))?;
+            Ok((accepting, l))
+        });
         let (listener, accepting) = match opened {
             Ok(l) => l,
             Err(e) => {
@@ -595,13 +763,14 @@ impl Service {
             }
         };
         let size = att.volume().size;
-        let (lease, label) = (att.lease(), att.label().to_string());
+        let (lease, label) = (att.lease(), att.label());
+        let delegate = Rc::new(Cell::new(att.is_delegate()));
         // Until a hypervisor connects, on this, the first, reactor (D292).
         device::hold_disk(new_disk(
             att,
             serial.clone(),
             self.opts.queues,
-            self.opts.hold_full,
+            (self.opts.hold_full, self.opts.hold_outage),
             poll,
         ));
         let home = Rc::new(Cell::new(0));
@@ -623,6 +792,7 @@ impl Service {
                 lease,
                 label,
                 poll,
+                delegate,
                 socket: socket.clone(),
                 listener,
                 conn,
@@ -784,23 +954,40 @@ impl Service {
         if from == to {
             return to;
         }
-        let Some((serial, lease, label, poll)) = self
-            .disks
-            .borrow()
-            .get(&volume)
-            .map(|d| (d.serial.clone(), d.lease, d.label.clone(), d.poll))
+        let Some((serial, lease, label, poll, delegate)) =
+            self.disks.borrow().get(&volume).map(|d| {
+                (
+                    d.serial.clone(),
+                    d.lease,
+                    d.label.clone(),
+                    d.poll,
+                    d.delegate.get(),
+                )
+            })
         else {
             return from;
         };
-        let (spec, queues, hold) = (self.reactors.spec(), self.opts.queues, self.opts.hold_full);
+        let (spec, queues) = (self.reactors.spec(), self.opts.queues);
+        let hold = (self.opts.hold_full, self.opts.hold_outage);
         let taken = self
             .reactors
             .run_on(to, move || async move {
                 let client = reactors::client(&spec).await?;
-                let att = client
-                    .adopt(volume, lease, &label)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                // A migration's target stands by on the new reactor too.
+                let att = if delegate {
+                    let att = client
+                        .delegate(volume, lease)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    att.set_standby().map_err(|e| e.to_string())?;
+                    *att.label_mut() = label;
+                    att
+                } else {
+                    client
+                        .adopt(volume, lease, &label)
+                        .await
+                        .map_err(|e| e.to_string())?
+                };
                 device::hold_disk(new_disk(att, serial, queues, hold, poll));
                 Ok::<(), String>(())
             })
@@ -851,5 +1038,44 @@ mod tests {
                 .unwrap_err()
                 .contains("serial")
         );
+    }
+
+    /// A socket is never seen at its path before it has its mode and group
+    /// (glidex #584), even while it is replaced again and again.
+    #[test]
+    fn a_socket_appears_only_once_its_group_can_open_it() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("hs-vhost-bind-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gid = std::fs::metadata(&dir).unwrap().gid();
+        let path = dir.join("v.sock");
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let (path, done) = (path.clone(), done.clone());
+            std::thread::spawn(move || {
+                let (mut seen, mut wrong) = (0u64, Vec::new());
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Ok(m) = std::fs::symlink_metadata(&path) {
+                        seen += 1;
+                        if m.mode() & 0o777 != 0o660 || m.gid() != gid {
+                            wrong.push(format!("{:o}", m.mode() & 0o777));
+                        }
+                    }
+                }
+                (seen, wrong)
+            })
+        };
+        for _ in 0..2000 {
+            drop(bind_shared(&path, Some(gid)).unwrap());
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (seen, wrong) = watcher.join().unwrap();
+        assert!(seen > 0);
+        assert!(wrong.is_empty(), "seen with modes {wrong:?}");
+        let m = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(m.mode() & 0o777, 0o660);
+        assert!(!dir.join("v.part").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

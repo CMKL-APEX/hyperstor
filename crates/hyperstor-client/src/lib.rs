@@ -501,7 +501,23 @@ impl Client {
         payload: &[u8],
         make: &dyn Fn(Target, WireKey) -> Msg,
     ) -> Result<rpc::Reply, ClientError> {
-        self.send_primary(pool, route, lease, Payload::Copy(payload), make)
+        self.send_primary(pool, route, lease, 0, Payload::Copy(payload), make)
+            .await
+    }
+
+    /// [`Client::to_primary`] for a message only primaries of protocol
+    /// `version` or later decode: an older one, which would drop the
+    /// connection at a kind it doesn't know, is not sent it, and the call
+    /// fails as [`Code::Invalid`].
+    pub(crate) async fn to_primary_from(
+        &self,
+        pool: u32,
+        route: Route<'_>,
+        lease: u64,
+        version: u16,
+        make: &dyn Fn(Target, WireKey) -> Msg,
+    ) -> Result<rpc::Reply, ClientError> {
+        self.send_primary(pool, route, lease, version, Payload::Copy(&[]), make)
             .await
     }
 
@@ -512,6 +528,7 @@ impl Client {
         pool: u32,
         route: Route<'_>,
         lease: u64,
+        version: u16,
         payload: Payload<'_>,
         make: &dyn Fn(Target, WireKey) -> Msg,
     ) -> Result<rpc::Reply, ClientError> {
@@ -598,6 +615,15 @@ impl Client {
                     continue;
                 }
             };
+            if conn.version() < version {
+                return Err(ClientError::Server {
+                    code: Code::Invalid,
+                    detail: format!(
+                        "the storage node at {addr} speaks protocol {}, and this needs {version}: upgrade it first",
+                        conn.version()
+                    ),
+                });
+            }
             let sent = match &payload {
                 Payload::Copy(p) => conn.call(&make(to, key), p).await,
                 Payload::Part(buf, range) => {
@@ -716,6 +742,7 @@ impl Client {
                             pool,
                             route,
                             lease,
+                            0,
                             Payload::Part(&data, range),
                             &|to, key| Msg::Write {
                                 to,

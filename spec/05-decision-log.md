@@ -1765,6 +1765,35 @@ beside its head instead, replicated and persistent as the map is.
 |---|---|---|---|
 | 312 | Where a storage node's host name is kept: in the map (recommended); the leader's memory; an operator's label | In the map, as rows beside its head | D348 |
 
+## Dirty-page logging for live migration (#397, 2026-11-19)
+
+glidex migrates Cloud Hypervisor VMs live (glidex's
+spec/32-live-migration.md); `hyperstor-vhost` didn't log the guest pages
+it writes, and a ring stopped by `GET_VRING_BASE` dropped its requests
+in flight (I161). Asked what a ring's stop does with them (finish them
+first, recommended; or answer at once and leave them for the target to
+resubmit from the in-flight buffer), the owner chose to finish them:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 313 | A ring stopped during a migration: finish its requests in flight, logging their writes, before answering (recommended); or answer at once, the target resubmitting them through `INFLIGHT_SHMFD` | Finish them first | D349 |
+
+## Delegate handover for live migration (#398, 2026-11-19)
+
+glidex migrates Cloud Hypervisor VMs live (glidex spec/32-live-migration.md
+§7) and asked for 11-frontends.md §11.4's plan: the target attaches as a
+delegate during the copy and takes the lease at the switch. Delegates
+(D151) were added by the holder for clients of its own and never became
+holders. Asked how the target gets its delegate, how the source is
+fenced at the switch, and how glidex checks support, the owner chose the
+recommendations:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 314 | The target's delegate: handed out by the source's `hyperstor-vhost` on glidex's request (recommended); or asked of the header by the target, naming the holder's label | Handed out by the source | D350 |
+| 315 | The switch: promote, then fence the old holder in the background (recommended); fence first, then promote; the source hands the lease over itself | Promote, then fence | D351 |
+| 316 | glidex's check: `hello` on each host's control socket, and the target's attach checking the storage node (recommended); also a feature in `GetStatus` | `hello` and the attach's check | D352 |
+
 ## A drive under another name (2026-11-19)
 
 The owner asked whether a device UUID in the superblock would let the
@@ -1780,3 +1809,14 @@ hosts (a map operation), the owner chose the first:
 |---|---|---|---|
 | 317 | A drive whose by-id name changed: found by its superblock's label (recommended); a UUID of its own in the superblock; moving drives between hosts | Found by its label | D353 |
 
+## Holding I/O through outages (2026-11-20)
+
+A pilot VM's root filesystem turned read-only on 2026-11-17: two of the
+map service's three members went down together for 31 minutes, writes
+failed after the client's 30 s (D296), and ext4 aborted its journal. The
+owner asked for `hyperstor-vhost` to hold requests until the cluster
+recovers, with a longer limit, and chose the recommendations:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 318 | How long `hyperstor-vhost` holds a request the cluster can't serve: 1 hour (recommended), 10 or 30 minutes, or no limit; and whether reads are held too (recommended) or only writes | 1 hour, `--hold-outage`; reads, writes and write-zeroes | D354 |

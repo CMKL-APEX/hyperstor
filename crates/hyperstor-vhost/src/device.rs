@@ -16,10 +16,21 @@
 //! memory isn't bound to one node is placed again once the pages its
 //! requests use show where its memory is ([`Watch`]): its rings stop
 //! taking requests, those in flight finish, and it moves.
+//!
+//! For a live migration (D349), the frontend gives a dirty-page log
+//! ([`dirty`]) and turns `VHOST_F_LOG_ALL` on: every guest page a request
+//! writes and the used ring's pages are marked. A ring stopped by
+//! `GET_VRING_BASE` first finishes the requests it has in flight, so their
+//! completions are on the used ring, and logged, before the frontend has
+//! its state.
+
+#[path = "dirty.rs"]
+pub mod dirty;
 
 use crate::blk::{self, Bad, Request};
 use crate::budget::Budget;
 use crate::inflight::Inflight;
+use dirty::DirtyLog;
 use hyperstor_client::ClientError;
 use hyperstor_client::volume::Attached;
 use hyperstor_reactor::chan::{OneSender, oneshot};
@@ -66,94 +77,141 @@ pub struct Disk {
     pub locks: Locks,
     /// How long a write refused for space is held (04-decisions.md D183).
     pub hold: Duration,
+    /// How long a request is held while the cluster can't serve it (no
+    /// primary, no map service, nodes unreachable; D354).
+    pub hold_outage: Duration,
     /// Writes held for space now.
     pub held: Cell<u32>,
+    /// Requests held for an outage now.
+    pub stalled: Cell<u32>,
 }
 
-/// One write held for space: the first held, and the last let go, are
-/// logged, not each one.
-struct Holding<'a>(&'a Disk);
+/// Why a request is held.
+#[derive(Clone, Copy, PartialEq)]
+enum Why {
+    /// A write refused for space (D183).
+    Space,
+    /// The cluster can't serve it now (D354).
+    Outage,
+}
+
+/// One request held: the first held, and the last let go, of each kind
+/// are logged, not each one.
+struct Holding<'a>(&'a Disk, Why);
 
 impl<'a> Holding<'a> {
-    fn new(disk: &'a Disk) -> Holding<'a> {
-        if disk.held.get() == 0 {
+    fn new(disk: &'a Disk, why: Why) -> Holding<'a> {
+        let (count, limit, what) = match why {
+            Why::Space => (
+                &disk.held,
+                disk.hold,
+                "a write refused for space; holding writes",
+            ),
+            Why::Outage => (
+                &disk.stalled,
+                disk.hold_outage,
+                "the cluster can't serve a request now; holding requests",
+            ),
+        };
+        if count.get() == 0 {
             eprintln!(
-                "hyperstor-vhost: volume {:032x}: a write refused for space; holding writes up to {} s",
+                "hyperstor-vhost: volume {:032x}: {what} up to {} s",
                 disk.volume.volume().id,
-                disk.hold.as_secs()
+                limit.as_secs()
             );
         }
-        disk.held.set(disk.held.get() + 1);
-        Holding(disk)
+        count.set(count.get() + 1);
+        Holding(disk, why)
     }
 }
 
 impl Drop for Holding<'_> {
     fn drop(&mut self) {
         let d = self.0;
-        d.held.set(d.held.get() - 1);
-        if d.held.get() == 0 {
+        let (count, what) = match self.1 {
+            Why::Space => (&d.held, "no write held for space now"),
+            Why::Outage => (&d.stalled, "no request held for an outage now"),
+        };
+        count.set(count.get() - 1);
+        if count.get() == 0 {
             eprintln!(
-                "hyperstor-vhost: volume {:032x}: no write held for space now",
+                "hyperstor-vhost: volume {:032x}: {what}",
                 d.volume.volume().id
             );
         }
     }
 }
 
-/// Whether a write failed for want of space (D27): a device past full.
-fn no_space(e: &ClientError) -> bool {
-    matches!(
-        e,
+/// Why a failure is held, if it is: a write refused for space (D27), or a
+/// request the cluster can't serve now (D354): no primary for its PG, the
+/// client's tries used up, nodes or the map service unreachable, the PG
+/// busy past the client's own wait (D296). A lost lease, a fence, a
+/// blocklist, a bad checksum or a bad request fail at once.
+fn why(e: &ClientError) -> Option<Why> {
+    use hyperstor_proto::Code;
+    match e {
         ClientError::Server {
-            code: hyperstor_proto::Code::NoSpace,
+            code: Code::NoSpace,
+            ..
+        } => Some(Why::Space),
+        ClientError::Server {
+            code: Code::Unavailable | Code::StaleMap | Code::NotPrimary,
             ..
         }
-    )
+        | ClientError::Rpc(_)
+        | ClientError::Exhausted(..)
+        | ClientError::NoPrimary(..) => Some(Why::Outage),
+        _ => None,
+    }
 }
 
-/// Does a write, holding it while it is refused for space (D183):
-/// `attempt` is tried again every second for up to the disk's `hold`, so
-/// space freed meanwhile (trash purged, a device added) lets it finish.
-/// virtio-blk has no status for "no space": past the hold it fails, and
-/// the guest sees `IOERR`. `attempt` answers `Err(None)` when the guest's
+/// Does a request, holding it while it fails for space (D183, writes) or
+/// for an outage (D354): `attempt` is tried again every second, for up to
+/// the disk's `hold` while refused for space and its `hold_outage` while
+/// the cluster can't serve it, each counted from the first such failure.
+/// Past either the guest sees `IOERR`: virtio-blk has no status for "no
+/// space" or "try later". `attempt` answers `Err(None)` when the guest's
 /// buffers can't be read; it reads the data from guest memory each time,
 /// which stays the guest's until the request completes.
-async fn held<F, Fut>(disk: &Disk, mut attempt: F) -> Result<(), ()>
+async fn held<T, F, Fut>(disk: &Disk, what: &str, mut attempt: F) -> Result<T, ()>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<(), Option<ClientError>>>,
+    Fut: std::future::Future<Output = Result<T, Option<ClientError>>>,
 {
-    match attempt().await {
-        Ok(()) => return Ok(()),
-        Err(Some(e)) if no_space(&e) => {}
-        Err(_) => return Err(()),
-    }
-    let until = Instant::now() + disk.hold;
-    let _holding = Holding::new(disk);
+    let id = disk.volume.volume().id;
+    let mut space: Option<Instant> = None;
+    let mut outage: Option<Instant> = None;
+    let mut holding: Option<Holding> = None;
     loop {
-        let left = until.saturating_duration_since(Instant::now());
+        let e = match attempt().await {
+            Ok(t) => return Ok(t),
+            Err(None) => return Err(()),
+            Err(Some(e)) => e,
+        };
+        let Some(w) = why(&e) else {
+            if holding.is_some() {
+                eprintln!("hyperstor-vhost: volume {id:032x}: a held {what} failed otherwise: {e}");
+            }
+            return Err(());
+        };
+        let (since, limit) = match w {
+            Why::Space => (*space.get_or_insert_with(Instant::now), disk.hold),
+            Why::Outage => (*outage.get_or_insert_with(Instant::now), disk.hold_outage),
+        };
+        let left = (since + limit).saturating_duration_since(Instant::now());
         if left.is_zero() {
             eprintln!(
-                "hyperstor-vhost: volume {:032x}: a write held {} s for space failed: an I/O error to the guest",
-                disk.volume.volume().id,
-                disk.hold.as_secs()
+                "hyperstor-vhost: volume {id:032x}: a {what} held {} s failed: an I/O error to the guest ({e})",
+                limit.as_secs()
             );
             return Err(());
         }
-        sleep(left.min(Duration::from_secs(1))).await;
-        match attempt().await {
-            Ok(()) => return Ok(()),
-            Err(Some(e)) if no_space(&e) => {}
-            Err(e) => {
-                eprintln!(
-                    "hyperstor-vhost: volume {:032x}: a write held for space failed otherwise: {}",
-                    disk.volume.volume().id,
-                    e.map_or("guest memory unreadable".into(), |e| e.to_string())
-                );
-                return Err(());
-            }
+        if holding.as_ref().is_none_or(|h| h.1 != w) {
+            // The other kind let go first, so the logs pair up.
+            drop(holding.take());
+            holding = Some(Holding::new(disk, w));
         }
+        sleep(left.min(Duration::from_secs(1))).await;
     }
 }
 
@@ -211,9 +269,9 @@ impl Drop for Held<'_> {
 
 /// Reads bytes `off..off + len` (whole sectors) through the volume blocks
 /// they are in.
-async fn read_at(v: &Attached, off: u64, len: u64) -> Result<Vec<u8>, ()> {
+async fn read_at(v: &Attached, off: u64, len: u64) -> Result<Vec<u8>, ClientError> {
     let (start, end) = blk::blocks(off, len);
-    let mut data = v.read(start, end - start).await.map_err(drop)?;
+    let mut data = v.read(start, end - start).await?;
     if start != off || end != off + len {
         let at = (off - start) as usize;
         data.drain(..at);
@@ -262,6 +320,15 @@ struct Vring {
     /// Requests taken from this ring so far, for the in-flight buffer's
     /// order.
     counter: u64,
+    /// Requests taken from this ring and not yet completed, which a stop
+    /// by `GET_VRING_BASE` waits for (D349).
+    taken: usize,
+    /// Taking no more requests: a `GET_VRING_BASE` waits for those taken.
+    stopping: bool,
+    /// The used ring's guest address, and where its writes are logged
+    /// (`VHOST_VRING_F_LOG`'s address; otherwise the ring's own).
+    used_gpa: u64,
+    log_used: Option<u64>,
 }
 
 struct State {
@@ -294,6 +361,8 @@ struct State {
     watch: Option<Watch>,
     /// Bytes its requests may hold in buffers at once (I375).
     budget: Budget,
+    /// The frontend's dirty-page log (`SET_LOG_BASE`, D349).
+    log: Option<Arc<DirtyLog>>,
 }
 
 /// The guest pages a connection's requests used lately, to find the node
@@ -391,6 +460,10 @@ impl State {
                 generation: 0,
                 running: false,
                 counter: 0,
+                taken: 0,
+                stopping: false,
+                used_gpa: 0,
+                log_used: None,
             })
             .collect();
         Self {
@@ -408,11 +481,29 @@ impl State {
             parked: false,
             watch: None,
             budget: Budget::new(crate::budget::CONNECTION_BYTES),
+            log: None,
         }
     }
 
     fn protocol_acked(&self) -> bool {
         self.acked & VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits() != 0
+    }
+
+    /// The dirty-page log, while the frontend has logging on (D349).
+    fn dirty(&self) -> Option<Arc<DirtyLog>> {
+        (self.acked & VhostUserVirtioFeatures::LOG_ALL.bits() != 0)
+            .then(|| self.log.clone())
+            .flatten()
+    }
+
+    /// Marks ring `index`'s used ring as written, while logging: its
+    /// elements, its index and, with `EVENT_IDX`, its `avail_event`.
+    fn log_used(&self, index: usize) {
+        if let Some(log) = self.dirty() {
+            let v = &self.vrings[index];
+            let len = 4 + 8 * v.queue.size() as u64 + 2;
+            log.mark(v.log_used.unwrap_or(v.used_gpa), len);
+        }
     }
 
     fn event_idx(&self) -> bool {
@@ -440,6 +531,10 @@ impl State {
     fn stop(&mut self, index: usize) {
         let v = &mut self.vrings[index];
         v.generation += 1;
+        v.stopping = false;
+        // Completions of the old generation are dropped (I161), and
+        // counted no more.
+        v.taken = 0;
         if v.running {
             v.running = false;
             if let Some(k) = &v.kick {
@@ -508,6 +603,7 @@ fn start(shared: &Shared, index: usize) {
     // Each completes, answered or given back empty.
     s.running += again.len();
     let v = &mut s.vrings[index];
+    v.taken += again.len();
     v.running = true;
     let generation = v.generation;
     let (table, size) = (GuestAddress(v.queue.desc_table()), v.queue.size());
@@ -677,7 +773,9 @@ fn notify_again(shared: &Shared, index: usize, generation: u64) -> bool {
         return true;
     };
     let v = &mut s.vrings[index];
-    v.generation != generation || v.queue.enable_notification(&*mem).unwrap_or(true)
+    let again = v.generation != generation || v.queue.enable_notification(&*mem).unwrap_or(true);
+    s.log_used(index);
+    again
 }
 
 /// Takes every available chain and starts a task for each: whether it
@@ -695,7 +793,8 @@ fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> Opt
             return None;
         }
         let v = &mut s.vrings[index];
-        if v.generation != generation {
+        // Stopping (D349): the ring's task ends; those taken finish.
+        if v.generation != generation || v.stopping {
             return None;
         }
         if event_idx || disk.poll {
@@ -717,6 +816,12 @@ fn drain(shared: &Shared, disk: &Rc<Disk>, index: usize, generation: u64) -> Opt
             .map(|c| (c.head_index(), Segments::of(c)))
             .collect();
         s.running += taken.len();
+        s.vrings[index].taken += taken.len();
+        // Notifications turned off and on write the used ring's
+        // `avail_event`.
+        if event_idx || disk.poll {
+            s.log_used(index);
+        }
         took |= !taken.is_empty();
         if let Some(w) = &mut s.watch {
             for (_, segs) in &taken {
@@ -795,13 +900,19 @@ fn read_stream(
     (out.len() as u64 == len).then_some(out)
 }
 
-/// Writes `data` at `at` of the stream of `segs`.
+/// Writes `data` at `at` of the stream of `segs`, marking the pages
+/// written in the connection's dirty-page log while it has one on (D349).
 fn write_stream(
+    shared: &Shared,
     mem: &GuestMemoryMmap,
     segs: &[(GuestAddress, u32)],
     mut at: u64,
     data: &[u8],
 ) -> Option<()> {
+    // Looked at as the guest's memory is written: this reactor serves the
+    // connection's requests and its vhost-user messages alike, so logging
+    // can't turn on in between.
+    let log = lock(shared).dirty();
     let mut done = 0usize;
     for &(addr, n) in segs {
         let n = n as u64;
@@ -810,8 +921,11 @@ fn write_stream(
             continue;
         }
         let take = ((n - at) as usize).min(data.len() - done);
-        mem.write_slice(&data[done..done + take], addr.checked_add(at)?)
-            .ok()?;
+        let to = addr.checked_add(at)?;
+        mem.write_slice(&data[done..done + take], to).ok()?;
+        if let Some(log) = &log {
+            log.mark(to.0, take as u64);
+        }
         done += take;
         at = 0;
         if done == data.len() {
@@ -862,10 +976,10 @@ async fn serve(
         Some(Err(Bad::Range | Bad::TooLarge)) => (blk::S_IOERR, 1),
         Some(Ok(r)) => {
             let budget = lock(&shared).budget.clone();
-            run_request(&disk, &budget, mem, &segs, r, writable_len).await
+            run_request(&shared, &disk, &budget, mem, &segs, r, writable_len).await
         }
     };
-    if write_stream(mem, &segs.writable, writable_len - 1, &[status]).is_none() {
+    if write_stream(&shared, mem, &segs.writable, writable_len - 1, &[status]).is_none() {
         return complete(&shared, index, generation, mem, head, 0);
     }
     complete(&shared, index, generation, mem, head, used);
@@ -884,6 +998,7 @@ fn buffer_bytes(off: u64, len: u64) -> u64 {
 /// and only then (I375): a write waiting for space between attempts
 /// holds none.
 async fn run_request(
+    shared: &Shared,
     disk: &Disk,
     budget: &Budget,
     mem: &GuestMemoryMmap,
@@ -899,11 +1014,14 @@ async fn run_request(
             let mut at = off;
             while at < off + len {
                 let n = blk::piece(at, off + len);
-                let _taken = budget.take(buffer_bytes(at, n)).await;
-                let Ok(data) = read_at(&disk.volume, at, n).await else {
+                let read = || async {
+                    let _taken = budget.take(buffer_bytes(at, n)).await;
+                    read_at(&disk.volume, at, n).await.map_err(Some)
+                };
+                let Ok(data) = held(disk, "read", read).await else {
                     return (blk::S_IOERR, 1);
                 };
-                if write_stream(mem, &segs.writable, at - off, &data).is_none() {
+                if write_stream(shared, mem, &segs.writable, at - off, &data).is_none() {
                     return (blk::S_IOERR, 1);
                 }
                 at += n;
@@ -919,7 +1037,7 @@ async fn run_request(
                     let data = read_stream(mem, &segs.readable, 16 + (at - off), n).ok_or(None)?;
                     write_at(disk, at, data).await.map_err(Some)
                 };
-                if held(disk, write).await.is_err() {
+                if held(disk, "write", write).await.is_err() {
                     return (blk::S_IOERR, 1);
                 }
                 at += n;
@@ -929,10 +1047,12 @@ async fn run_request(
         // Writes are acknowledged once every copy has them (10-volumes.md
         // §10.1): nothing to flush.
         Request::Flush => (blk::S_OK, 1),
-        Request::GetId => match write_stream(mem, &segs.writable, 0, &blk::id(&disk.serial)) {
-            Some(()) => (blk::S_OK, writable_len as u32),
-            None => (blk::S_IOERR, 1),
-        },
+        Request::GetId => {
+            match write_stream(shared, mem, &segs.writable, 0, &blk::id(&disk.serial)) {
+                Some(()) => (blk::S_OK, writable_len as u32),
+                None => (blk::S_IOERR, 1),
+            }
+        }
         Request::WriteZeroes(ranges) => {
             for (off, len) in ranges {
                 // Pieces end on piece boundaries: only the range's own ends
@@ -945,7 +1065,7 @@ async fn run_request(
                         let _taken = budget.take(buffer_bytes(at, n)).await;
                         write_at(disk, at, vec![0; n as usize]).await.map_err(Some)
                     };
-                    if held(disk, zero).await.is_err() {
+                    if held(disk, "write", zero).await.is_err() {
                         return (blk::S_IOERR, 1);
                     }
                     at += n;
@@ -975,6 +1095,7 @@ fn complete(
     if v.generation != generation {
         return;
     }
+    v.taken = v.taken.saturating_sub(1);
     if let Some(inf) = &inflight {
         inf.pre_put(index as u16, head);
     }
@@ -984,9 +1105,9 @@ fn complete(
     if let Some(inf) = &inflight {
         inf.post_put(index as u16, head, v.queue.next_used());
     }
-    if v.queue.needs_notification(mem).unwrap_or(true)
-        && let Some(c) = &v.call
-    {
+    let call = v.queue.needs_notification(mem).unwrap_or(true);
+    s.log_used(index);
+    if call && let Some(c) = &s.vrings[index].call {
         kick(c);
     }
 }
@@ -1026,7 +1147,9 @@ impl VhostUserBackendReqHandlerMut for Handler {
     }
 
     fn get_features(&mut self) -> VResult<u64> {
-        Ok(blk::features() | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits())
+        Ok(blk::features()
+            | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
+            | VhostUserVirtioFeatures::LOG_ALL.bits())
     }
 
     fn set_features(&mut self, features: u64) -> VResult<()> {
@@ -1092,15 +1215,22 @@ impl VhostUserBackendReqHandlerMut for Handler {
     fn set_vring_addr(
         &mut self,
         index: u32,
-        _flags: VhostUserVringAddrFlags,
+        flags: VhostUserVringAddrFlags,
         descriptor: u64,
         used: u64,
         available: u64,
-        _log: u64,
+        log: u64,
     ) -> VResult<()> {
         let mut s = self.shared();
         let (d, u, a) = (s.gpa(descriptor)?, s.gpa(used)?, s.gpa(available)?);
-        let q = &mut s.vring(index)?.queue;
+        let v = s.vring(index)?;
+        // The used ring's writes are logged at the frontend's guest
+        // address for them, when it gives one (D349).
+        v.used_gpa = u;
+        v.log_used = flags
+            .contains(VhostUserVringAddrFlags::VHOST_VRING_F_LOG)
+            .then_some(log);
+        let q = &mut v.queue;
         q.set_desc_table_address(Some(d as u32), Some((d >> 32) as u32));
         q.set_used_ring_address(Some(u as u32), Some((u >> 32) as u32));
         q.set_avail_ring_address(Some(a as u32), Some((a >> 32) as u32));
@@ -1150,6 +1280,7 @@ impl VhostUserBackendReqHandlerMut for Handler {
 
     fn get_protocol_features(&mut self) -> VResult<VhostUserProtocolFeatures> {
         Ok(VhostUserProtocolFeatures::MQ
+            | VhostUserProtocolFeatures::LOG_SHMFD
             | VhostUserProtocolFeatures::INFLIGHT_SHMFD
             | VhostUserProtocolFeatures::REPLY_ACK
             | VhostUserProtocolFeatures::CONFIG
@@ -1290,8 +1421,15 @@ impl VhostUserBackendReqHandlerMut for Handler {
         unsupported()
     }
 
-    fn set_log_base(&mut self, _log: &VhostUserLog, _file: File) -> VResult<()> {
-        unsupported()
+    /// The frontend's dirty-page log (D349), replacing any before: pages
+    /// written are marked in it while `VHOST_F_LOG_ALL` is on.
+    fn set_log_base(&mut self, log: &VhostUserLog, file: File) -> VResult<()> {
+        let l = DirtyLog::map(file, log.mmap_offset, log.mmap_size).map_err(|e| {
+            eprintln!("hyperstor-vhost: {e}");
+            VError::InvalidParam
+        })?;
+        self.shared().log = Some(Arc::new(l));
+        Ok(())
     }
 }
 
@@ -1360,14 +1498,22 @@ async fn run_connection(mut m: Moving) -> Ended {
         };
         match ready {
             Ok(Err(e)) => break Err(e.to_string()),
-            Ok(Ok(())) => match m.req.handle_request() {
-                Ok(()) => {}
-                Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
-                // A request we refused was answered (or the frontend
-                // didn't ask for an answer); carry on.
-                Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
-                Err(e) => break Err(e.to_string()),
-            },
+            Ok(Ok(())) => {
+                // A ring is stopped once its requests in flight are done
+                // (D349): their completions are on the used ring, and
+                // logged, before the frontend has the ring's state.
+                if let Some(index) = stopping_ring(fd) {
+                    finish_taken(&m.shared, index).await;
+                }
+                match m.req.handle_request() {
+                    Ok(()) => {}
+                    Err(VError::Disconnected) | Err(VError::PartialMessage) => break Ok(()),
+                    // A request we refused was answered (or the frontend
+                    // didn't ask for an answer); carry on.
+                    Err(VError::InvalidOperation(_)) | Err(VError::InvalidParam) => {}
+                    Err(e) => break Err(e.to_string()),
+                }
+            }
             Err(_) => {}
         }
         let place = {
@@ -1385,6 +1531,67 @@ async fn run_connection(mut m: Moving) -> Ended {
     };
     lock(&m.shared).stop_all();
     Ended::Closed(r)
+}
+
+/// How long a ring's stop waits for its requests in flight (D349): a
+/// client request is tried for up to 30 s (D296). A write held for space
+/// (D183) can take longer; past this, its completion is dropped, as
+/// before D349 (I161).
+const STOP_WAIT: Duration = Duration::from_secs(35);
+
+/// The ring the frontend's next message stops, if it is a
+/// `GET_VRING_BASE`: its header and body are looked at without being
+/// taken (`MSG_PEEK`), and `vhost` then reads them as usual.
+fn stopping_ring(fd: std::os::fd::RawFd) -> Option<usize> {
+    const GET_VRING_BASE: u32 = 11;
+    let mut b = [0u8; 20];
+    // SAFETY: recv into a local buffer of its length from the
+    // connection's socket, which the handler owns and keeps open;
+    // MSG_PEEK leaves the bytes (and any descriptors) for it.
+    let n = unsafe {
+        libc::recv(
+            fd,
+            b.as_mut_ptr().cast(),
+            b.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    if n < 20 || u32::from_le_bytes(b[0..4].try_into().ok()?) != GET_VRING_BASE {
+        return None;
+    }
+    Some(u32::from_le_bytes(b[12..16].try_into().ok()?) as usize)
+}
+
+/// Ring `index` takes no more requests, and those it has taken complete,
+/// for up to [`STOP_WAIT`].
+async fn finish_taken(shared: &Shared, index: usize) {
+    {
+        let mut s = lock(shared);
+        let Some(v) = s.vrings.get_mut(index) else {
+            return;
+        };
+        if v.taken == 0 {
+            return;
+        }
+        v.stopping = true;
+        // Its task, waiting for a kick, wakes to end.
+        if let Some(k) = &v.kick {
+            kick(k);
+        }
+    }
+    let t = Instant::now();
+    while lock(shared).vrings[index].taken > 0 {
+        if t.elapsed() > STOP_WAIT {
+            eprintln!(
+                "hyperstor-vhost: volume {:032x}: ring {index} stopped with {} requests in flight after {} s",
+                lock(shared).volume,
+                lock(shared).vrings[index].taken,
+                STOP_WAIT.as_secs()
+            );
+            return;
+        }
+        sleep(Duration::from_millis(1)).await;
+    }
 }
 
 /// For a placed connection whose guest memory isn't bound, once a

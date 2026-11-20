@@ -19,6 +19,14 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   file in one request, so a request of up to 1 GiB is served, 8 MiB at a
   time (D297). Why: a VM's firmware loads large files (a unified kernel
   image), and a request holds one piece's buffer however long it is.
+- **Outages** (D354). While the cluster can't serve a request (no
+  primary for its PG, the map service without a leader, storage nodes
+  unreachable), the service holds the guest's reads and writes and tries
+  them again every second, for up to an hour (`--hold-outage`), before
+  answering `IOERR`; a write refused for space is held the same way for
+  up to `--hold-full` (D183). Why: virtio-blk has no "try later" status,
+  and a guest's filesystem turns read-only at its first failed write,
+  until the VM restarts.
 - **The disk's serial number** is the first 20 characters of the glidex
   disk id without dashes, unique within the VM. Tools in the guest, and
   the guest library (D33), find the volume behind a disk by it.
@@ -59,6 +67,18 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   sockets: QEMU with `reconnect`, Cloud Hypervisor on its own (G6). The
   requests in flight run again from the frontend's in-flight buffer
   (D143, D145).
+- **Live migration** (D349; glidex's live migration, which also needs
+  the target's delegate, §11.4). The service offers
+  `VHOST_USER_PROTOCOL_F_LOG_SHMFD` and `VHOST_F_LOG_ALL`: while the
+  hypervisor copies a running guest's memory to another host, every
+  guest page a request writes (read data, the status byte) and the used
+  ring's pages are marked in the dirty-page log it gives (one bit per
+  4 KiB page). A ring stopped by `GET_VRING_BASE` first finishes the
+  requests it has taken, up to 35 s, so their data and completions are
+  in the guest's memory, and logged, before the hypervisor reads the
+  ring's state. Why: a read finishing during the copy writes guest
+  memory the target would otherwise never receive, and a request in
+  flight at the stop would be lost.
 - **Detach.** A detach is refused (`busy`) while a hypervisor is
   connected to the disk, unless forced, so a client's mistake can't pull
   a running VM's disk (D256, I297). It waits up to 2 s for a hypervisor
@@ -137,6 +157,9 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   virtio-blk or NVMe functions to the guest with no host CPU. Worth it
   at scale, but tied to one vendor and hard to combine with live
   migration.
-- **Live migration.** When glidex migrates VMs live, the destination
-  attaches as a delegate (D33) during the copy and takes over the lease
-  at switchover, with no blocklist round.
+- **Live migration** (built: D349–D352). The destination attaches as a
+  delegate (D33) during the copy, handed out by the source and standing
+  by without writing (D350), and is promoted to holder at switchover,
+  with the source fenced in the background rather than a blocklist round
+  first; its first write waits for the fence, its reads don't (D351). glidex checks each host's `hello` and the destination's
+  attach checks the storage node (D352).

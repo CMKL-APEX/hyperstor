@@ -378,6 +378,18 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate)"
+spec = ["D350", "D351", "D352", "I421", "11-frontends.md §11.4"]
+status = "done"
+tests = [
+    "cluster::a_delegate_is_promoted_and_the_old_holder_fenced",
+    "cluster::a_delegate_is_not_promoted_by_older_storage_nodes",
+    "cluster::a_promotion_sent_again_after_a_lost_reply_succeeds",
+    "cluster::a_promoted_holders_first_write_waits_for_the_fence",
+    "vhost::a_disk_is_handed_to_a_migrations_target",
+]
+
+[[milestone.item]]
 what = "A drive whose by-id path is gone found by its superblock's label, with udev rules matching the superblock too"
 spec = ["D353", "I422", "24-pools-and-devices.md §27.2.1"]
 status = "done"
@@ -640,11 +652,12 @@ status = "planned"
 
 [[milestone.item]]
 what = "A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again"
-spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174"]
+spec = ["11-frontends.md §11.1", "G6", "D143", "D145", "I173", "I174", "I424", "I425"]
 status = "done"
 tests = [
     "vhost::a_restarted_service_takes_its_volumes_back",
     "hyperstor_vhost::tests::the_state_file_round_trips_and_bad_ones_say_why",
+    "hyperstor_vhost::tests::a_socket_appears_only_once_its_group_can_open_it",
     "hyperstor_vhost::inflight::tests::requests_taken_and_not_answered_are_found_after_a_restart",
 ]
 
@@ -653,6 +666,15 @@ what = "A detach is refused while a hypervisor is connected, unless forced"
 spec = ["11-frontends.md §11.1", "D256", "I297"]
 status = "done"
 tests = ["vhost::a_detach_leaves_a_connected_disk_alone"]
+
+[[milestone.item]]
+what = "hyperstor-vhost for live migration: dirty-page logging (LOG_SHMFD, VHOST_F_LOG_ALL) and ring stops that finish their requests in flight"
+spec = ["D349", "I420", "11-frontends.md §11.1"]
+status = "done"
+tests = [
+    "hyperstor_vhost::device::dirty::tests::written_pages_are_marked_and_only_they",
+    "vhost::a_migrating_guests_writes_are_logged_and_a_stop_finishes_its_requests",
+]
 
 [[milestone.item]]
 what = "A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused"
@@ -668,7 +690,7 @@ tests = [
 
 [[milestone.item]]
 what = "hyperstor-install --vhost / --role vhost: the service and its unit, for the users named"
-spec = ["19-administration.md §23.4", "D142", "D144", "I175"]
+spec = ["19-administration.md §23.4", "D142", "D144", "I175", "I425"]
 status = "done"
 tests = [
     "install::hyperstor_vhost_is_installed_for_its_users",
@@ -1921,6 +1943,12 @@ what = "A write refused for space held by hyperstor-vhost, retried every second 
 spec = ["D183", "G46", "I228"]
 status = "done"
 tests = ["vhost::a_write_refused_for_space_is_held", "vm::a_guest_waits_on_a_write_held_while_full"]
+
+[[milestone.item]]
+what = "Reads and writes held by hyperstor-vhost while the cluster can't serve them, retried every second for up to an hour (--hold-outage), before the guest gets an I/O error"
+spec = ["D354", "I423", "11-frontends.md §11.1"]
+status = "done"
+tests = ["vhost::requests_are_held_through_an_outage"]
 
 [[milestone.item]]
 what = "A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool"

@@ -4627,6 +4627,240 @@ fn delegates_act_under_the_lease_and_are_fenced_with_it() {
 /// A lease outlives its header's primary: the new primary gives the holder
 /// a full lease from when it first sees it, and the holder's renewals
 /// follow the map to it.
+/// A live migration's handover (D350, D351): a standby delegate writes
+/// nothing; promoted, it holds the lease and writes, the old holder's
+/// renewals fail and its identity is blocklisted in the background, and
+/// the old holder's detach doesn't fence the new holder. A delegate the
+/// holder no longer lists isn't promoted.
+#[test]
+fn a_delegate_is_promoted_and_the_old_holder_fenced() {
+    use hyperstor_client::ClientError;
+    use hyperstor_reactor::time::sleep;
+    use std::time::Duration;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 1, move |a| async move {
+        let v = a
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap()
+            .id;
+        let va = a.attach(v).await.unwrap();
+        va.write(0, pattern(1, 4096)).await.unwrap();
+        // The source hands a delegate out; the target stands by with it.
+        let d = va.add_delegate().await.unwrap();
+        let t = Client::connect(meta, 2).await.unwrap();
+        let td = t.delegate(v, d).await.unwrap();
+        assert!(va.set_standby().is_err(), "a holder doesn't stand by");
+        td.set_standby().unwrap();
+        let r = td.write(0, pattern(9, 4096)).await;
+        assert!(matches!(r, Err(ClientError::BadVolume(_))), "{r:?}");
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(1, 4096));
+        td.check_promote().await.unwrap();
+        assert!(va.promote("x").await.is_err(), "a holder isn't promoted");
+        // The switch.
+        let fenced = td.promote("vhost:target").await.unwrap();
+        assert_eq!(fenced, vec![va.lease()]);
+        assert!(!td.is_delegate() && !td.is_standby());
+        let h = a.volume(v).await.unwrap().unwrap();
+        assert_eq!(h.holder, Some(d));
+        assert_eq!(h.holder_label.as_deref(), Some("vhost:target"));
+        assert!(h.delegates.is_empty());
+        td.write(0, pattern(2, 4096)).await.unwrap();
+        // The old holder is fenced in the background.
+        let t0 = std::time::Instant::now();
+        while !a.map().blocked(va.lease()) {
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(10),
+                "never fenced"
+            );
+            let _ = a.refresh_map().await;
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert!(va.write(0, pattern(3, 4096)).await.is_err());
+        assert!(va.lost());
+        // Its detach fences nothing of the new holder's.
+        va.detach().await.unwrap();
+        assert!(!a.map().blocked(d));
+        td.write(0, pattern(4, 4096)).await.unwrap();
+        // The new holder renews: past a lease's life, it still holds it.
+        sleep(hyperstor_proto::LEASE_EXPIRES + Duration::from_secs(1)).await;
+        let o = Client::connect(meta, 3).await.unwrap();
+        match o.attach(v).await {
+            Err(ClientError::LeaseHeld { label, .. }) => assert_eq!(label, "vhost:target"),
+            r => panic!("{:?}", r.map(|_| ())),
+        }
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(4, 4096));
+        // A delegate removed before the switch isn't promoted.
+        let d2 = td.add_delegate().await.unwrap();
+        let g = o.delegate(v, d2).await.unwrap();
+        td.remove_delegate(d2).await.unwrap();
+        assert!(g.check_promote().await.is_err());
+        assert!(g.promote("vhost:late").await.is_err());
+        assert_eq!(a.volume(v).await.unwrap().unwrap().holder, Some(d));
+    });
+    c.stop();
+}
+
+/// A promotion whose reply is lost is sent again, and answered as the
+/// first was (I421): the client's own resend, and a promotion tried again
+/// by its caller after it gave up, both end with the target holding the
+/// lease and the old holder fenced.
+#[test]
+fn a_promotion_sent_again_after_a_lost_reply_succeeds() {
+    use hyperstor_proto::{Msg, Target, WireKey};
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    let older = c.older.clone();
+    let kind = Msg::LeasePromote {
+        to: Target {
+            pool: 0,
+            pg: 0,
+            map_epoch: 0,
+            pg_epoch: 0,
+            lease: 0,
+        },
+        key: WireKey {
+            ns: 0,
+            name: Vec::new(),
+            version: 0,
+        },
+        label: String::new(),
+        dry_run: false,
+    }
+    .kind();
+    with_client(meta, 1, move |a| async move {
+        let t = Client::connect(meta, 2).await.unwrap();
+        for (round, lost) in [(1u64, 1u32), (2, 1000)] {
+            let v = a
+                .create_volume(POOL, CHUNK as u64, None, &format!("v{round}"))
+                .await
+                .unwrap()
+                .id;
+            let va = a.attach(v).await.unwrap();
+            va.write(0, pattern(round, 4096)).await.unwrap();
+            let d = va.add_delegate().await.unwrap();
+            let td = t.delegate(v, d).await.unwrap();
+            td.set_standby().unwrap();
+            for n in 0..4 {
+                older.lose_replies(n, kind, lost);
+            }
+            let fenced = match td.promote("vhost:target").await {
+                // Every reply lost: the caller gives up, then tries again.
+                Err(e) => {
+                    assert_eq!(lost, 1000, "{e:?}");
+                    for n in 0..4 {
+                        older.lose_replies(n, kind, 0);
+                    }
+                    assert!(td.is_delegate());
+                    td.promote("vhost:target").await.unwrap()
+                }
+                Ok(f) => {
+                    // Exactly one reply was lost, by the header's primary.
+                    let left = (0..4).filter(|n| older.take_lost_reply(*n, kind)).count();
+                    assert_eq!((lost, left), (1, 3));
+                    f
+                }
+            };
+            // The first try saw the old holder; the fence names it.
+            assert_eq!(fenced, vec![va.lease()], "round {round}");
+            let h = a.volume(v).await.unwrap().unwrap();
+            assert_eq!(h.holder, Some(d));
+            assert_eq!(h.holder_label.as_deref(), Some("vhost:target"));
+            td.write(0, pattern(round + 10, 4096)).await.unwrap();
+            assert!(t.map().blocked(va.lease()));
+            assert!(va.write(0, pattern(9, 4096)).await.is_err());
+            assert_eq!(td.read(0, 4096).await.unwrap(), pattern(round + 10, 4096));
+        }
+    });
+    c.stop();
+}
+
+/// The promoted holder's first write waits until the old holder is
+/// blocklisted (I421): a write of the old holder's that a storage node
+/// still holds can't land after it. Reads don't wait.
+#[test]
+fn a_promoted_holders_first_write_waits_for_the_fence() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 1, move |a| async move {
+        let v = a
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap()
+            .id;
+        let va = a.attach(v).await.unwrap();
+        va.write(0, pattern(1, 4096)).await.unwrap();
+        let d = va.add_delegate().await.unwrap();
+        let d2 = va.add_delegate().await.unwrap();
+        let t = Client::connect(meta, 2).await.unwrap();
+        let td = t.delegate(v, d).await.unwrap();
+        td.set_standby().unwrap();
+        let mut fenced = td.promote("vhost:target").await.unwrap();
+        fenced.sort();
+        let mut want = vec![va.lease(), d2];
+        want.sort();
+        assert_eq!(fenced, want);
+        // Promoted, and not yet fenced: the blocklist runs in the
+        // background.
+        assert!(td.is_fencing());
+        assert!(!t.map().blocked(va.lease()));
+        // A read doesn't wait.
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(1, 4096));
+        // The write returns only once the old holder and its other
+        // delegate are refused everywhere.
+        td.write(0, pattern(2, 4096)).await.unwrap();
+        assert!(!td.is_fencing());
+        let map = t.map();
+        assert!(map.blocked(va.lease()) && map.blocked(d2));
+        assert!(!map.blocked(d));
+        assert!(va.write(0, pattern(3, 4096)).await.is_err());
+        td.write(4096, pattern(4, 4096)).await.unwrap();
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(2, 4096));
+    });
+    c.stop();
+}
+
+/// Storage nodes from before promotions (protocol 4) are never sent one
+/// (D352): the target's check fails as invalid before a migration
+/// starts, and the connection stays up.
+#[test]
+fn a_delegate_is_not_promoted_by_older_storage_nodes() {
+    use hyperstor_client::ClientError;
+    use hyperstor_proto::Code;
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    for n in 0..4 {
+        c.kill(n);
+        c.older.set_version(n as u32, Some(4));
+        c.restart(n);
+    }
+    with_client(meta, 1, move |a| async move {
+        wait_backfilled(&a).await;
+        let v = a
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap()
+            .id;
+        let va = a.attach(v).await.unwrap();
+        let d = va.add_delegate().await.unwrap();
+        let t = Client::connect(meta, 2).await.unwrap();
+        let td = t.delegate(v, d).await.unwrap();
+        td.set_standby().unwrap();
+        let r = td.check_promote().await;
+        assert!(
+            matches!(&r, Err(ClientError::Server { code: Code::Invalid, detail }) if detail.contains("protocol 4")),
+            "{r:?}"
+        );
+        assert!(td.promote("vhost:target").await.is_err());
+        // Nothing changed, and the holder goes on.
+        assert_eq!(a.volume(v).await.unwrap().unwrap().holder, Some(va.lease()));
+        va.write(0, pattern(1, 4096)).await.unwrap();
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(1, 4096));
+    });
+    c.stop();
+}
+
 #[test]
 fn a_lease_outlives_its_headers_primary() {
     use hyperstor_client::ClientError;

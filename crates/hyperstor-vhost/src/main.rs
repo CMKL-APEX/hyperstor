@@ -1,5 +1,5 @@
-//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N]`
-//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] [--poll] | detach ID [--force]`
+//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N]`
+//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
 //! then detaches every volume. `ctl` sends one request to a running
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] [--poll] | detach ID [--force]";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -58,6 +58,15 @@ fn main() {
                     .filter(|s| *s <= 3600)
                     .unwrap_or_else(|| usage()),
             };
+            // D354: an hour unless set, at most a day.
+            let hold_outage = match get("--hold-outage") {
+                None => 3600,
+                Some(s) => s
+                    .parse()
+                    .ok()
+                    .filter(|s| *s <= 86_400)
+                    .unwrap_or_else(|| usage()),
+            };
             // D290: a reactor on each CPU listed (`0,64`, `0-1`); by
             // default the first CPU of each NUMA node.
             let cpus = get("--cpus").map(|l| {
@@ -85,6 +94,7 @@ fn main() {
                     group,
                     queues,
                     hold_full: std::time::Duration::from_secs(hold_full),
+                    hold_outage: std::time::Duration::from_secs(hold_outage),
                     networks: get("--networks")
                         .map(|s| {
                             s.split(',')
@@ -114,29 +124,39 @@ fn main() {
                 .enumerate()
                 .filter(|(i, a)| {
                     let prev = i.checked_sub(1).map(|p| args[1 + p].as_str());
-                    !a.starts_with("--") && !matches!(prev, Some("--dir" | "--serial"))
+                    !a.starts_with("--")
+                        && !matches!(prev, Some("--dir" | "--serial" | "--delegate" | "--holder"))
                 })
                 .map(|(_, a)| a.as_str())
                 .collect();
             let req = match rest.as_slice() {
                 ["hello"] => json!({"id": 1, "op": "hello"}),
                 ["list"] => json!({"id": 1, "op": "list"}),
+                ["delegate", id] => json!({"id": 1, "op": "delegate", "args": {"volume": id}}),
+                ["undelegate", id, d] => json!({"id": 1, "op": "undelegate", "args": {
+                    "volume": id,
+                    "delegate": d,
+                }}),
+                ["promote", id] => json!({"id": 1, "op": "promote", "args": {"volume": id}}),
                 ["detach", id] => json!({"id": 1, "op": "detach", "args": {
                     "volume": id,
                     "force": has("--force"),
                 }}),
                 ["attach", id] => {
-                    let take = match (has("--take-over"), has("--preempt")) {
-                        (false, false) => "attach",
-                        (true, false) => "take_over",
-                        (false, true) => "preempt",
-                        (true, true) => usage(),
+                    let delegate = get("--delegate");
+                    let take = match (has("--take-over"), has("--preempt"), &delegate) {
+                        (false, false, _) => "attach",
+                        (true, false, None) => "take_over",
+                        (false, true, None) => "preempt",
+                        _ => usage(),
                     };
                     json!({"id": 1, "op": "attach", "args": {
                         "volume": id,
                         "serial": get("--serial").unwrap_or_default(),
                         "take": take,
+                        "holder": get("--holder").unwrap_or_default(),
                         "poll": has("--poll"),
+                        "delegate": delegate,
                     }})
                 }
                 _ => usage(),

@@ -7,7 +7,7 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt] [--poll] | detach ID [--force]
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
 ```
 
 | Command | Does |
@@ -17,6 +17,10 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `ctl list` | The volumes attached here: socket, size, whether a hypervisor is connected, whether the volume was taken elsewhere (`lost`), the reactor serving it with that reactor's NUMA node (`reactor`, `node`), and whether it is polled (`poll`) |
 | `ctl attach ID` | Takes the volume's read-write lease and opens its socket; prints the socket's path |
 | `ctl detach ID` | Removes the socket and gives the lease up; refused (`busy`) while a hypervisor stays connected for 2 s, unless `--force` |
+| `ctl delegate ID` | On a live migration's source: adds a delegate to the lease of the volume attached here, and prints its identity (see [Live migration](#live-migration)) |
+| `ctl attach ID --delegate D` | On the target: attaches the volume as delegate `D`, standing by; `--holder NAME` labels the lease once promoted |
+| `ctl promote ID` | On the target, at the switch: makes the delegate attached here the volume's holder |
+| `ctl undelegate ID D` | On the source of a cancelled migration: removes delegate `D` and fences it |
 
 | Option | Default | Meaning |
 |---|---|---|
@@ -26,6 +30,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--group GID` | | `serve`: the group given the sockets (mode 0660), so a hypervisor running as that group can connect |
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |
 | `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/pools-and-devices.md#full-devices) |
+| `--hold-outage SECS` | 3600 | `serve`: how long a read or write is held while the cluster can't serve it (no primary for its data, the map service without a leader, storage nodes unreachable), tried again every second, before the guest sees an I/O error (0–86400; 0: after the client's own tries, about 30 s). See [Outages](#outages) |
 | `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
 | `--networks NAME[,NAME...]` | none | `serve`: the data networks this host reaches storage nodes on, in order: a device's endpoint on the first network it has one on (see the [cluster file](cluster-file.md#endpoint)), else its address |
 | `--cpus LIST` | the first CPU of each NUMA node | `serve`: the CPUs its reactors run on, one reactor pinned to each (`0,64` or `0-1`). See [NUMA nodes](#numa-nodes) |
@@ -33,6 +38,8 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--serial S` | empty | `attach`: the disk's serial number as the guest sees it, up to 20 characters |
 | `--take-over` | off | `attach`: the volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then take it |
 | `--preempt` | off | `attach`: take the volume from a holder that is still running; that holder's lease on this volume is blocklisted, and its other volumes go on |
+| `--delegate D` | | `attach`: attach as delegate `D` of the holder's lease, standing by, a live migration's target (see [Live migration](#live-migration)); not with `--take-over` or `--preempt` |
+| `--holder NAME` | | `attach`: who asks, for the lease's label, `vhost:NAME`; glidex gives its node's name |
 | `--poll` | off | `attach`: poll the disk's queues while it is busy, for latency-critical VMs. See [Polling](#polling) |
 | `--force` | off | `detach`: detach even while a hypervisor is connected; the VM loses its disk |
 
@@ -75,7 +82,8 @@ one line:
 
 Errors are `{"id": N, "error": {"code": C, "message": M}}`, with codes
 `invalid`, `denied`, `held`, `not_found`, `not_attached`, `busy`,
-`unavailable` and `internal`. An `attach` may name who asks, `"holder": "<name>"` (up
+`unavailable` and `internal`. `hello` answers the protocol version
+(3) and its features (`live_migration`). An `attach` may name who asks, `"holder": "<name>"` (up
 to 58 printable characters; glidex gives its node's name): the lease is
 labelled `vhost:<name>` (`vhost` without one). A `held` error names the
 label of whoever holds the volume, `"holder"`: `vhost:<name>` for
@@ -118,6 +126,69 @@ hypervisor's connection may hold up to 64 MiB in them at once; a
 request that would go past that waits for the connection's earlier ones
 to finish, and none is refused for it. Linux guests send at most
 1280 KiB per request, so they don't reach it.
+
+## Live migration
+
+The service logs the guest pages it writes while a hypervisor migrates
+a VM live: it offers vhost-user's dirty-page log (`LOG_SHMFD`,
+`VHOST_F_LOG_ALL`), and marks the pages each request writes and the
+used ring's. When the hypervisor stops a queue, the service finishes the
+requests in flight on it first (for up to 35 s), so none is lost and
+their data reaches the new host.
+
+glidex moves a running VM to another node with its disks attached
+throughout. The volume's lease passes from the source's service to the
+target's, which never writes before it holds it:
+
+1. **On the source,** `delegate` adds a delegate to the disk's lease and
+   answers its identity, `{"delegate": "<16 hex digits>"}`.
+2. **On the target,** `attach` with `"delegate"` set to it (and
+   `"holder"`) attaches the volume as that delegate, standing by: the
+   receiving hypervisor connects to its socket, reads work, writes are
+   refused. It is checked with the cluster first: a cluster whose
+   storage nodes can't hand a lease over (older builds) refuses it
+   (`invalid`), before any memory is copied. `list` shows it as
+   `"role": "delegate"`, which glidex's clean-up of stale holds leaves
+   alone; a holder's disk is `"role": "holder"`.
+3. **At the switch,** once the source's hypervisor has stopped its
+   rings (the service finishes the requests in flight first), `promote`
+   on the target makes it the volume's holder at once. The source's
+   lease is fenced in the background, `{"fencing": [...]}`; the guest
+   reads at once, and its first write waits until the fence is in place
+   (one blocklist round). The source's renewals fail from then on, and
+   detaching it there fences nothing of the target's. A `promote` sent
+   again after a lost answer succeeds.
+4. **A cancelled migration:** `detach` the target (with `force`, its
+   hypervisor connected) and `undelegate` it on the source, which fences
+   it. The source's VM goes on throughout.
+
+A delegate standing by isn't in the state file: a restart of the
+target's service before the switch drops it, and glidex starts the
+migration again. Once promoted, it is kept like any other disk.
+
+## Outages
+
+A guest's filesystem treats a failed write as damage: ext4 aborts its
+journal and remounts read-only, and stays so until the VM restarts. So
+while the cluster can't serve a request (a PG without a primary, the map
+service without a leader because a majority of its members is down,
+storage nodes unreachable), the service holds the request and tries it
+again every second, for up to `--hold-outage` (an hour by default). The
+guest just waits: virtio-blk has no request timeout, though Linux logs
+"task blocked" warnings after 2 minutes. Once the cluster answers, the
+held requests finish in order and the guest goes on.
+
+- Reads, writes and write-zeroes are held; a flush has nothing to wait
+  for (writes are durable once acknowledged).
+- The first request held and the last let go are logged
+  (`holding requests up to 3600 s`, `no request held for an outage now`).
+- Past the limit the guest sees an I/O error, as before.
+- A lost lease, a fence or blocklist, a bad checksum or a bad request
+  fail at once: waiting can't fix them.
+- A live migration's switch waits at most 35 s for requests in flight;
+  past that, a held request's answer is dropped, as for a write held for
+  space. Don't migrate a VM through an outage: the source's held writes
+  are fenced once the target is promoted.
 
 ## Restarts
 

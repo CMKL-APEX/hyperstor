@@ -104,6 +104,9 @@ pub struct Older {
     /// Nodes that answer `HelloOk` with this protocol version and read
     /// operation lists as that version's builds do.
     versions: Mutex<std::collections::HashMap<u32, u16>>,
+    /// Replies a node loses: it handles the request, then drops the
+    /// connection instead of answering, this many more times.
+    lost_replies: Mutex<std::collections::HashMap<(u32, u16), u32>>,
 }
 
 impl Older {
@@ -132,6 +135,25 @@ impl Older {
 
     pub fn unknown(&self, node: u32, kind: u16) -> bool {
         self.unknown.lock().unwrap().contains(&(node, kind))
+    }
+
+    /// `node` handles the next `n` requests of `kind`, and drops the
+    /// connection each came on instead of answering: a reply lost.
+    pub fn lose_replies(&self, node: u32, kind: u16, n: u32) {
+        self.lost_replies.lock().unwrap().insert((node, kind), n);
+    }
+
+    /// Whether `node` loses its reply to this request of `kind`; counts
+    /// it.
+    pub fn take_lost_reply(&self, node: u32, kind: u16) -> bool {
+        let mut m = self.lost_replies.lock().unwrap();
+        match m.get_mut(&(node, kind)) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
     }
 }
 

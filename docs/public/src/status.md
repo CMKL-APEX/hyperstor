@@ -79,6 +79,7 @@ covered by tests that run on every change.
 | Map backups by the leader and on request, and restoring a lost store from one | Done |
 | Changing the map service's members at run time, recovering a group that lost its majority, and a leader without one saying so | Done |
 | Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log | Done |
+| Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate) | Done |
 | A drive whose by-id path is gone found by its superblock's label, with udev rules matching the superblock too | Done |
 | Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page | Done |
 | Volume metadata: headers, directories and volume leases | Done |
@@ -116,6 +117,7 @@ covered by tests that run on every change.
 | Zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
 | A detach is refused while a hypervisor is connected, unless forced | Done |
+| hyperstor-vhost for live migration: dirty-page logging (LOG_SHMFD, VHOST_F_LOG_ALL) and ring stops that finish their requests in flight | Done |
 | A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused | Done |
 | hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |
 | Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
@@ -289,6 +291,7 @@ covered by tests that run on every change.
 | Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto | Done |
 | Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool | Done |
 | A write refused for space held by hyperstor-vhost, retried every second for up to 300 s (--hold-full), before the guest gets an I/O error | Done |
+| Reads and writes held by hyperstor-vhost while the cluster can't serve them, retried every second for up to an hour (--hold-outage), before the guest gets an I/O error | Done |
 | A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool | Done |
 | Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced | Done |
 | Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs | Done |
