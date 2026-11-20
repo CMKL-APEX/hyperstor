@@ -52,15 +52,16 @@ pub fn bin_dir() -> PathBuf {
     let dir = std::env::var_os("HS_BIN_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            // target/<profile>/deps/<test> -> target/<profile>; a binary
-            // of this crate (ui-e2e-cluster) is in target/<profile>.
+            // The nearest directory above the test executable that holds
+            // the binaries: target/<profile> from target/<profile>/deps/<test>,
+            // from Cargo's newer target/<profile>/build/<crate>/<hash>/out/<test>,
+            // or for a binary of this crate (ui-e2e-cluster) its own.
             let exe = std::env::current_exe().expect("test executable");
             let dir = exe.parent().expect("build directory");
-            if dir.file_name().is_some_and(|n| n == "deps") {
-                dir.parent().expect("build directory").to_path_buf()
-            } else {
-                dir.to_path_buf()
-            }
+            dir.ancestors()
+                .find(|d| d.join(BINARIES[0]).exists())
+                .unwrap_or(dir)
+                .to_path_buf()
         });
     for b in BINARIES {
         let p = dir.join(b);
