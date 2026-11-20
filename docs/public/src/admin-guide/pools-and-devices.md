@@ -118,6 +118,18 @@ the `hyperstor` user open it (a udev rule for that disk only, in
 and restarts the node with it. Later runs, the daily renewal included,
 keep it. Name devices by `/dev/disk/by-id/`.
 
+A drive's by-id name can change with its connection: a SATA drive
+moved behind a SAS controller or into a USB enclosure gets another
+(NVMe drives keep theirs). When a device's path is gone, `hyperstord`
+finds the drive by its label, `/dev/disk/by-label/device-<id>`, which
+udev makes from its superblock, serves it from there and logs
+`device D: PATH is gone; serving the drive labelled device-D, now
+/dev/sdX`. It still checks the superblock names that device of this
+cluster. Run the installer with the drive's new `--device` path to
+record it. This needs the patched libblkid (installed by default), and
+a rules file written by this release's installer; run the installer
+once on each host with added disks.
+
 A map service host registers the device with the administrator's
 certificate. A storage host uses its node's own certificate, through
 the API it joined with; that certificate may add devices only to its

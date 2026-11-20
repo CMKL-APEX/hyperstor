@@ -81,7 +81,18 @@ device weights from capacity (D158).
     rules are in `/etc/udev/rules.d/61-hyperstor.rules`, a name that
     sorts after `60-persistent-storage.rules`, which makes the by-id
     links they match: udev reads rules files in the order of their
-    names, whatever their directory (I333).
+    names, whatever their directory (I333). Each device has a second
+    rule matching its superblock as the patched libblkid reads it
+    (type `hyperstor`, the cluster's UUID, label `device-<id>`), so a
+    drive that comes back under another by-id name is still the
+    service's (D353).
+- **A drive whose by-id name changed** (D353): its connection changed,
+  a SATA drive moved behind a SAS controller or into a USB enclosure
+  (`ata-…` becomes `scsi-…` or `wwn-…`; NVMe names stay). When a
+  device's block device path is gone, `hyperstord` opens
+  `/dev/disk/by-label/device-<id>` instead and says so; the superblock
+  check at open (I203) still refuses a drive of another device or
+  cluster. Running the installer with the new path records it.
 - Adding a device to a running node: the installer formats it (§27.2.2),
   registers it (`AddDevice`, with the administrator's certificate or the
   node's, D280), rewrites `node-N.env`
