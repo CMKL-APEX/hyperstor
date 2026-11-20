@@ -44,7 +44,8 @@ pub struct Options {
     pub meta: Vec<SocketAddr>,
     /// Where the control and disk sockets go.
     pub dir: PathBuf,
-    /// Users allowed on the control socket besides root and our own.
+    /// Users allowed on the control socket and the disks' sockets besides
+    /// root and our own.
     pub allow_uids: Vec<u32>,
     /// The group given the sockets (the hypervisors' and glidex's), if any.
     pub group: Option<u32>,
@@ -347,6 +348,29 @@ fn chown_group(path: &Path, gid: u32) -> Result<(), String> {
     std::os::unix::fs::chown(path, None, Some(gid)).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Writes `path` through `<path>.new`, created with mode 0600: the file is
+/// never readable by the sockets' group, even while it is written.
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let tmp = path.with_extension("json.new");
+    // One left by a crash keeps its mode through open; start afresh.
+    let _ = std::fs::remove_file(&tmp);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .and_then(|()| std::fs::rename(&tmp, path))
+}
+
+/// Whether `peer` may use the control socket or a disk's: root, the
+/// service's own user, or one allowed (`--allow-uid`). The sockets' group
+/// alone isn't enough: anyone in it could otherwise open every VM's disk.
+fn may_use(peer: Option<u32>, own: u32, allowed: &[u32]) -> bool {
+    peer.is_some_and(|u| u == 0 || u == own || allowed.contains(&u))
+}
+
 /// The uid at the other end of a Unix socket.
 fn peer_uid(s: &UnixStream) -> Option<u32> {
     let mut cred = libc::ucred {
@@ -379,9 +403,7 @@ async fn accept_control(svc: Rc<Service>, listener: UnixListener) {
         let Ok((mut s, _)) = listener.accept() else {
             continue;
         };
-        let allowed =
-            peer_uid(&s).is_some_and(|u| u == 0 || u == own || svc.opts.allow_uids.contains(&u));
-        if !allowed {
+        if !may_use(peer_uid(&s), own, &svc.opts.allow_uids) {
             let r = Reply::error(0, "denied", "this user may not use hyperstor-vhost");
             let _ = writeln!(s, "{}", r.line());
             continue;
@@ -657,11 +679,7 @@ impl Service {
                 .collect(),
         };
         let path = state_path(&self.opts.dir);
-        let tmp = path.with_extension("json.new");
-        let r = std::fs::write(&tmp, state.to_json())
-            .and_then(|()| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)))
-            .and_then(|()| std::fs::rename(&tmp, &path));
-        if let Err(e) = r {
+        if let Err(e) = write_private(&path, &state.to_json()) {
             eprintln!("hyperstor-vhost: {}: {e}", path.display());
         }
     }
@@ -899,6 +917,8 @@ async fn serve_disk(
     conn: Rc<RefCell<Option<UnixStream>>>,
     stopping: Rc<Cell<bool>>,
 ) {
+    // SAFETY: getuid has no preconditions.
+    let own = unsafe { libc::getuid() };
     loop {
         if fd::readable(listener.as_raw_fd()).await.is_err() || stopping.get() {
             return;
@@ -909,6 +929,14 @@ async fn serve_disk(
             }
             continue;
         };
+        let peer = peer_uid(&s);
+        if !may_use(peer, own, &svc.opts.allow_uids) {
+            eprintln!(
+                "hyperstor-vhost: volume {volume:032x}: refused a connection from uid {}",
+                peer.map_or("unknown".into(), |u| u.to_string())
+            );
+            continue;
+        }
         let Ok(keep) = s.try_clone() else { continue };
         *conn.borrow_mut() = Some(keep);
         let size = svc.status(volume).await.map_or(0, |(_, size)| size);
@@ -1038,6 +1066,61 @@ mod tests {
                 .unwrap_err()
                 .contains("serial")
         );
+    }
+
+    #[test]
+    fn only_root_the_service_and_allowed_users_use_its_sockets() {
+        assert!(may_use(Some(0), 990, &[994]));
+        assert!(may_use(Some(990), 990, &[]));
+        assert!(may_use(Some(994), 990, &[994, 1000]));
+        assert!(may_use(Some(1000), 990, &[994, 1000]));
+        // In the sockets' group, say, but not named.
+        assert!(!may_use(Some(995), 990, &[994]));
+        assert!(!may_use(None, 990, &[994]));
+    }
+
+    /// The state file is never readable but by the service, even while it
+    /// is written, nor after a crash left a readable `.new` behind.
+    #[test]
+    fn the_state_file_is_never_readable_by_others() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("hs-vhost-state-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = state_path(&dir);
+        let tmp = path.with_extension("json.new");
+        std::fs::write(&tmp, "left by a crash").unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, "{}").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert!(!tmp.exists());
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watcher = {
+            let (dir, done) = (dir.clone(), done.clone());
+            std::thread::spawn(move || {
+                let (mut seen, mut wrong) = (0u64, Vec::new());
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    for e in std::fs::read_dir(&dir).unwrap().flatten() {
+                        if let Ok(m) = e.metadata() {
+                            seen += 1;
+                            if m.mode() & 0o077 != 0 {
+                                wrong.push(format!("{:?} {:o}", e.file_name(), m.mode() & 0o777));
+                            }
+                        }
+                    }
+                }
+                (seen, wrong)
+            })
+        };
+        for i in 0..2000 {
+            write_private(&path, &format!("{{\"n\": {i}}}")).unwrap();
+        }
+        done.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (seen, wrong) = watcher.join().unwrap();
+        assert!(seen > 0);
+        assert!(wrong.is_empty(), "seen {wrong:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), r#"{"n": 1999}"#);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A socket is never seen at its path before it has its mode and group
