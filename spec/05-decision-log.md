@@ -1794,6 +1794,20 @@ recommendations:
 | 315 | The switch: promote, then fence the old holder in the background (recommended); fence first, then promote; the source hands the lease over itself | Promote, then fence | D351 |
 | 316 | glidex's check: `hello` on each host's control socket, and the target's attach checking the storage node (recommended); also a feature in `GetStatus` | `hello` and the attach's check | D352 |
 
+## A drive under another name (2026-11-19)
+
+The owner asked whether a device UUID in the superblock would let the
+system recognise a drive moved to another port. The superblock already
+names its device and cluster, `hyperstord` checks both at open, and
+devices are named by `/dev/disk/by-id/`, which follows the drive across
+ports; what a port change can break is the by-id name itself, when the
+transport changes. Offered finding the drive by its superblock's label
+when its path is gone (no format change), or moving drives between
+hosts (a map operation), the owner chose the first:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 317 | A drive whose by-id name changed: found by its superblock's label (recommended); a UUID of its own in the superblock; moving drives between hosts | Found by its label | D353 |
 
 ## Holding I/O through outages (2026-11-20)
 

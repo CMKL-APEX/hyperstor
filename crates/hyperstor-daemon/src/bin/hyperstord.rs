@@ -110,8 +110,22 @@ fn main() {
         usage();
     }
     let ids = hyperstor_meta::device_ids(node, &named).unwrap_or_else(|e| fail_args(&e));
+    // A drive whose configured path is gone, found by its superblock's
+    // label instead (D353); its superblock is checked at open as any is.
+    let by_label =
+        std::env::var_os("HS_BY_LABEL").map_or_else(|| PathBuf::from(BY_LABEL), PathBuf::from);
     for (s, id) in shards.iter_mut().zip(ids) {
         s.device_id = id;
+        if let DeviceSpec::File { path, .. } = &mut s.device
+            && let Some(found) = find_moved(path, id, &by_label)
+        {
+            eprintln!(
+                "hyperstord: device {id}: {} is gone; serving the drive labelled device-{id}, now {}; run hyperstor-install with its new path to record it",
+                path.display(),
+                found.display()
+            );
+            *path = found;
+        }
     }
     // D166: how long a commit's writes and flush may take before the
     // device is failed.

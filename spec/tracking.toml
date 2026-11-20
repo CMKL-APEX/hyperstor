@@ -390,6 +390,14 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "A drive whose by-id path is gone found by its superblock's label, with udev rules matching the superblock too"
+spec = ["D353", "I422", "24-pools-and-devices.md §27.2.1"]
+status = "done"
+tests = [
+    "hyperstor_daemon::tests::a_drive_whose_path_is_gone_is_found_by_its_label",
+]
+
+[[milestone.item]]
 what = "Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page"
 spec = ["D348", "I419", "19-administration.md §23.7"]
 status = "done"

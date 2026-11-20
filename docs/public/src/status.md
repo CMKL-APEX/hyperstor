@@ -80,6 +80,7 @@ covered by tests that run on every change.
 | Changing the map service's members at run time, recovering a group that lost its majority, and a leader without one saying so | Done |
 | Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log | Done |
 | Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate) | Done |
+| A drive whose by-id path is gone found by its superblock's label, with udev rules matching the superblock too | Done |
 | Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page | Done |
 | Volume metadata: headers, directories and volume leases | Done |
 | Test block devices through ublk | Done |
