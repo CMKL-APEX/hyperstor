@@ -380,6 +380,27 @@ impl Guest {
         self.front.get_vring_base(0).unwrap()
     }
 
+    /// Waits until the device has taken every request made available
+    /// (with `EVENT_IDX` only): its `avail_event`, which it writes as it
+    /// turns notifications back on after taking them, reaches the avail
+    /// ring's index. A kick only wakes the device's ring later, so a
+    /// message sent right after it can be handled first.
+    pub fn wait_taken(&self) {
+        assert!(self.features & 1 << 29 != 0, "needs EVENT_IDX");
+        let t = Instant::now();
+        loop {
+            let mut ev = [0u8; 2];
+            self.mem
+                .read_slice(&mut ev, GuestAddress(USED + 4 + 8 * QSIZE as u64))
+                .unwrap();
+            if u16::from_le_bytes(ev) == self.avail {
+                return;
+            }
+            assert!(t.elapsed() < self.wait, "requests not taken");
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+
     /// The used ring's index, as the device last wrote it.
     pub fn used_idx(&self) -> u16 {
         let mut idx = [0u8; 2];
