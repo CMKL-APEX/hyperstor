@@ -123,8 +123,11 @@ design is split by topic, with section numbers kept across files.
   control path only.
 - FFI (io_uring passthrough, rdma-core verbs, dma-buf) stays in small,
   dedicated modules, and every `unsafe` block has a `// SAFETY:` comment.
-- `glidex-raftstore` comes from the glidex repository as a pinned git
-  dependency (D20); changes to it are glidex pull requests.
+- The libraries shared with glidex (`glidex-raftstore`, `-auth`,
+  `-authd`, `-tls`, `-topology`, `-trust`) and the UI kit come from
+  [glidex-commons](https://github.com/CMKL-APEX/glidex-commons) at one
+  release tag (D356); changes to them are glidex-commons pull requests and
+  a release, then a repin here (the kit with `scripts/ui-kit-sync.sh TAG`).
 - License: MIT OR Apache-2.0. Vendored third-party code keeps its own
   license, noted where it lives.
 
