@@ -57,8 +57,7 @@ management service and UI (§23.7), and people's access (§23.9).
 | `hyperstor-smart` | `hyperstor-smart`: the root helper that reads NVMe drives' health logs for `hyperstord` (27-performance.md §30.3, D221) |
 | `hyperstor-kv` | the key–value store: ranges (25-kv-ranges.md §28), then transactions (08-engine.md §7.5) |
 | `hyperstor-s3` | the S3 gateway, a library and the `hyperstor-s3` binary: S3 over HTTPS, buckets and objects on `hyperstor-kv` and `s3` chunk objects (14-s3.md §14) |
-| `hyperstor-s3` | the S3 gateway (14-s3.md §14) |
-| `glidex-raftstore` (in the glidex repository) | the Raft store shared with glidex's control plane (D20), a pinned git dependency |
+| `glidex-raftstore`, `glidex-auth`, `glidex-authd`, `glidex-tls`, `glidex-topology`, `glidex-trust` (in [glidex-commons](https://github.com/CMKL-APEX/glidex-commons)) | the libraries shared with glidex (D20, D356): the Raft store, logins, the PAM helper, TLS, host topology, trust in directories; git dependencies, all at one release tag |
 
 ### 18.2 Units and privileges
 
