@@ -1824,7 +1824,7 @@ recovers, with a longer limit, and chose the recommendations:
 ## Sockets per attaching user (2026-11-21)
 
 After glidex #584 (VMs lost their disks at `hyperstor-vhost` restarts:
-I424, I425) and the uid check on volumes' sockets (#407), the owner
+I424, I425) and the uid check on volumes' sockets (I427), the owner
 asked whether `hyperstor-vhost` can serve other hypervisors and
 vhost-user apps besides glidex, and what that means for security. With
 one group for every socket (D144), a second app either can't connect or,

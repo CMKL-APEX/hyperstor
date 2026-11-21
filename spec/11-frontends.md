@@ -88,7 +88,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   gives the directory away, so systemd leaves the sockets' owners alone
   across restarts (G60). Why: separation between the apps on one host;
   one group for every socket let each reach every VM's disk. Built so
-  far: the uid check against every named user (#407).
+  far: the uid check against every named user (I427).
 - **Detach.** A detach is refused (`busy`) while a hypervisor is
   connected to the disk, unless forced, so a client's mistake can't pull
   a running VM's disk (D256, I297). It waits up to 2 s for a hypervisor

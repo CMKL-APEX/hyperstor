@@ -662,6 +662,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Only root, the service's user and those allowed (`--allow-uid`) connect to a volume's socket; the state file is never readable by others"
+spec = ["11-frontends.md §11.1", "D144", "I427"]
+status = "done"
+tests = [
+    "hyperstor_vhost::tests::only_root_the_service_and_allowed_users_use_its_sockets",
+    "hyperstor_vhost::tests::the_state_file_is_never_readable_by_others",
+]
+
+[[milestone.item]]
 what = "Each volume's socket belongs to the user who attached it (root: `attach --for USER`); the directory stays hyperstor's, mode 0711"
 spec = ["11-frontends.md §11.1", "D355", "G60", "G61"]
 status = "planned"
