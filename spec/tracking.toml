@@ -672,7 +672,7 @@ tests = [
 
 [[milestone.item]]
 what = "Each volume's socket belongs to the user who attached it (root: `attach --for USER`); the directory stays hyperstor's, mode 0711"
-spec = ["11-frontends.md §11.1", "D355", "G60", "G61", "I428"]
+spec = ["11-frontends.md §11.1", "D355", "G60", "G61", "I430"]
 status = "done"
 tests = [
     "hyperstor_vhost::tests::a_volume_is_for_who_attached_it_or_whom_root_names",

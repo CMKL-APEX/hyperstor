@@ -79,7 +79,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   ring's state. Why: a read finishing during the copy writes guest
   memory the target would otherwise never receive, and a request in
   flight at the stop would be lost.
-- **Who opens a disk** (D355, I428). Each volume's socket belongs
+- **Who opens a disk** (D355, I430). Each volume's socket belongs
   to the user whose `attach` made it, the control socket's peer, or to
   the user root names with `attach --for USER`: mode 0660, that user's
   group, and only that uid, root and the service's own accepted.
