@@ -227,7 +227,8 @@ sudo hyperstor-install install --role vhost --map 192.0.2.10:8849 --vhost-user g
 
 `--vhost-user glidex` lets glidex's control plane attach volumes and its
 hypervisors open their sockets. Name every user your hypervisors run as:
-anyone else is refused, even in the sockets' group. Restarting the service (an upgrade, say)
+each volume's socket is for the user who attached it, and anyone else is
+refused. Restarting the service (an upgrade, say)
 keeps the VMs' disks; `--no-vhost` and `uninstall` detach them first, running VMs too.
 See [VM disks](managing.md#vm-disks).
 

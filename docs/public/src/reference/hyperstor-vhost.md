@@ -7,7 +7,7 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
 ```
 
 | Command | Does |
@@ -26,8 +26,8 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 |---|---|---|
 | `--meta ADDR[,ADDR...]` | | `serve`: the map service's members (their `--listen` addresses) |
 | `--dir DIR` | `/run/hyperstor/vhost` | Where the control socket (`control.sock`) and the volumes' sockets (`<volume id>.sock`) are; at most 69 bytes, so a socket's path fits Unix's 107 |
-| `--allow-uid UID` | | `serve`: a user allowed on the control socket and the volumes' sockets besides root and the service's own; repeat for more. A hypervisor running as any other user is refused, even in the sockets' group |
-| `--group GID` | | `serve`: the group given the sockets (mode 0660), so a hypervisor running as that group can connect |
+| `--allow-uid UID` | | `serve`: a user allowed on the control socket besides root and the service's own; repeat for more. Each volume's socket is for the user who attached it: only they, root and the service connect (see [Who opens a disk](#who-opens-a-disk)) |
+| `--group GID` | | `serve`: the group of volumes a state file from before protocol 4 names no user for; they go to the first `--allow-uid` user |
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |
 | `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/pools-and-devices.md#full-devices) |
 | `--hold-outage SECS` | 3600 | `serve`: how long a read or write is held while the cluster can't serve it (no primary for its data, the map service without a leader, storage nodes unreachable), tried again every second, before the guest sees an I/O error (0–86400; 0: after the client's own tries, about 30 s). See [Outages](#outages) |
@@ -41,6 +41,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--delegate D` | | `attach`: attach as delegate `D` of the holder's lease, standing by, a live migration's target (see [Live migration](#live-migration)); not with `--take-over` or `--preempt` |
 | `--holder NAME` | | `attach`: who asks, for the lease's label, `vhost:NAME`; glidex gives its node's name |
 | `--poll` | off | `attach`: poll the disk's queues while it is busy, for latency-critical VMs. See [Polling](#polling) |
+| `--for USER` | | `attach`, as root: the user the volume's socket is for, one of `--allow-uid`'s. Without it, the socket is for whoever attaches |
 | `--force` | off | `detach`: detach even while a hypervisor is connected; the VM loses its disk |
 
 Without `--take-over` or `--preempt`, `attach` is refused (`held`) while
@@ -59,12 +60,22 @@ detaches without `--force`. `hyperstor-install
 --no-vhost` and `uninstall` force.
 
 ```sh
-sudo hyperstor-vhost serve --meta 192.0.2.10:8849 --group kvm &
+sudo hyperstor-vhost serve --meta 192.0.2.10:8849 --allow-uid "$(id -u)" &
 id=$(hyperstorctl create-volume --size 20G --name vm-disk | awk '{print $2}')
-sudo hyperstor-vhost ctl attach "$id" --serial vm-disk
+sudo hyperstor-vhost ctl attach "$id" --serial vm-disk --for "$USER"
 cloud-hypervisor --memory size=2G,shared=on \
   --disk vhost_user=true,socket=/run/hyperstor/vhost/$id.sock ...
 ```
+
+### Who opens a disk
+
+Each volume's socket is for the user who attached it: it has mode 0660
+and that user's group, and only that user, root and the service may
+connect; anyone else is cut off and the service logs it. Root attaching
+for a hypervisor that runs as another user names that user with
+`--for USER`. The directory has mode 0711: a socket is opened by its
+path, and only the service lists them. The control socket takes any
+user `--allow-uid` names.
 
 The VM's memory must be shared with the service (`shared=on` in Cloud
 Hypervisor; a `memory-backend-memfd` with `share=on` in QEMU). The disk

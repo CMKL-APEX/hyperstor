@@ -117,7 +117,7 @@ covered by tests that run on every change.
 | Zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
 | Only root, the service's user and those allowed (`--allow-uid`) connect to a volume's socket; the state file is never readable by others | Done |
-| Each volume's socket belongs to the user who attached it (root: `attach --for USER`); the directory stays hyperstor's, mode 0711 | Planned |
+| Each volume's socket belongs to the user who attached it (root: `attach --for USER`); the directory stays hyperstor's, mode 0711 | Done |
 | A detach is refused while a hypervisor is connected, unless forced | Done |
 | hyperstor-vhost for live migration: dirty-page logging (LOG_SHMFD, VHOST_F_LOG_ALL) and ring stops that finish their requests in flight | Done |
 | A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused | Done |

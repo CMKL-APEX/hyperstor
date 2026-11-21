@@ -1581,8 +1581,11 @@ EnvironmentFile=/etc/hyperstor/vhost.env
 ExecStart=/usr/local/bin/hyperstor-vhost serve $HS_ARGS
 # Kept across restarts (D143): its state file names the volumes the next
 # start takes back, and the hypervisors reconnect to the same sockets.
+# hyperstor's own, mode 0711 (D355): a socket is opened by its path. Never
+# given to another group, or systemd resets what is in it at the next
+# start (G60).
 RuntimeDirectory=hyperstor/vhost
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0711
 RuntimeDirectoryPreserve=yes
 Restart=on-failure
 RestartSec=1
@@ -1914,6 +1917,21 @@ fn vhost_cpus(
         ];
     }
     (cpus, warn)
+}
+
+/// Gives `hyperstor-vhost`'s directory itself, not what is in it, to
+/// `uid`:`gid` with mode 0711 (D355), where it was given to the VMs'
+/// group (D144). systemd then finds the owner the unit wants at the next
+/// start and leaves the sockets' groups alone (G60); the VMs reach their
+/// sockets through it all along. Nothing to do where there is none.
+fn keep_vhost_dir(dir: &Path, uid: u32, gid: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    // Mode first: 0711 lets the VMs pass whatever the group.
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o711))?;
+    std::os::unix::fs::chown(dir, Some(uid), Some(gid))
 }
 
 /// A user's uid and primary gid.
@@ -3468,21 +3486,13 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
         if !v.cpus.is_empty() {
             args += &format!(" --cpus {}", glidex_topology::numa::format_list(&v.cpus));
         }
-        // It hands its sockets to these groups, so it is in them. The first
-        // is its main group: systemd resets a RuntimeDirectory's contents to
-        // User:Group at each start when the directory's owner differs, and
-        // the service gives the directory to that group. Under Group=hyperstor
-        // every restart took the sockets from the hypervisors until rebound,
-        // and Cloud Hypervisor gives up on EACCES (I425).
-        let groups = match v.gids.split_first() {
-            None => "# No --vhost-user: only root and hyperstor use it.".to_string(),
-            Some((first, rest)) => {
-                let g: Vec<String> = rest.iter().map(u32::to_string).collect();
-                format!(
-                    "Group={first}\nSupplementaryGroups=hyperstor{}",
-                    g.iter().map(|g| format!(" {g}")).collect::<String>()
-                )
-            }
+        // It gives each volume's socket to the group of the user it is
+        // for, so it is in all of theirs (D355).
+        let groups = if v.gids.is_empty() {
+            "# No --vhost-user: only root and hyperstor use it.".to_string()
+        } else {
+            let g: Vec<String> = v.gids.iter().map(u32::to_string).collect();
+            format!("SupplementaryGroups={}", g.join(" "))
         };
         out.extend([
             (
@@ -4518,6 +4528,14 @@ fn install(
 
     // 4. Services.
     if real && !no_start {
+        // Before a restart under this unit: a directory given to the VMs'
+        // group before D355 would have systemd reset every socket in it.
+        if p.vhost.is_some()
+            && let Some((uid, gid)) = user_ids("hyperstor")
+            && let Err(e) = keep_vhost_dir(&under(root, VHOST_DIR), uid, gid)
+        {
+            fail(&format!("{VHOST_DIR}: {e}"));
+        }
         if units_changed && !run("systemctl", &["daemon-reload"]) {
             fail("systemctl daemon-reload failed");
         }
@@ -6591,9 +6609,11 @@ mod tests {
         );
         let unit = file("/etc/systemd/system/hyperstor-vhost.service");
         assert!(
-            unit.contains("\nUser=hyperstor\nGroup=0\nSupplementaryGroups=hyperstor\n"),
+            unit.contains("\nUser=hyperstor\nSupplementaryGroups=0\n"),
             "{unit}"
         );
+        assert!(!unit.contains("\nGroup="), "{unit}");
+        assert!(unit.contains("\nRuntimeDirectoryMode=0711\n"), "{unit}");
         assert!(unit.contains("\nRuntimeDirectoryPreserve=yes\n"), "{unit}");
         // Only VMs here: the map service's members, nothing of the cluster's.
         let mut v = Settings::defaults();
@@ -6609,7 +6629,6 @@ mod tests {
         );
         assert!(!env.contains("--allow-uid"), "{env}");
         let unit = &f.iter().find(|x| x.0.ends_with("vhost.service")).unwrap().1;
-        assert!(!unit.contains("SupplementaryGroups="), "{unit}");
         assert!(!unit.contains("Group="), "{unit}");
         assert!(
             !f.iter()
@@ -6625,6 +6644,26 @@ mod tests {
     /// D290: the reactors run on the CPUs glidex reserves for the host,
     /// one per NUMA node; without a list, on `hyperstor-vhost`'s default,
     /// which is glidex's; `--vhost-cpus` overrides, and is kept.
+    /// Upgrading from D144's directory (the VMs' group, 0750): the
+    /// directory goes to hyperstor with 0711, what is in it stays as it is.
+    #[test]
+    fn the_vhost_directory_is_taken_back_and_its_sockets_left() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("hs-install-vhost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(keep_vhost_dir(&dir, 0, 0).is_ok(), "none: nothing to do");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let sock = dir.join("v.sock");
+        std::fs::write(&sock, "").unwrap();
+        std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o660)).unwrap();
+        let m = std::fs::metadata(&dir).unwrap();
+        keep_vhost_dir(&dir, m.uid(), m.gid()).unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o711);
+        assert_eq!(std::fs::metadata(&sock).unwrap().mode() & 0o777, 0o660);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn vhost_reactors_run_on_the_cpus_glidex_reserves() {
         use glidex_topology::numa::Numa;

@@ -528,11 +528,14 @@ Install it with `hyperstor-install --vhost` (see
 volumes through its control socket; by hand:
 
 ```sh
-sudo hyperstor-vhost ctl attach ID --serial vm-disk   # prints the socket's path
+sudo hyperstor-vhost ctl attach ID --serial vm-disk --for glidex   # prints the socket's path
 sudo hyperstor-vhost ctl list                          # what is attached here
 sudo hyperstor-vhost ctl detach ID                     # refused while a VM uses it; --force cuts the VM off
 ```
 
+- **Whose disk.** A volume's socket is for the user who attached it:
+  only they, root and the service connect. As root, `--for USER` names
+  the user the VM runs as.
 - **Disks.** The guest sees a virtio disk with 512-byte sectors on
   4 KiB physical blocks and no volatile write cache: a write is answered
   once every copy has it. Discard isn't offered yet.
