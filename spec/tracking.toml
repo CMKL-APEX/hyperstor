@@ -672,8 +672,12 @@ tests = [
 
 [[milestone.item]]
 what = "Each volume's socket belongs to the user who attached it (root: `attach --for USER`); the directory stays hyperstor's, mode 0711"
-spec = ["11-frontends.md §11.1", "D355", "G60", "G61"]
-status = "planned"
+spec = ["11-frontends.md §11.1", "D355", "G60", "G61", "I430"]
+status = "done"
+tests = [
+    "hyperstor_vhost::tests::a_volume_is_for_who_attached_it_or_whom_root_names",
+    "hyperstor_install::tests::the_vhost_directory_is_taken_back_and_its_sockets_left",
+]
 
 [[milestone.item]]
 what = "A detach is refused while a hypervisor is connected, unless forced"

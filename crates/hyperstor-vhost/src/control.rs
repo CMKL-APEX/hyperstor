@@ -12,7 +12,12 @@
 //! {"id": 6, "op": "attach", "args": {"volume": "…", "delegate": "<16 hex digits>", "holder": "…"}}
 //! {"id": 7, "op": "promote", "args": {"volume": "…"}}
 //! {"id": 8, "op": "undelegate", "args": {"volume": "…", "delegate": "…"}}
+//! {"id": 9, "op": "attach", "args": {"volume": "…", "for": {"uid": 994, "gid": 984}}}
 //! ```
+//!
+//! A volume's socket is for the user who attached it (D355): its group is
+//! theirs, and only they, root and the service connect. Root attaching
+//! for another user names them with `for` (`ctl attach --for USER`).
 //!
 //! A live migration (D350–D352; 11-frontends.md §11.4): glidex asks the
 //! source for a `delegate` of the disk's lease, attaches it on the target
@@ -37,8 +42,9 @@ pub use serde_json::Value;
 /// The protocol's version, which `hello` returns: 2 refuses a detach
 /// while a hypervisor is connected (D256); 3 adds `delegate`,
 /// `undelegate`, `promote` and `attach` as a delegate, for live
-/// migration (D352).
-pub const PROTOCOL: u64 = 3;
+/// migration (D352); 4 gives each socket to the user who attached it and
+/// adds `for` to `attach` (D355).
+pub const PROTOCOL: u64 = 4;
 
 /// What `hello` lists besides the version: `live_migration`, dirty-page
 /// logging (#397) and delegate handover (D350–D352).
@@ -72,6 +78,9 @@ pub enum Request {
         /// `delegate` (D350): a live migration's target, writing nothing
         /// until promoted. `take` doesn't apply.
         delegate: Option<u64>,
+        /// The user (uid, gid) root attaches it for (D355); None: the one
+        /// asking.
+        user: Option<(u32, u32)>,
     },
     /// Adds a delegate to the lease of a volume attached here, for a
     /// migration's target (D350): answers its identity.
@@ -181,6 +190,16 @@ pub fn parse(line: &[u8]) -> Result<(u64, Request), String> {
                 Some(Value::Bool(b)) => *b,
                 Some(p) => return Err(format!("poll {p}: true or false")),
             };
+            let id = |v: &Value, what: &str| {
+                v.get(what)
+                    .and_then(Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| format!("for: no \"{what}\" (a number)"))
+            };
+            let user = match args.get("for") {
+                None | Some(Value::Null) => None,
+                Some(f) => Some((id(f, "uid")?, id(f, "gid")?)),
+            };
             Request::Attach {
                 volume: volume()?,
                 serial,
@@ -188,6 +207,7 @@ pub fn parse(line: &[u8]) -> Result<(u64, Request), String> {
                 holder,
                 poll,
                 delegate: delegate(false)?,
+                user,
             }
         }
         o => {
@@ -323,6 +343,7 @@ mod tests {
                 holder: String::new(),
                 poll: true,
                 delegate: None,
+                user: None,
             }
         );
         let (_, r) = parse(br#"{"op": "attach", "args": {"volume": "1"}}"#).unwrap();
@@ -335,7 +356,28 @@ mod tests {
                 holder: String::new(),
                 poll: false,
                 delegate: None,
+                user: None,
             }
+        );
+        // Root, for another user (D355).
+        let (_, r) =
+            parse(br#"{"op": "attach", "args": {"volume": "1", "for": {"uid": 994, "gid": 984}}}"#)
+                .unwrap();
+        assert!(matches!(
+            r,
+            Request::Attach {
+                user: Some((994, 984)),
+                ..
+            }
+        ));
+        assert!(
+            parse(br#"{"op": "attach", "args": {"volume": "1", "for": {"uid": 994}}}"#)
+                .unwrap_err()
+                .contains("gid")
+        );
+        assert!(
+            parse(br#"{"op": "attach", "args": {"volume": "1", "for": {"uid": -1, "gid": 0}}}"#)
+                .is_err()
         );
         assert_eq!(parse(br#"{"op": "list"}"#).unwrap().1, Request::List);
         // A live migration's ops (D350-D352).
@@ -373,7 +415,7 @@ mod tests {
         );
         let h = hello().to_string();
         assert!(
-            h.contains(r#""protocol":3"#) && h.contains("live_migration"),
+            h.contains(r#""protocol":4"#) && h.contains("live_migration"),
             "{h}"
         );
         assert_eq!(

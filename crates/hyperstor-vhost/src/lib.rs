@@ -47,7 +47,9 @@ pub struct Options {
     /// Users allowed on the control socket and the disks' sockets besides
     /// root and our own.
     pub allow_uids: Vec<u32>,
-    /// The group given the sockets (the hypervisors' and glidex's), if any.
+    /// The group of the volumes a state file from before D355 names no
+    /// user for: they go to the first allowed user and this group, as
+    /// D144 gave every socket.
     pub group: Option<u32>,
     /// Queues each disk offers.
     pub queues: u16,
@@ -95,6 +97,15 @@ pub fn state_path(dir: &Path) -> PathBuf {
     dir.join("state.json")
 }
 
+/// Who a volume's socket is for (D355): the user who attached it, or the
+/// one root named with `for`. Its socket has that user's group; `gid`
+/// None keeps the service's own (root's volumes, and the service user's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Owner {
+    pub uid: u32,
+    pub gid: Option<u32>,
+}
+
 /// What survives a restart (D143): the instance that held the volumes,
 /// and each volume with its serial and lease.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -102,9 +113,10 @@ pub struct State {
     pub instance: u64,
     /// Each disk: its volume, serial, the identity of its lease (D150; 0
     /// in a file written before identities, whose leases have the
-    /// instance as their identity), its label (D153) and whether its
-    /// rings are polled (D293).
-    pub disks: Vec<(u128, String, u64, String, bool)>,
+    /// instance as their identity), its label (D153), whether its
+    /// rings are polled (D293) and who it is for (D355; None in a file
+    /// written before).
+    pub disks: Vec<(u128, String, u64, String, bool, Option<Owner>)>,
 }
 
 impl State {
@@ -112,14 +124,19 @@ impl State {
         let disks: Vec<serde_json::Value> = self
             .disks
             .iter()
-            .map(|(v, s, l, label, poll)| {
-                serde_json::json!({
+            .map(|(v, s, l, label, poll, owner)| {
+                let mut d = serde_json::json!({
                     "volume": format!("{v:032x}"),
                     "serial": s,
                     "lease": format!("{l:016x}"),
                     "label": label,
                     "poll": poll,
-                })
+                });
+                if let Some(o) = owner {
+                    d["uid"] = o.uid.into();
+                    d["gid"] = o.gid.into();
+                }
+                d
             })
             .collect();
         serde_json::json!({"instance": format!("{:016x}", self.instance), "disks": disks})
@@ -145,7 +162,26 @@ impl State {
             };
             let label = d["label"].as_str().unwrap_or("vhost").to_string();
             let poll = d["poll"].as_bool().unwrap_or(false);
-            disks.push((volume, hex(&d["serial"], "serial")?, lease, label, poll));
+            let id = |what: &str| match &d[what] {
+                serde_json::Value::Null => Ok(None),
+                v => v
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .map(Some)
+                    .ok_or_else(|| format!("{what}: {v}")),
+            };
+            let owner = match (id("uid")?, id("gid")?) {
+                (Some(uid), gid) => Some(Owner { uid, gid }),
+                (None, _) => None,
+            };
+            disks.push((
+                volume,
+                hex(&d["serial"], "serial")?,
+                lease,
+                label,
+                poll,
+                owner,
+            ));
         }
         Ok(State { instance, disks })
     }
@@ -165,6 +201,8 @@ struct Served {
     label: String,
     /// Its rings are polled while busy (D293).
     poll: bool,
+    /// Who its socket is for (D355).
+    owner: Owner,
     /// Attached as a delegate waiting for promotion, a live migration's
     /// target (D350): not in the state file, since it holds no lease.
     delegate: Rc<Cell<bool>>,
@@ -236,12 +274,11 @@ pub fn serve(
         ));
     }
     std::fs::create_dir_all(&opts.dir).map_err(|e| format!("{}: {e}", opts.dir.display()))?;
-    // The sockets' group may pass through to them, no one else (D144).
-    if let Some(g) = opts.group {
-        std::fs::set_permissions(&opts.dir, std::fs::Permissions::from_mode(0o750))
-            .map_err(|e| format!("{}: {e}", opts.dir.display()))?;
-        chown_group(&opts.dir, g)?;
-    }
+    // Anyone may pass through to a socket they know the name of; only
+    // this service lists them (D355). Never given to another group:
+    // systemd would then reset what is in it at the next start (G60).
+    std::fs::set_permissions(&opts.dir, std::fs::Permissions::from_mode(0o711))
+        .map_err(|e| format!("{}: {e}", opts.dir.display()))?;
     let previous = match std::fs::read_to_string(state_path(&opts.dir)) {
         Ok(t) => State::parse(&t)
             .map_err(|e| {
@@ -254,7 +291,9 @@ pub fn serve(
         Err(_) => None,
     };
     let path = control_path(&opts.dir);
-    let listener = bind_shared(&path, opts.group)?;
+    // Every allowed user reaches it; they share no group, so its uid
+    // check is the gate (D355).
+    let listener = bind_shared(&path, 0o666, None)?;
     let (tx, mut rx) = hyperstor_reactor::chan::channel::<()>();
     std::thread::spawn(move || {
         let _ = stop.recv();
@@ -297,9 +336,17 @@ pub fn serve(
         });
         // Before glidex can ask: the volumes the last instance had.
         if let Some(prev) = previous {
-            for (volume, serial, lease, label, poll) in prev.disks {
+            // A file from before D355: D144's owner, the first allowed user
+            // and the sockets' group.
+            let before = Owner {
+                // SAFETY: getuid has no preconditions.
+                uid: (svc.opts.allow_uids.first().copied()).unwrap_or(unsafe { libc::getuid() }),
+                gid: svc.opts.group,
+            };
+            for (volume, serial, lease, label, poll, owner) in prev.disks {
                 let old = if lease == 0 { prev.instance } else { lease };
-                match svc.reclaim(volume, serial, old, &label, poll).await {
+                let owner = owner.unwrap_or(before);
+                match svc.reclaim(volume, serial, old, &label, poll, owner).await {
                     Ok(()) => eprintln!("hyperstor-vhost: volume {volume:032x}: taken back"),
                     Err(e) => eprintln!("hyperstor-vhost: volume {volume:032x}: dropped: {e}"),
                 }
@@ -325,15 +372,15 @@ fn instance_id() -> u64 {
 }
 
 /// Binds a socket at `path` that `group` can open from the moment it is
-/// there: bound under a temporary name, given mode 0660 and the group, then
+/// there: bound under a temporary name, given `mode` and the group, then
 /// renamed over `path`. A hypervisor reconnecting after a restart finds the
 /// old socket (refused) or the new one, never one it can't open: Cloud
 /// Hypervisor gives up on EACCES and the guest loses its disk (glidex #584).
-fn bind_shared(path: &Path, group: Option<u32>) -> Result<UnixListener, String> {
+fn bind_shared(path: &Path, mode: u32, group: Option<u32>) -> Result<UnixListener, String> {
     let tmp = path.with_extension("part");
     let _ = std::fs::remove_file(&tmp);
     let listener = UnixListener::bind(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    let shared = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o660))
+    let shared = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
         .map_err(|e| format!("{}: {e}", tmp.display()))
         .and_then(|()| group.map_or(Ok(()), |g| chown_group(&tmp, g)))
         .and_then(|()| std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display())));
@@ -364,15 +411,51 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
         .and_then(|()| std::fs::rename(&tmp, path))
 }
 
-/// Whether `peer` may use the control socket or a disk's: root, the
-/// service's own user, or one allowed (`--allow-uid`). The sockets' group
-/// alone isn't enough: anyone in it could otherwise open every VM's disk.
+/// Whether `peer` may use the control socket (`allowed`: the users of
+/// `--allow-uid`) or a disk's (`allowed`: the one it is for, D355): root,
+/// the service's own user, or one of `allowed`. A socket's group alone
+/// isn't enough: anyone in it could otherwise open the disk.
 fn may_use(peer: Option<u32>, own: u32, allowed: &[u32]) -> bool {
     peer.is_some_and(|u| u == 0 || u == own || allowed.contains(&u))
 }
 
-/// The uid at the other end of a Unix socket.
-fn peer_uid(s: &UnixStream) -> Option<u32> {
+/// Who a volume attached by `peer` (uid, gid) is for (D355): `peer`, or
+/// the user root names with `for`, one of `allowed`. Root's volumes and
+/// the service user's keep the service's group.
+fn owner_for(
+    peer: (u32, u32),
+    own: u32,
+    allowed: &[u32],
+    named: Option<(u32, u32)>,
+) -> Result<Owner, (&'static str, String)> {
+    match named {
+        Some(_) if peer.0 != 0 => Err(("denied", "only root attaches for another user".into())),
+        Some((uid, _)) if !allowed.contains(&uid) => Err((
+            "invalid",
+            format!("uid {uid} may not use hyperstor-vhost (--allow-uid)"),
+        )),
+        Some((uid, gid)) => Ok(Owner {
+            uid,
+            gid: Some(gid),
+        }),
+        None if peer.0 == 0 || peer.0 == own => Ok(Owner {
+            uid: peer.0,
+            gid: None,
+        }),
+        None => Ok(Owner {
+            uid: peer.0,
+            gid: Some(peer.1),
+        }),
+    }
+}
+
+/// Why a volume attached here for one user isn't answered to another.
+fn for_another(volume: u128) -> String {
+    format!("volume {volume:032x} is attached here for another user")
+}
+
+/// The uid and gid at the other end of a Unix socket.
+fn peer_cred(s: &UnixStream) -> Option<(u32, u32)> {
     let mut cred = libc::ucred {
         pid: 0,
         uid: 0,
@@ -390,7 +473,7 @@ fn peer_uid(s: &UnixStream) -> Option<u32> {
             &mut len,
         )
     };
-    (r == 0).then_some(cred.uid)
+    (r == 0).then_some((cred.uid, cred.gid))
 }
 
 async fn accept_control(svc: Rc<Service>, listener: UnixListener) {
@@ -403,17 +486,19 @@ async fn accept_control(svc: Rc<Service>, listener: UnixListener) {
         let Ok((mut s, _)) = listener.accept() else {
             continue;
         };
-        if !may_use(peer_uid(&s), own, &svc.opts.allow_uids) {
+        let peer = peer_cred(&s);
+        let Some(peer) = peer.filter(|p| may_use(Some(p.0), own, &svc.opts.allow_uids)) else {
             let r = Reply::error(0, "denied", "this user may not use hyperstor-vhost");
             let _ = writeln!(s, "{}", r.line());
             continue;
-        }
-        hyperstor_reactor::spawn(control_conn(svc.clone(), s));
+        };
+        hyperstor_reactor::spawn(control_conn(svc.clone(), s, peer));
     }
 }
 
-/// One control connection: a request per line, a reply per line.
-async fn control_conn(svc: Rc<Service>, mut s: UnixStream) {
+/// One control connection from `peer` (uid, gid): a request per line, a
+/// reply per line.
+async fn control_conn(svc: Rc<Service>, mut s: UnixStream, peer: (u32, u32)) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -431,7 +516,7 @@ async fn control_conn(svc: Rc<Service>, mut s: UnixStream) {
         while let Some(i) = buf.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = buf.drain(..=i).collect();
             let reply = match control::parse(&line[..line.len() - 1]) {
-                Ok((id, req)) => svc.handle(id, req).await,
+                Ok((id, req)) => svc.handle(id, req, peer).await,
                 Err(e) => Reply::error(0, "invalid", &e),
             };
             if writeln!(s, "{}", reply.line()).is_err() {
@@ -442,7 +527,7 @@ async fn control_conn(svc: Rc<Service>, mut s: UnixStream) {
 }
 
 impl Service {
-    async fn handle(self: &Rc<Self>, id: u64, req: Request) -> Reply {
+    async fn handle(self: &Rc<Self>, id: u64, req: Request, peer: (u32, u32)) -> Reply {
         match req {
             Request::Hello => Reply::ok(id, control::hello()),
             Request::List => Reply::ok(id, control::list(self.list().await)),
@@ -453,15 +538,25 @@ impl Service {
                 holder,
                 poll,
                 delegate,
+                user,
             } => {
+                // SAFETY: getuid has no preconditions.
+                let own = unsafe { libc::getuid() };
+                let owner = match owner_for(peer, own, &self.opts.allow_uids, user) {
+                    Ok(o) => o,
+                    Err((code, msg)) => return Reply::error(id, code, &msg),
+                };
                 let label = if holder.is_empty() {
                     "vhost".to_string()
                 } else {
                     format!("vhost:{holder}")
                 };
                 let attached = match delegate {
-                    Some(d) => self.attach_delegate(volume, serial, d, &label, poll).await,
-                    None => self.attach(volume, serial, take, &label, poll).await,
+                    Some(d) => {
+                        self.attach_delegate(volume, serial, d, &label, poll, owner)
+                            .await
+                    }
+                    None => self.attach(volume, serial, take, &label, poll, owner).await,
                 };
                 match attached {
                     Ok(v) => Reply::ok(id, v),
@@ -543,13 +638,17 @@ impl Service {
         delegate: u64,
         label: &str,
         poll: bool,
+        owner: Owner,
     ) -> Result<control::Value, Refused> {
         let found = self
             .disks
             .borrow()
             .get(&volume)
-            .map(|d| (d.socket.clone(), d.lease, d.delegate.get()));
-        if let Some((socket, lease, standing)) = found {
+            .map(|d| (d.socket.clone(), d.lease, d.delegate.get(), d.owner));
+        if let Some((socket, lease, standing, was)) = found {
+            if was != owner {
+                return Err(Refused::Other("denied", for_another(volume)));
+            }
             match self.status(volume).await {
                 // A retry.
                 Some((false, size)) if standing && lease == delegate => {
@@ -572,7 +671,7 @@ impl Service {
             att.detach().await.ok();
             return Err(fail(e));
         }
-        self.open_disk(volume, serial, att, poll)
+        self.open_disk(volume, serial, att, poll, owner)
             .await
             .map_err(Refused::from)
     }
@@ -675,7 +774,10 @@ impl Service {
                 .iter()
                 // A delegate holds no lease to take back (D350).
                 .filter(|(_, d)| !d.delegate.get())
-                .map(|(v, d)| (*v, d.serial.clone(), d.lease, d.label.clone(), d.poll))
+                .map(|(v, d)| {
+                    let (serial, label) = (d.serial.clone(), d.label.clone());
+                    (*v, serial, d.lease, label, d.poll, Some(d.owner))
+                })
                 .collect(),
         };
         let path = state_path(&self.opts.dir);
@@ -695,6 +797,7 @@ impl Service {
         old: u64,
         label: &str,
         poll: bool,
+        owner: Owner,
     ) -> Result<(), String> {
         use hyperstor_client::volume::Take;
         let att = match self.client.attach_as(volume, Take::Attach, label).await {
@@ -706,7 +809,7 @@ impl Service {
                 .map_err(|e| e.to_string())?,
             Err(e) => return Err(e.to_string()),
         };
-        self.open_disk(volume, serial, att, poll)
+        self.open_disk(volume, serial, att, poll, owner)
             .await
             .map(|_| ())
             .map_err(|(_, e)| e)
@@ -723,9 +826,17 @@ impl Service {
         take: Take,
         label: &str,
         poll: bool,
+        owner: Owner,
     ) -> Result<control::Value, Refused> {
-        let socket = self.disks.borrow().get(&volume).map(|d| d.socket.clone());
-        if let Some(socket) = socket {
+        let found = self
+            .disks
+            .borrow()
+            .get(&volume)
+            .map(|d| (d.socket.clone(), d.owner));
+        if let Some((socket, was)) = found {
+            if was != owner {
+                return Err(Refused::Other("denied", for_another(volume)));
+            }
             match self.status(volume).await {
                 Some((false, size)) => return Ok(control::attached(&socket, size)),
                 // Lost, or its reactor gone: let go and attach afresh.
@@ -748,7 +859,7 @@ impl Service {
                 },
                 _ => Refused::Other(control::error_code(&e), e.to_string()),
             })?;
-        self.open_disk(volume, serial, att, poll)
+        self.open_disk(volume, serial, att, poll, owner)
             .await
             .map_err(Refused::from)
     }
@@ -760,13 +871,14 @@ impl Service {
         serial: String,
         att: Rc<hyperstor_client::volume::Attached>,
         poll: bool,
+        owner: Owner,
     ) -> Result<control::Value, (&'static str, String)> {
         // Another request may have attached it meanwhile.
         if let Some(d) = self.disks.borrow().get(&volume) {
             return Ok(control::attached(&d.socket, att.volume().size));
         }
         let socket = disk_path(&self.opts.dir, volume);
-        let opened = bind_shared(&socket, self.opts.group).and_then(|l| {
+        let opened = bind_shared(&socket, 0o660, owner.gid).and_then(|l| {
             let accepting = l
                 .try_clone()
                 .map_err(|e| format!("{}: {e}", socket.display()))?;
@@ -799,6 +911,7 @@ impl Service {
             volume,
             home.clone(),
             accepting,
+            owner.uid,
             conn.clone(),
             stopping.clone(),
         ));
@@ -810,6 +923,7 @@ impl Service {
                 lease,
                 label,
                 poll,
+                owner,
                 delegate,
                 socket: socket.clone(),
                 listener,
@@ -914,6 +1028,7 @@ async fn serve_disk(
     volume: u128,
     home: Rc<Cell<usize>>,
     listener: UnixListener,
+    user: u32,
     conn: Rc<RefCell<Option<UnixStream>>>,
     stopping: Rc<Cell<bool>>,
 ) {
@@ -929,9 +1044,9 @@ async fn serve_disk(
             }
             continue;
         };
-        if !may_use(peer_uid(&s), own, &svc.opts.allow_uids) {
+        if !may_use(peer_cred(&s).map(|p| p.0), own, &[user]) {
             eprintln!(
-                "hyperstor-vhost: volume {volume:032x}: refused a connection from a user not allowed"
+                "hyperstor-vhost: volume {volume:032x}: refused a connection from a user it isn't for"
             );
             continue;
         }
@@ -1044,8 +1159,26 @@ mod tests {
         let s = State {
             instance: 0x0123_4567_89ab_cdef,
             disks: vec![
-                (u128::MAX, "serial-1".into(), 9, "vhost:node-1".into(), true),
-                (7, String::new(), 1, "vhost".into(), false),
+                (
+                    u128::MAX,
+                    "serial-1".into(),
+                    9,
+                    "vhost:node-1".into(),
+                    true,
+                    Some(Owner {
+                        uid: 994,
+                        gid: Some(984),
+                    }),
+                ),
+                (
+                    7,
+                    String::new(),
+                    1,
+                    "vhost".into(),
+                    false,
+                    Some(Owner { uid: 0, gid: None }),
+                ),
+                (8, String::new(), 2, "vhost".into(), false, None),
             ],
         };
         assert_eq!(State::parse(&s.to_json()), Ok(s));
@@ -1055,7 +1188,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             old.disks,
-            vec![(1, "s".to_string(), 0, "vhost".to_string(), false)]
+            vec![(1, "s".to_string(), 0, "vhost".to_string(), false, None)]
+        );
+        assert!(
+            State::parse(
+                r#"{"instance": "1", "disks": [{"volume": "1", "serial": "", "uid": "x"}]}"#
+            )
+            .unwrap_err()
+            .contains("uid")
         );
         assert!(State::parse("{}").is_err());
         assert!(State::parse(r#"{"instance": "zz", "disks": []}"#).is_err());
@@ -1075,6 +1215,39 @@ mod tests {
         // In the sockets' group, say, but not named.
         assert!(!may_use(Some(995), 990, &[994]));
         assert!(!may_use(None, 990, &[994]));
+    }
+
+    /// A volume is for the user who attached it, or the one root names
+    /// (D355).
+    #[test]
+    fn a_volume_is_for_who_attached_it_or_whom_root_names() {
+        let (own, allowed) = (990, &[994, 1000][..]);
+        let o = |uid, gid| Ok(Owner { uid, gid });
+        assert_eq!(owner_for((994, 984), own, allowed, None), o(994, Some(984)));
+        assert_eq!(
+            owner_for((1000, 1000), own, allowed, None),
+            o(1000, Some(1000))
+        );
+        // Root's and the service's own keep the service's group.
+        assert_eq!(owner_for((0, 0), own, allowed, None), o(0, None));
+        assert_eq!(owner_for((990, 980), own, allowed, None), o(990, None));
+        assert_eq!(
+            owner_for((0, 0), own, allowed, Some((994, 984))),
+            o(994, Some(984))
+        );
+        // Only root names another, and only an allowed one.
+        assert_eq!(
+            owner_for((994, 984), own, allowed, Some((1000, 1000)))
+                .unwrap_err()
+                .0,
+            "denied"
+        );
+        assert_eq!(
+            owner_for((0, 0), own, allowed, Some((995, 995)))
+                .unwrap_err()
+                .0,
+            "invalid"
+        );
     }
 
     /// The state file is never readable but by the service, even while it
@@ -1148,7 +1321,7 @@ mod tests {
             })
         };
         for _ in 0..2000 {
-            drop(bind_shared(&path, Some(gid)).unwrap());
+            drop(bind_shared(&path, 0o660, Some(gid)).unwrap());
         }
         done.store(true, std::sync::atomic::Ordering::Relaxed);
         let (seen, wrong) = watcher.join().unwrap();

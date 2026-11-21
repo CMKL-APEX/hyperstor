@@ -1,5 +1,5 @@
 //! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N]`
-//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID`
+//! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
 //! then detaches every volume. `ctl` sends one request to a running
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -125,7 +125,10 @@ fn main() {
                 .filter(|(i, a)| {
                     let prev = i.checked_sub(1).map(|p| args[1 + p].as_str());
                     !a.starts_with("--")
-                        && !matches!(prev, Some("--dir" | "--serial" | "--delegate" | "--holder"))
+                        && !matches!(
+                            prev,
+                            Some("--dir" | "--serial" | "--delegate" | "--holder" | "--for")
+                        )
                 })
                 .map(|(_, a)| a.as_str())
                 .collect();
@@ -150,6 +153,14 @@ fn main() {
                         (false, true, None) => "preempt",
                         _ => usage(),
                     };
+                    // The user root attaches for (D355), by name.
+                    let user = get("--for").map(|name| match user_ids(&name) {
+                        Some((uid, gid)) => json!({"uid": uid, "gid": gid}),
+                        None => {
+                            eprintln!("hyperstor-vhost: --for {name}: no such user");
+                            std::process::exit(2)
+                        }
+                    });
                     json!({"id": 1, "op": "attach", "args": {
                         "volume": id,
                         "serial": get("--serial").unwrap_or_default(),
@@ -157,6 +168,7 @@ fn main() {
                         "holder": get("--holder").unwrap_or_default(),
                         "poll": has("--poll"),
                         "delegate": delegate,
+                        "for": user,
                     }})
                 }
                 _ => usage(),
@@ -185,6 +197,16 @@ fn main() {
         }
         _ => usage(),
     }
+}
+
+/// A user's uid and primary gid.
+fn user_ids(name: &str) -> Option<(u32, u32)> {
+    let c = std::ffi::CString::new(name).ok()?;
+    // SAFETY: getpwnam with a NUL-terminated name; the entry is read
+    // before any other call can replace it.
+    let pw = unsafe { libc::getpwnam(c.as_ptr()) };
+    // SAFETY: a non-null result points to a valid passwd entry.
+    (!pw.is_null()).then(|| unsafe { ((*pw).pw_uid, (*pw).pw_gid) })
 }
 
 /// A channel that receives on SIGINT or SIGTERM. The signals are blocked

@@ -33,11 +33,25 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let svc = Service::start(&c, "vhost-a", &[]);
     assert_eq!(
         svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],
-        3
+        4
     );
     let r = svc.attach(&id, "attach");
     let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
     assert_eq!(r["ok"]["size"], 64 << 20);
+    // D355: the directory is passed through, not listed; the control
+    // socket is gated by its uid check; a volume's socket is its user's.
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&svc.dir), 0o711);
+        assert_eq!(mode(&svc.dir.join("control.sock")), 0o666);
+        assert_eq!(mode(&socket), 0o660);
+        // SAFETY: getuid has no preconditions.
+        let me = unsafe { libc::getuid() };
+        assert_eq!(std::fs::metadata(&socket).unwrap().uid(), me);
+        let state = std::fs::read_to_string(svc.dir.join("state.json")).unwrap();
+        assert!(state.contains(&format!("\"uid\":{me}")), "{state}");
+    }
     // A retry answers with the same socket.
     assert_eq!(svc.attach(&id, "attach")["ok"]["socket"], r["ok"]["socket"]);
     let mut g = Guest::connect(&socket, false);
@@ -956,7 +970,7 @@ fn a_disk_is_handed_to_a_migrations_target() {
         s.ctl(serde_json::json!({"id": 9, "op": op, "args": args}))
     };
     let hello = ctl(&src, "hello", serde_json::json!({}));
-    assert_eq!(hello["ok"]["protocol"], 3, "{hello}");
+    assert_eq!(hello["ok"]["protocol"], 4, "{hello}");
     assert!(
         hello["ok"]["features"]
             .to_string()
