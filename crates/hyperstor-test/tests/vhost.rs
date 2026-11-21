@@ -890,7 +890,8 @@ fn a_migrating_guests_writes_are_logged_and_a_stop_finishes_its_requests() {
     let svc = Service::start(&c, "vhost-log", &[]);
     let r = svc.attach(&id, "attach");
     let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
-    let mut g = Guest::connect(&socket, false);
+    // EVENT_IDX, so the device's avail_event shows what it has taken.
+    let mut g = Guest::connect(&socket, true);
     let data = pattern(7, 64 << 10);
     g.write(0, &data);
     let log = g.start_log();
@@ -919,6 +920,10 @@ fn a_migrating_guests_writes_are_logged_and_a_stop_finishes_its_requests() {
     // on the used ring, with the next available index after them all.
     Guest::clear_log(&log);
     g.post_reads(16, 0, 1 << 20);
+    // Requests made available but not yet taken are the target's to serve
+    // from the base the stop answers: the stop is sent once the device
+    // has taken them, as the kick only wakes its ring later (#404).
+    g.wait_taken();
     let base = g.stop_ring();
     assert_eq!(base, 19, "the ring's next available request");
     assert_eq!(
