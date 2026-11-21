@@ -81,9 +81,10 @@ sudo target/release/hyperstor-install install --ui crates/hyperstor-mgmt/ui/dist
   `http://127.0.0.1:8852`).
 - Its TypeScript for the protos is generated and committed: after changing
   a `.proto`, run `buf generate` in `crates/hyperstor-api`.
-- The login pieces come from glidex's `@glidex/ui-kit`, copied unchanged
-  into `crates/hyperstor-mgmt/ui-kit` at a pinned glidex commit; change
-  them in glidex, then `scripts/ui-kit-sync.sh <commit>`.
+- The login pieces come from `@glidex/ui-kit` in
+  [glidex-commons](https://github.com/CMKL-APEX/glidex-commons), copied
+  unchanged into `crates/hyperstor-mgmt/ui-kit` at the release tag the
+  Rust crates pin; change them there, then `scripts/ui-kit-sync.sh <tag>`.
 - Browser tests (`crates/hyperstor-mgmt/e2e`, Playwright) drive the built
   UI against a cluster installed from the release binaries:
   `bun install && bunx playwright install chromium && bunx playwright test`.

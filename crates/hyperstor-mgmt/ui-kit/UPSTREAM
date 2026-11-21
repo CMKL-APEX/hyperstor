@@ -1,5 +1,5 @@
-# A copy of glidex's @glidex/ui-kit (crates/glidex-ui/kit), unchanged, at
-# this glidex commit (hyperstor decision D97, 01-implementation-notes.md
-# I140). Change it in glidex, then: scripts/ui-kit-sync.sh <commit>
-# CI checks the copy matches: scripts/ui-kit-sync.sh --check
-rev 4ff7c0b5e285f428ad28ca46e0ab4e1332ceb1b1
+# A copy of glidex-commons' ui-kit/, unchanged, at this tag: the one the
+# Rust crates from glidex-commons pin (Cargo.toml). Change it there, then
+# scripts/ui-kit-sync.sh <tag>. CI checks it: scripts/ui-kit-sync.sh --check
+tag v0.1.0
+rev dac63c7e55243aa46ac26884089fd8eadde3e85a

@@ -1834,3 +1834,16 @@ each socket to the user who attached it, with root naming that user:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 319 | Who a volume's socket belongs to with several `--vhost-user`s: the first one's group for all (D144), one shared `hyperstor-vhost` group, or the user who attached it (recommended); and when root attaches for someone: `--for USER`, or the first named user | The user who attached it; root passes `--for USER` | D355; G60 and G61 checked on a pilot host |
+
+## Shared libraries in their own repository (2026-11-21)
+
+The owner asked how to move the libraries glidex and hyperstor share,
+the UI kit included, to `CMKL-APEX/glidex-commons`. The six glidex
+crates hyperstor uses depend on nothing else of glidex's (`glidex-trust`
+on `glidex-tls` only), so they move cleanly; `glidex-topology` changes
+with glidex's host-topology work and was the one to weigh.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 320 | Which code moves (the six crates hyperstor uses and the UI kit, `glidex-topology` included or kept in glidex), how it moves (history kept, names kept), how dependents pin it (release tags, recommended; or revisions), how the UI kit reaches apps (the checked copy of I140, recommended; or a registry), and where the crates' specs live (glidex's `spec/`, recommended) | As recommended: all six crates and the kit, `glidex-topology` too, with their history and names; tags; the checked copy; specs in glidex | D356 |
+

@@ -97,8 +97,9 @@ jobs:
         test -z "$(git status --porcelain -- crates/hyperstor-mgmt/ui/src/gen)" || {
           echo "buf generate made new files under crates/hyperstor-mgmt/ui/src/gen: commit them"; exit 1;
         }
-    # The copy of glidex's @glidex/ui-kit is glidex's, unchanged (I140).
-    - name: ui-kit matches glidex
+    # The copy of @glidex/ui-kit is glidex-commons', unchanged, at the
+    # tag the crates pin (D356, I140).
+    - name: ui-kit matches glidex-commons
       run: scripts/ui-kit-sync.sh --check
     - name: buf breaking
       if: github.event_name == 'pull_request'
