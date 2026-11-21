@@ -929,11 +929,9 @@ async fn serve_disk(
             }
             continue;
         };
-        let peer = peer_uid(&s);
-        if !may_use(peer, own, &svc.opts.allow_uids) {
+        if !may_use(peer_uid(&s), own, &svc.opts.allow_uids) {
             eprintln!(
-                "hyperstor-vhost: volume {volume:032x}: refused a connection from uid {}",
-                peer.map_or("unknown".into(), |u| u.to_string())
+                "hyperstor-vhost: volume {volume:032x}: refused a connection from a user not allowed"
             );
             continue;
         }
