@@ -671,6 +671,11 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Each volume's socket belongs to the user who attached it (root: `attach --for USER`); the directory stays hyperstor's, mode 0711"
+spec = ["11-frontends.md §11.1", "D355", "G60", "G61"]
+status = "planned"
+
+[[milestone.item]]
 what = "A detach is refused while a hypervisor is connected, unless forced"
 spec = ["11-frontends.md §11.1", "D256", "I297"]
 status = "done"

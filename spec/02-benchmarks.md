@@ -2617,3 +2617,33 @@ of their blocks; a lone version is counted without laying).
 - A first version laid sorted ranges over each other: dense maps then
   took 7× D155's time, with 17 ms slices; bit sets brought it to the
   numbers above.
+
+## 2026-11-21: Socket ownership across restarts and through a 0711 directory (G60, G61)
+
+Questions (D355): does systemd keep a socket's group across restarts
+when the runtime directory is the unit's own, and can hypervisors open a
+socket by its path in a directory they can't list? A pilot host (Linux
+6.8.0, systemd 255.4, Cloud Hypervisor v54.1, Pylon on Cloud Hypervisor
+v55.0.0, QEMU 8.2.2).
+
+1. **G60.** A transient unit (`systemd-run --pipe --wait`) as `User=hyperstor`,
+   `SupplementaryGroups=` the VMs' group, `RuntimeDirectory=`,
+   `RuntimeDirectoryMode=0711` and `RuntimeDirectoryPreserve=yes`, run
+   three times. Each start prints the socket's and the directory's owner
+   and mode; the first binds a socket, mode 0660, and gives it to the
+   VMs' group. Seen: `socket none; dir hyperstor:hyperstor 711`, then
+   twice `socket hyperstor:<VMs' group> 660; dir hyperstor:hyperstor 711`.
+   The same with the directory also given to the VMs' group (as
+   `hyperstor-vhost` does under D144): the next start found the socket
+   `hyperstor:hyperstor` (I425).
+2. **G61.** A socket bound by root, `hyperstor:<VMs' group>`, mode 0660,
+   in a directory `hyperstor:hyperstor`, listening for one connection
+   and printing the peer's uid. Each hypervisor run with
+   `setpriv --reuid --regid --groups` as glidex's VMMs run (its user,
+   its group, and the group of `/dev/kvm`), with one vhost-user-blk disk
+   on that socket. With mode 0711: Cloud Hypervisor, Pylon and QEMU each
+   connected (the listener saw glidex's uid), then failed on the
+   handshake the listener didn't answer. With mode 0750: each failed to
+   connect with `EACCES` and nothing reached the listener. With 0711,
+   `nobody` got `EACCES` on `connect`, and glidex's user got `EACCES` on
+   `ls` of the directory.
