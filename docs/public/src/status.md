@@ -116,6 +116,7 @@ covered by tests that run on every change.
 | Adaptive polling: a disk attached with `poll` has its queues polled while busy and for a window after, its reactor spinning | Done |
 | Zero copy from guest memory | Planned |
 | A restarted service keeps its leases; hypervisors reconnect, and requests in flight run again | Done |
+| Only root, the service's user and those allowed (`--allow-uid`) connect to a volume's socket; the state file is never readable by others | Done |
 | A detach is refused while a hypervisor is connected, unless forced | Done |
 | hyperstor-vhost for live migration: dirty-page logging (LOG_SHMFD, VHOST_F_LOG_ALL) and ring stops that finish their requests in flight | Done |
 | A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused | Done |
