@@ -110,7 +110,8 @@ and pNFS front end, are in 22-nfs.md §26.11; G54–G55, for load and drives, in
   (2026-11-21, systemd 255.4 on a pilot host; 02-benchmarks.md). A
   socket given to the VMs' group kept it over three starts; with the
   directory given to that group as well, the next start reset the
-  socket to the unit's group (I425).
+  socket to the unit's group (I425). Accepted by the owner on
+  2026-11-21, for systemd 255.
 - **G61. Hypervisors open a socket by its path in a directory they
   can't list** (D355; 11-frontends.md §11.1). Do Cloud Hypervisor, Pylon
   and QEMU, running as glidex's user and groups, connect to a vhost-user
@@ -118,7 +119,9 @@ and pNFS front end, are in 22-nfs.md §26.11; G54–G55, for load and drives, in
   with mode 0711? **Answered: yes** (2026-11-21, on a pilot host;
   02-benchmarks.md). All three connected through 0711 and were refused
   through 0750; a user outside the socket's group was refused, and
-  glidex's user couldn't list the directory.
+  glidex's user couldn't list the directory. Accepted by the owner on
+  2026-11-21, for Cloud Hypervisor v54.1, Pylon (Cloud Hypervisor v55)
+  and QEMU 8.2.2.
 - **G13. redb on a shard region** (D43). Run redb through its
   `StorageBackend` on a region of a shard device, and measure commit rate
   and write amplification for the index's update pattern against the
