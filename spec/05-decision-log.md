@@ -1820,3 +1820,17 @@ recovers, with a longer limit, and chose the recommendations:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 318 | How long `hyperstor-vhost` holds a request the cluster can't serve: 1 hour (recommended), 10 or 30 minutes, or no limit; and whether reads are held too (recommended) or only writes | 1 hour, `--hold-outage`; reads, writes and write-zeroes | D354 |
+
+## Sockets per attaching user (2026-11-21)
+
+After glidex #584 (VMs lost their disks at `hyperstor-vhost` restarts:
+I424, I425) and the uid check on volumes' sockets (#407), the owner
+asked whether `hyperstor-vhost` can serve other hypervisors and
+vhost-user apps besides glidex, and what that means for security. With
+one group for every socket (D144), a second app either can't connect or,
+once in that group, reaches every VM's disk. The owner chose to give
+each socket to the user who attached it, with root naming that user:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 319 | Who a volume's socket belongs to with several `--vhost-user`s: the first one's group for all (D144), one shared `hyperstor-vhost` group, or the user who attached it (recommended); and when root attaches for someone: `--for USER`, or the first named user | The user who attached it; root passes `--for USER` | D355; G60 and G61 checked on a pilot host |

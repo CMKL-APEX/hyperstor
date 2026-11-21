@@ -79,6 +79,16 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   ring's state. Why: a read finishing during the copy writes guest
   memory the target would otherwise never receive, and a request in
   flight at the stop would be lost.
+- **Who opens a disk** (D355, planned). Each volume's socket belongs
+  to the user whose `attach` made it, the control socket's peer, or to
+  the user root names with `attach --for USER`: mode 0660, that user's
+  primary group, and only that uid, root and the service's own accepted.
+  The directory stays `hyperstor`'s with mode 0711, so a socket is opened
+  by its path and only `hyperstor` lists them (G61); the service never
+  gives the directory away, so systemd leaves the sockets' owners alone
+  across restarts (G60). Why: separation between the apps on one host;
+  one group for every socket let each reach every VM's disk. Built so
+  far: the uid check against every named user (#407).
 - **Detach.** A detach is refused (`busy`) while a hypervisor is
   connected to the disk, unless forced, so a client's mistake can't pull
   a running VM's disk (D256, I297). It waits up to 2 s for a hypervisor

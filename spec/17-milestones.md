@@ -102,6 +102,23 @@ and pNFS front end, are in 22-nfs.md §26.11; G54–G55, for load and drives, in
   `default`. An unbound guest's pages, and the I/O buffers
   `hyperstor-vhost` touches, were on one node from the first I/O. Still
   open: hugepage memory (the host had none).
+- **G60. systemd leaves a runtime directory's contents alone when the
+  directory's owner is the unit's** (D355; 11-frontends.md §11.1). With
+  `RuntimeDirectory=`, `RuntimeDirectoryPreserve=yes` and the directory
+  owned by the unit's `User:Group`, does a file inside that the service
+  gave to another group keep it across restarts? **Answered: yes**
+  (2026-11-21, systemd 255.4 on a pilot host; 02-benchmarks.md). A
+  socket given to the VMs' group kept it over three starts; with the
+  directory given to that group as well, the next start reset the
+  socket to the unit's group (I425).
+- **G61. Hypervisors open a socket by its path in a directory they
+  can't list** (D355; 11-frontends.md §11.1). Do Cloud Hypervisor, Pylon
+  and QEMU, running as glidex's user and groups, connect to a vhost-user
+  socket (0660, their group) in a directory of another user and group
+  with mode 0711? **Answered: yes** (2026-11-21, on a pilot host;
+  02-benchmarks.md). All three connected through 0711 and were refused
+  through 0750; a user outside the socket's group was refused, and
+  glidex's user couldn't list the directory.
 - **G13. redb on a shard region** (D43). Run redb through its
   `StorageBackend` on a region of a shard device, and measure commit rate
   and write amplification for the index's update pattern against the
