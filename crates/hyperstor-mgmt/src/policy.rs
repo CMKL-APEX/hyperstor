@@ -92,6 +92,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.ListClaims", Group::Read, false),
     // A device's removal is final once its PGs have moved (D186).
     ("ClusterService.RemoveDevice", Group::Operate, true),
+    // Gives up what lost copies acknowledged (D359).
+    ("ClusterService.PromotePgs", Group::Operate, true),
     ("NodeService.DrainNode", Group::Operate, false),
     ("OperationService.CancelOperation", Group::Operate, false),
     // Operators protect data before maintenance and undo a mistaken

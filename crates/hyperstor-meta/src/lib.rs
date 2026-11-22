@@ -119,6 +119,85 @@ fn check_cache_grace(kind: PoolKind, grace: Option<u32>) -> Result<(), String> {
     }
 }
 
+/// One PG of a promotion (D359): what each live member of its `up` holds
+/// (objects, `None` if it didn't answer), how many objects the members
+/// that hold some disagree on, and the member promoted (or, dry, to be),
+/// or why none is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Promotion {
+    pub pg: u32,
+    pub candidates: Vec<(u32, Option<usize>)>,
+    pub differ: usize,
+    pub device: Result<u32, String>,
+}
+
+/// A candidate for promotion and what it holds of the PG, `(key, digest)`
+/// as it answered `Digests`; `None` if it didn't answer.
+pub type Held = (u32, Option<Vec<(hyperstor_proto::WireKey, u64)>>);
+
+/// Chooses the member to promote from what each candidate holds of the PG
+/// (D359): the one named, if it answered and holds something; else the
+/// only one holding anything, or the first of those holding the same.
+/// Refused when none holds anything (it would serve zeros), when one
+/// didn't answer, and when they hold different copies: with no PG log
+/// (09-replication.md §8.3), nothing says which is newer. Also returns
+/// how many objects differ among those holding some.
+pub fn choose_promoted(held: &[Held], named: Option<u32>) -> (usize, Result<u32, String>) {
+    // Each member holding some, with its objects' digests by key.
+    type Digested<'a> = (u32, BTreeMap<(u8, &'a [u8], u64), u64>);
+    let some: Vec<Digested> = held
+        .iter()
+        .filter_map(|(d, h)| {
+            let h = h.as_ref()?;
+            (!h.is_empty()).then(|| {
+                (
+                    *d,
+                    h.iter()
+                        .map(|(k, dg)| ((k.ns, k.name.as_slice(), k.version), *dg))
+                        .collect(),
+                )
+            })
+        })
+        .collect();
+    let mut keys: BTreeSet<(u8, &[u8], u64)> = BTreeSet::new();
+    for (_, m) in &some {
+        keys.extend(m.keys().copied());
+    }
+    let differ = keys
+        .iter()
+        .filter(|k| some.iter().any(|(_, m)| m.get(*k) != some[0].1.get(*k)))
+        .count();
+    let silent: Vec<u32> = held
+        .iter()
+        .filter(|(_, h)| h.is_none())
+        .map(|(d, _)| *d)
+        .collect();
+    let r = if let Some(d) = named {
+        match held.iter().find(|(x, _)| *x == d) {
+            None => Err(format!("device {d} isn't a live member of its up set")),
+            Some((_, None)) => Err(format!("device {d} didn't say what it holds")),
+            Some((_, Some(h))) if h.is_empty() => {
+                Err(format!("device {d} holds none of its objects"))
+            }
+            Some(_) => Ok(d),
+        }
+    } else if some.is_empty() && silent.is_empty() {
+        Err("no live member holds any of its objects".into())
+    } else if !silent.is_empty() {
+        Err(format!(
+            "device {} didn't say what it holds; name one with --device",
+            silent[0]
+        ))
+    } else if differ > 0 {
+        Err(format!(
+            "its members hold different copies ({differ} objects differ); name one with --device"
+        ))
+    } else {
+        Ok(some[0].0)
+    };
+    (differ, r)
+}
+
 /// What `UpgradeDevices` did (D274): the working map's epoch, the devices
 /// now asked to convert, and those already converted.
 pub type Upgraded = (u64, Vec<u32>, Vec<u32>);
@@ -246,6 +325,18 @@ pub enum Admin {
         member: bool,
         force: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, bool), String>>,
+    },
+    /// Promotes a live member of each of `pool`'s `pgs` (every PG whose
+    /// copies are lost if empty) to hold the PG alone (D359), choosing it
+    /// by what each holds unless `device` is named; with `dry_run` only
+    /// says what it would do. Replies once the map that has them is
+    /// published, with its epoch.
+    PromotePgs {
+        pool: u32,
+        pgs: Vec<u32>,
+        device: Option<u32>,
+        dry_run: bool,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, Vec<Promotion>), String>>,
     },
     /// Takes a device out to remove it (24-pools-and-devices.md §27.2.5,
     /// D175), or with `dry_run` only works out what that would do.
@@ -2868,6 +2959,113 @@ impl Meta {
         Ok(moves)
     }
 
+    /// [`Admin::PromotePgs`]: for each PG whose copies are lost, asks each
+    /// live member of its `up` what it holds (`Digests`, as backfill
+    /// does), chooses one ([`choose_promoted`]) and, unless `dry_run`,
+    /// makes it the PG's only acting member ([`ClusterMap::promote`]).
+    /// Refused as a whole for a pool that isn't replicated and for a PG
+    /// named that hasn't lost its copies; a PG the published map doesn't
+    /// show as the working map does yet is refused alone.
+    pub async fn promote_pgs(
+        self: &Rc<Self>,
+        pool: u32,
+        pgs: Vec<u32>,
+        device: Option<u32>,
+        dry_run: bool,
+    ) -> Result<Vec<Promotion>, String> {
+        use hyperstor_proto::{Msg, Target, decode_digests};
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        let map = self.map.borrow().clone();
+        match map.pools.get(&pool) {
+            None => return Err(format!("no pool {pool}")),
+            Some(p) if p.kind != PoolKind::Replicated => {
+                return Err(format!(
+                    "pool {pool} isn't replicated: only a replicated pool's PGs are promoted"
+                ));
+            }
+            Some(_) => {}
+        }
+        let pgs: Vec<u32> = if pgs.is_empty() {
+            map.pools[&pool]
+                .pgs()
+                .filter(|pg| map.copies_lost(pool, *pg))
+                .collect()
+        } else {
+            for pg in &pgs {
+                if !map.copies_lost(pool, *pg) {
+                    return Err(format!(
+                        "PG {pool}.{pg} hasn't lost its copies: a live acting member serves it, or it has none"
+                    ));
+                }
+            }
+            pgs
+        };
+        let published = self.published.borrow().clone();
+        let mut out = Vec::new();
+        for pg in pgs {
+            let info = map.pgs[&(pool, pg)].clone();
+            let candidates = map.promotable(pool, pg);
+            if published.pg(pool, pg) != Some(&info) {
+                out.push(Promotion {
+                    pg,
+                    candidates: candidates.iter().map(|d| (*d, None)).collect(),
+                    differ: 0,
+                    device: Err("the map is changing; try again".into()),
+                });
+                continue;
+            }
+            let to = Target {
+                pool,
+                pg,
+                map_epoch: published.epoch,
+                pg_epoch: info.epoch,
+                lease: 0,
+            };
+            let mut held = Vec::new();
+            for d in &candidates {
+                let asked = async {
+                    let c = self.conn(published.device_addr(*d)?).await.ok()?;
+                    match c.call(&Msg::Digests { to, deep: false }, &[]).await {
+                        Ok((Msg::DigestsOk, p)) => decode_digests(&p).ok(),
+                        _ => None,
+                    }
+                };
+                let h = hyperstor_reactor::time::timeout(Duration::from_secs(60), asked)
+                    .await
+                    .ok()
+                    .flatten();
+                held.push((*d, h));
+            }
+            let (differ, chosen) = choose_promoted(&held, device);
+            let chosen = match chosen {
+                Ok(d) if !dry_run => self
+                    .map
+                    .borrow_mut()
+                    .promote(pool, pg, info.epoch, d)
+                    .map(|()| {
+                        eprintln!(
+                            "hyperstor-meta: PG {pool}.{pg} promoted to device {d}, its lost copies {:?} given up (D359)",
+                            info.acting
+                        );
+                        d
+                    }),
+                r => r,
+            };
+            out.push(Promotion {
+                pg,
+                candidates: held
+                    .iter()
+                    .map(|(d, h)| (*d, h.as_ref().map(Vec::len)))
+                    .collect(),
+                differ,
+                device: chosen,
+            });
+        }
+        Ok(out)
+    }
+
     /// Takes `device` out so its PGs move off it, to remove it
     /// (24-pools-and-devices.md §27.2.5, D175); with `dry_run` changes
     /// nothing. Refused when a pool using it would keep fewer copies than
@@ -3230,6 +3428,30 @@ impl Meta {
                 }
                 Admin::DeletePool { pool, reply } => {
                     self.reply_published(reply, self.delete_pool(pool), |e| e);
+                }
+                // A task of its own: it asks the members what they hold.
+                Admin::PromotePgs {
+                    pool,
+                    pgs,
+                    device,
+                    dry_run,
+                    reply,
+                } => {
+                    let me = self.clone();
+                    hyperstor_reactor::spawn(async move {
+                        let r = me.promote_pgs(pool, pgs, device, dry_run).await;
+                        let r = match r {
+                            Ok(p) => {
+                                let epoch = me.map.borrow().epoch;
+                                match me.published_by(epoch).await {
+                                    Ok(()) => Ok((epoch, p)),
+                                    Err(e) => Err(e),
+                                }
+                            }
+                            Err(e) => Err(e),
+                        };
+                        let _ = reply.send(r);
+                    });
                 }
                 Admin::RemoveDevice {
                     device,
@@ -6251,6 +6473,45 @@ mod tests {
         assert!(m.map.borrow().pgs.values().all(|p| !p.up.contains(&new)));
         report(new, TIB);
         assert_eq!(weight(new), 1.0);
+    }
+
+    /// D359: the member promoted is the only one holding anything, or the
+    /// first of those holding the same, or the one named; never one that
+    /// holds nothing, and not while copies differ or a member is silent.
+    #[test]
+    fn the_member_promoted_holds_the_copy() {
+        use hyperstor_proto::WireKey;
+        let k = |n: u8, v: u64| WireKey {
+            ns: 0,
+            name: vec![n],
+            version: v,
+        };
+        let old = vec![(k(1, 0), 10), (k(2, 0), 20)];
+        let newer = vec![(k(1, 0), 10), (k(2, 0), 21)];
+        let held = |v: Vec<Held>| v;
+        // The old copy and an empty new member: the old copy.
+        let h = held(vec![(1002, Some(Vec::new())), (3001, Some(old.clone()))]);
+        assert_eq!(choose_promoted(&h, None), (0, Ok(3001)));
+        assert!(choose_promoted(&h, Some(1002)).1.is_err(), "holds nothing");
+        assert!(choose_promoted(&h, Some(7)).1.is_err(), "not a candidate");
+        // The same copy twice: the first.
+        let h = held(vec![(1002, Some(old.clone())), (3001, Some(old.clone()))]);
+        assert_eq!(choose_promoted(&h, None), (0, Ok(1002)));
+        // Different copies: nothing says which is newer, unless named.
+        let h = held(vec![(1002, Some(newer)), (3001, Some(old.clone()))]);
+        let (differ, r) = choose_promoted(&h, None);
+        assert_eq!(differ, 1);
+        assert!(r.unwrap_err().contains("--device"));
+        assert_eq!(choose_promoted(&h, Some(3001)), (1, Ok(3001)));
+        // A member that didn't answer might hold a copy.
+        let h = held(vec![(1002, None), (3001, Some(old))]);
+        assert!(choose_promoted(&h, None).1.is_err());
+        assert!(choose_promoted(&h, Some(1002)).1.is_err());
+        assert_eq!(choose_promoted(&h, Some(3001)).1, Ok(3001));
+        // Nothing anywhere: it would serve zeros.
+        let h = held(vec![(1002, Some(Vec::new())), (3001, Some(Vec::new()))]);
+        assert!(choose_promoted(&h, None).1.is_err());
+        assert!(choose_promoted(&[], None).1.is_err());
     }
 
     /// D224, D226: scrub settings change in the map; weakening them is

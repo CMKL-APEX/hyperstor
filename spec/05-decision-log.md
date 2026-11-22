@@ -1846,4 +1846,5 @@ with glidex's host-topology work and was the one to weigh.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 320 | Which code moves (the six crates hyperstor uses and the UI kit, `glidex-topology` included or kept in glidex), how it moves (history kept, names kept), how dependents pin it (release tags, recommended; or revisions), how the UI kit reaches apps (the checked copy of I140, recommended; or a registry), and where the crates' specs live (glidex's `spec/`, recommended) | As recommended: all six crates and the kit, `glidex-topology` too, with their history and names; tags; the checked copy; specs in glidex | D356 |
+| 322 | A pilot host was lost while 57 PGs of a `min` 1 pool had their only current copy on it (#419): keep them down until it returns, or let an operator promote an older copy on a live member | Build the forced promote (the owner, 2026-11-23) | D359 |
 
