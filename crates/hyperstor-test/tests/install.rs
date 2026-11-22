@@ -53,6 +53,51 @@ fn check_reports_every_item() {
         "{text}"
     );
     assert!(!data.exists(), "check must not create anything");
+
+    // --json (#416): the same checks by name, each with its level, the
+    // worst level, and the same exit status.
+    let out = Command::new(bin_dir().join("hyperstor-install"))
+        .args(["check", "--json", "--data-dir", data.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let json = String::from_utf8_lossy(&out.stdout);
+    let report: serde_json::Value =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("{e}:\n{json}"));
+    let checks = report["checks"].as_array().expect("checks");
+    let levels = ["ok", "info", "warn", "fail"];
+    for c in checks {
+        assert!(levels.contains(&c["level"].as_str().unwrap()), "{c}");
+        assert!(c["detail"].is_string(), "{c}");
+    }
+    for item in [
+        "kernel", "io_uring", "memlock", "cpus", "nvme", "clock", "disk", "ports", "systemd",
+    ] {
+        assert!(
+            checks.iter().any(|c| c["name"] == item),
+            "no {item}:\n{json}"
+        );
+    }
+    let worst = checks
+        .iter()
+        .map(|c| levels.iter().position(|l| c["level"] == *l).unwrap())
+        .max()
+        .map_or("ok", |i| levels[i]);
+    assert_eq!(report["worst"], worst, "{json}");
+    assert_eq!(out.status.code() == Some(1), worst == "fail", "{json}");
+    assert!(!data.exists(), "check must not create anything");
+
+    // --json is check's only.
+    let out = Command::new(bin_dir().join("hyperstor-install"))
+        .args([
+            "uninstall",
+            "--json",
+            "--root",
+            s.path("root").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("usage:"));
 }
 
 /// A first install writes everything; a second with no flags reuses the

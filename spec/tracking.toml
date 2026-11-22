@@ -1608,7 +1608,7 @@ id = "AD1"
 title = "Installer and cluster join"
 
 [[milestone.item]]
-what = "Host checks before installing"
+what = "Host checks before installing, as lines or as JSON for provisioning tools (check --json, stable names)"
 spec = ["19-administration.md §23.4"]
 status = "done"
 tests = ["install::check_reports_every_item"]

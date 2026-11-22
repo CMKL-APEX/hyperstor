@@ -254,7 +254,7 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Host checks before installing | Done |
+| Host checks before installing, as lines or as JSON for provisioning tools (check --json, stable names) | Done |
 | One-command trial cluster on one host, with system services, updated in place on later runs (every binary read before any is written; services on replaced binaries restarted, I293) | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
 | A host's roles changed by the installer: promote a storage host to a member, demote a member to storage, replace a member | Done |

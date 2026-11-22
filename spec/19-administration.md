@@ -125,6 +125,15 @@ the reason and the fix:
 
 A check that rests on a host claim cites its host check (G…).
 
+`check --json` prints the same results as one object for provisioning
+tools (#416, I433): `worst`, then `checks`, each with `name`, `level`
+(`ok`, `info`, `warn`, `fail`) and `detail`; the exit status is the same.
+The names are stable: `kernel`, `io_uring`, `memlock`, `cpus`, `nvme`,
+`clock`, `disk`, `ports`, `rootkey`, `systemd`, `vhost`, `routing`,
+`libblkid`. A new check gets a new name; a name is never reused for
+another check. *Why:* a tool decides on which check failed without
+parsing text written for people.
+
 **Other tools and Hyperstor's devices** (D332–D334, D344). A whole device
 Hyperstor formats has no partition table, and util-linux's libblkid,
 which `lsblk`, `blkid`, `wipefs`, `fdisk` and `mkfs` ask, doesn't know its
