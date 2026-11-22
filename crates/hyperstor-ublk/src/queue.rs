@@ -140,10 +140,19 @@ impl Queue {
         let d = self.desc(tag);
         let (off, len) = (d.start_sector << 9, (d.nr_sectors as usize) << 9);
         let buf = &self.bufs[tag as usize];
+        let op = (d.op_flags & 0xff) as u8;
+        // Discard and write-zeroes carry no data (D357, D358): dropped
+        // blocks, which write-zeroes makes read as zeros.
+        if op == IO_OP_DISCARD || op == IO_OP_WRITE_ZEROES {
+            return match vol.zero(off, len as u64, op == IO_OP_WRITE_ZEROES).await {
+                Ok(()) => 0,
+                Err(e) => errno(&e),
+            };
+        }
         if len > buf.len {
             return -libc::EINVAL;
         }
-        match (d.op_flags & 0xff) as u8 {
+        match op {
             IO_OP_READ => match vol.read(off, len as u64).await {
                 Ok(data) => {
                     // SAFETY: len <= buf.len, and no command for this tag

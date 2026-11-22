@@ -122,7 +122,8 @@ covered by tests that run on every change.
 | hyperstor-vhost for live migration: dirty-page logging (LOG_SHMFD, VHOST_F_LOG_ALL) and ring stops that finish their requests in flight | Done |
 | A connection's requests hold at most 64 MiB in buffers; more wait, in order, and none is refused | Done |
 | hyperstor-install --vhost / --role vhost: the service and its unit, for the users named | Done |
-| Discard and write-zeroes without allocating; expand signalled to the guest | Planned |
+| Discard and write-zeroes that drop blocks rather than write them, in hyperstor-vhost and hyperstor-ublk, decided per block by each chunk's primary | Done |
+| Expand signalled to the guest (the config-change event) | Planned |
 | Fencing one volume of a shared client: a lease identity per attached volume, with delegates acting under it | Done |
 | Client readahead | Planned |
 | The glidex hyperstor driver (glidex #177): create, delete, expand, stage through hyperstor-vhost, images as golden snapshots and clones; hyperstor's side: mgmt tokens and enrolment, ExpandVolume, write-volume and read-volume | Done |

@@ -61,6 +61,7 @@ use vm_memory::{
 };
 
 const WRITE_ZEROES: u32 = virtio_bindings::virtio_blk::VIRTIO_BLK_T_WRITE_ZEROES;
+const DISCARD: u32 = virtio_bindings::virtio_blk::VIRTIO_BLK_T_DISCARD;
 
 /// Descriptors per queue at most (the frontend picks the size, up to this).
 pub const QUEUE_MAX: u16 = 1024;
@@ -952,7 +953,11 @@ async fn serve(
     let descriptors = segs.readable.len() + segs.writable.len();
     let first = read_stream(mem, &segs.readable, 0, readable_len.min(16));
     let req = match first {
-        Some(h) if h.len() == 16 && h[0..4] == WRITE_ZEROES.to_le_bytes()[..] => {
+        Some(h)
+            if h.len() == 16
+                && (h[0..4] == WRITE_ZEROES.to_le_bytes()[..]
+                    || h[0..4] == DISCARD.to_le_bytes()[..]) =>
+        {
             // The ranges follow the header.
             let all = read_stream(mem, &segs.readable, 0, readable_len.min(16 + 16 * 64));
             all.map(|b| blk::decode(&b, readable_len, writable_len, descriptors, size))
@@ -1053,28 +1058,59 @@ async fn run_request(
                 None => (blk::S_IOERR, 1),
             }
         }
-        Request::WriteZeroes(ranges) => {
-            for (off, len) in ranges {
-                // Pieces end on piece boundaries: only the range's own ends
-                // can be partial blocks.
-                let mut at = off;
-                while at < off + len {
-                    let next = (at / blk::ZERO_PIECE + 1) * blk::ZERO_PIECE;
-                    let n = next.min(off + len) - at;
-                    let zero = || async {
-                        let _taken = budget.take(buffer_bytes(at, n)).await;
-                        write_at(disk, at, vec![0; n as usize]).await.map_err(Some)
-                    };
-                    if held(disk, "write", zero).await.is_err() {
-                        return (blk::S_IOERR, 1);
-                    }
-                    at += n;
-                }
-            }
-            (blk::S_OK, 1)
-        }
+        Request::WriteZeroes(ranges) => zero_ranges(disk, budget, ranges, true).await,
+        Request::Discard(ranges) => zero_ranges(disk, budget, ranges, false).await,
         Request::Unsupported(_) => (blk::S_UNSUPP, 1),
     }
+}
+
+/// Write-zeroes (`fill`) or discard of `ranges` (bytes, whole sectors):
+/// whole volume blocks are dropped, not written (04-decisions.md D357,
+/// D358); a partial block at either end is written with zeros by a
+/// write-zeroes, and left as it is by a discard, which promises no
+/// contents.
+async fn zero_ranges(
+    disk: &Disk,
+    budget: &Budget,
+    ranges: Vec<(u64, u64)>,
+    fill: bool,
+) -> (u8, u32) {
+    for (off, len) in ranges {
+        let end = off + len;
+        let (a, b) = (
+            off.div_ceil(blk::BLOCK) * blk::BLOCK,
+            end / blk::BLOCK * blk::BLOCK,
+        );
+        let parts = if a < b {
+            [(off, a), (b, end)]
+        } else {
+            [(off, end), (end, end)]
+        };
+        if fill {
+            for (from, to) in parts.into_iter().filter(|(f, t)| f < t) {
+                let zero = || async {
+                    let _taken = budget.take(buffer_bytes(from, to - from)).await;
+                    write_at(disk, from, vec![0; (to - from) as usize])
+                        .await
+                        .map_err(Some)
+                };
+                if held(disk, "write", zero).await.is_err() {
+                    return (blk::S_IOERR, 1);
+                }
+            }
+        }
+        if a < b {
+            // Ordered with a partial block's read, merge and write.
+            let drop = || async {
+                let _held = disk.locks.lock(a, b).await;
+                disk.volume.zero(a, b - a, fill).await.map_err(Some)
+            };
+            if held(disk, "write", drop).await.is_err() {
+                return (blk::S_IOERR, 1);
+            }
+        }
+    }
+    (blk::S_OK, 1)
 }
 
 /// Puts the chain on the used ring, and signals the guest if it wants to

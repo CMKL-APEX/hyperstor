@@ -90,6 +90,14 @@ pub enum ClientError {
     Rpc(#[from] RpcError),
     #[error("server error {code:?}: {detail}")]
     Server { code: Code, detail: String },
+    #[error(
+        "the storage node at {addr} speaks protocol {has}, and this needs {needs}: upgrade it first"
+    )]
+    OldPeer {
+        addr: std::net::SocketAddr,
+        has: u16,
+        needs: u16,
+    },
     #[error("unknown pool {0}")]
     NoPool(u32),
     #[error("offset or length not a multiple of 4096")]
@@ -616,12 +624,10 @@ impl Client {
                 }
             };
             if conn.version() < version {
-                return Err(ClientError::Server {
-                    code: Code::Invalid,
-                    detail: format!(
-                        "the storage node at {addr} speaks protocol {}, and this needs {version}: upgrade it first",
-                        conn.version()
-                    ),
+                return Err(ClientError::OldPeer {
+                    addr,
+                    has: conn.version(),
+                    needs: version,
                 });
             }
             let sent = match &payload {
@@ -757,6 +763,82 @@ impl Client {
                         m => Err(ClientError::Rpc(RpcError::Protocol(format!(
                             "unexpected {m:?}"
                         )))),
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.await?;
+        }
+        Ok(())
+    }
+
+    /// Zeroes `[off, off + len)` (whole blocks) of `branch` of lineage
+    /// `lineage`, at its head epoch `epoch`, under the lease identity
+    /// `lease` (D357, D358): each chunk's primary drops the blocks its
+    /// version holds. With `fill` (write-zeroes) the range then reads as
+    /// zeros: blocks an older version or a clone parent holds are written
+    /// with zeros. Without it (discard) those blocks read as theirs
+    /// again. A primary from before D357 gets zeros written instead, or
+    /// nothing for a discard, which promises no contents.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn zero_under(
+        self: &Rc<Self>,
+        lease: u64,
+        pool: u32,
+        lineage: u128,
+        branch: u32,
+        epoch: u64,
+        off: u64,
+        len: u64,
+        fill: bool,
+    ) -> Result<(), ClientError> {
+        let pieces = self.pieces(pool, off, len)?;
+        let handles: Vec<_> = pieces
+            .into_iter()
+            .map(|(chunk, coff, roff, n)| {
+                let me = self.clone();
+                spawn(async move {
+                    let route = Route::Chunk {
+                        lineage,
+                        chunk,
+                        branch,
+                        epoch,
+                    };
+                    let ops = hyperstor_proto::encode_ops(&[hyperstor_proto::WireOp::ZeroRange {
+                        off: coff,
+                        len: n,
+                        fill,
+                    }]);
+                    let sent = me
+                        .send_primary(
+                            pool,
+                            route,
+                            lease,
+                            hyperstor_proto::ZERO_RANGE_VERSION,
+                            Payload::Copy(&ops),
+                            &|to, key| Msg::Exec { to, key },
+                        )
+                        .await;
+                    match sent {
+                        Ok((Msg::ExecOk, _)) => Ok(()),
+                        Ok((m, _)) => Err(ClientError::Rpc(RpcError::Protocol(format!(
+                            "unexpected {m:?}"
+                        )))),
+                        Err(ClientError::OldPeer { .. }) if fill => {
+                            me.write_under(
+                                lease,
+                                pool,
+                                lineage,
+                                branch,
+                                epoch,
+                                off + roff,
+                                vec![0; n as usize],
+                            )
+                            .await
+                        }
+                        Err(ClientError::OldPeer { .. }) => Ok(()),
+                        Err(e) => Err(e),
                     }
                 })
             })

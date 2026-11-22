@@ -95,7 +95,11 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   process has exited (I313).
 - **As built** (HS3, D116, D117; 01-implementation-notes.md I158–I161):
   the control socket, write-through 512e disks (512-byte
-  sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush and write-zeroes; VMs boot from volumes
+  sectors on the volume's 4 KiB blocks, D126; I169) with multiqueue, `EVENT_IDX`, flush, and discard and write-zeroes that drop
+  blocks rather than write them (D357, D358, I434: one range of up to
+  16 MiB a request, discards on 4 KiB blocks, `write_zeroes_may_unmap`;
+  a partial block at either end is written with zeros by a
+  write-zeroes and left by a discard); VMs boot from volumes
   under Cloud Hypervisor and QEMU; restarts that keep the volumes (the
   state file, in-flight tracking; D143, D145, I173, I174), and its unit
   from `hyperstor-install --vhost` (D142, D144, I175); reactors per NUMA
@@ -105,7 +109,7 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
   their node (D290–D292, I357), on the CPUs glidex reserves, which
   `hyperstor-install` passes (I358); disks attached with `poll`, their
   queues polled while busy and for `--poll-us` after (D293, I359). Not
-  yet: discard, packed rings, zero copy and the config-change event.
+  yet: packed rings, zero copy and the config-change event.
 
 ### 11.2 NVMe-oF target (D19)
 

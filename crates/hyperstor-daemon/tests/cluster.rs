@@ -4827,7 +4827,6 @@ fn a_promoted_holders_first_write_waits_for_the_fence() {
 #[test]
 fn a_delegate_is_not_promoted_by_older_storage_nodes() {
     use hyperstor_client::ClientError;
-    use hyperstor_proto::Code;
     let mut c = Cluster::start(4, 1);
     let meta = c.meta_addr;
     for n in 0..4 {
@@ -4849,7 +4848,7 @@ fn a_delegate_is_not_promoted_by_older_storage_nodes() {
         td.set_standby().unwrap();
         let r = td.check_promote().await;
         assert!(
-            matches!(&r, Err(ClientError::Server { code: Code::Invalid, detail }) if detail.contains("protocol 4")),
+            matches!(&r, Err(ClientError::OldPeer { has: 4, .. })),
             "{r:?}"
         );
         assert!(td.promote("vhost:target").await.is_err());
@@ -7324,9 +7323,12 @@ fn volumes_made_from_another_keep_its_tenant() {
 }
 
 /// Random snapshot, clone, rollback, flatten and delete operations on a
-/// family of volumes, with writes in between, against a model: every
-/// head and every snapshot must read back what the model holds after
-/// every step. `HS_SEED` picks one seed; by default three run.
+/// family of volumes, with writes, write-zeroes and discards in between,
+/// against a model: every head and every snapshot must read back what the
+/// model holds after every step. A write-zeroes reads as zeros, whatever
+/// older versions hold (D357); a discarded block may read as an older
+/// version's (D358), so the model doesn't know it ([`UNKNOWN`]) until it
+/// is written again. `HS_SEED` picks one seed; by default three run.
 #[test]
 fn random_snapshot_operations_match_a_model() {
     let seeds: Vec<u64> = match std::env::var("HS_SEED") {
@@ -7341,6 +7343,8 @@ fn random_snapshot_operations_match_a_model() {
 fn random_snapshot_ops(seed: u64) {
     use std::collections::BTreeMap;
     const BLOCKS: u64 = 16;
+    // A block whose contents the model doesn't know: discarded.
+    const UNKNOWN: u8 = 255;
     let c = Cluster::start(4, 1);
     let meta = c.meta_addr;
     with_client(meta, 5, move |cl| async move {
@@ -7369,6 +7373,9 @@ fn random_snapshot_ops(seed: u64) {
                 for b in 0..BLOCKS {
                     let at = block_off(b) as usize;
                     let want = m.get(&b).copied().unwrap_or(0);
+                    if want == UNKNOWN {
+                        continue;
+                    }
                     assert!(
                         got[at..at + 4096].iter().all(|x| *x == want),
                         "seed {seed}: volume {id:x} block {b} isn't {want} after {log:?}"
@@ -7383,6 +7390,9 @@ fn random_snapshot_ops(seed: u64) {
                     for b in 0..BLOCKS {
                         let at = block_off(b) as usize;
                         let want = sm.get(&b).copied().unwrap_or(0);
+                        if want == UNKNOWN {
+                            continue;
+                        }
                         assert!(
                             got[at..at + 4096].iter().all(|x| *x == want),
                             "seed {seed}: volume {id:x} snapshot {e} block {b} isn't {want} after {log:?}"
@@ -7394,10 +7404,10 @@ fn random_snapshot_ops(seed: u64) {
         for step in 0..60u32 {
             let ids: Vec<u128> = heads.keys().copied().collect();
             let id = ids[rng.random_range(0..ids.len())];
-            match rng.random_range(0..10u32) {
+            match rng.random_range(0..14u32) {
                 0..=3 => {
                     let b = rng.random_range(0..BLOCKS);
-                    let fill = rng.random_range(1..=255u8);
+                    let fill = rng.random_range(1..UNKNOWN);
                     let a = cl.attach(id).await.unwrap();
                     a.write(block_off(b), vec![fill; 4096]).await.unwrap();
                     a.detach().await.unwrap();
@@ -7443,13 +7453,38 @@ fn random_snapshot_ops(seed: u64) {
                         }
                     }
                 }
-                _ => match cl.flatten(id).await {
+                9 => match cl.flatten(id).await {
                     Ok(_) => log.push(format!("flatten {id:x}")),
                     Err(hyperstor_client::ClientError::Refused(_)) => {
                         log.push(format!("flatten {id:x}: refused"))
                     }
                     Err(err) => panic!("seed {seed}: {err} after {log:?}"),
                 },
+                // Write-zeroes and discard of a block, or of a whole chunk
+                // (every other block of the model's, D357, D358).
+                k => {
+                    let fill = k % 2 == 0;
+                    let a = cl.attach(id).await.unwrap();
+                    let (what, blocks): (String, Vec<u64>) = if k < 12 {
+                        let b = rng.random_range(0..BLOCKS);
+                        a.zero(block_off(b), 4096, fill).await.unwrap();
+                        (format!("{b}"), vec![b])
+                    } else {
+                        let ch = rng.random_range(0..2u64);
+                        a.zero(ch * CHUNK as u64, CHUNK as u64, fill).await.unwrap();
+                        (
+                            format!("chunk {ch}"),
+                            (0..BLOCKS).filter(|b| b % 2 == ch).collect(),
+                        )
+                    };
+                    a.detach().await.unwrap();
+                    let m = heads.get_mut(&id).unwrap();
+                    for b in blocks {
+                        m.insert(b, if fill { 0 } else { UNKNOWN });
+                    }
+                    let op = if fill { "zero" } else { "discard" };
+                    log.push(format!("{op} {id:x} {what}"));
+                }
             }
             if step % 5 == 4 {
                 check(cl.clone(), heads.clone(), snaps.clone(), log.clone()).await;
@@ -7457,6 +7492,122 @@ fn random_snapshot_ops(seed: u64) {
         }
         check(cl.clone(), heads.clone(), snaps.clone(), log.clone()).await;
         eprintln!("snapshot operations, seed {seed}: {log:?}");
+    });
+    c.stop();
+}
+
+/// Write-zeroes and discard drop blocks (D357, D358): a block only the
+/// head holds is dropped by both and reads as zeros; one a snapshot or a
+/// clone's parent holds is written with zeros by a write-zeroes, and
+/// dropped from the head by a discard, so it reads as theirs; a block
+/// nothing holds stays so. Snapshots never change.
+#[test]
+fn write_zeroes_and_discard_drop_blocks() {
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 5, move |cl| async move {
+        const NONE: (u32, u64) = (u32::MAX, 0);
+        let at = |b: u64| b * 4096;
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let a = cl.attach(v.id).await.unwrap();
+        for b in 0..4 {
+            a.write(at(b), vec![b as u8 + 1; 4096]).await.unwrap();
+        }
+        a.detach().await.unwrap();
+        let s = cl.snapshot(v.id, "s").await.unwrap();
+        let a = cl.attach(v.id).await.unwrap();
+        a.write(at(1), vec![9; 4096]).await.unwrap();
+        a.write(at(3), vec![8; 4096]).await.unwrap();
+        a.write(at(5), vec![6; 4096]).await.unwrap();
+        // Blocks 0 and 1 the snapshot holds (1 the head too): zeros written.
+        a.zero(at(0), at(2), true).await.unwrap();
+        // Only the head holds block 5, and nothing block 6: dropped.
+        a.zero(at(5), at(2), true).await.unwrap();
+        // A discard of a block both hold, and of one only the snapshot does.
+        a.zero(at(3), 4096, false).await.unwrap();
+        a.zero(at(2), 4096, false).await.unwrap();
+        a.detach().await.unwrap();
+        let v = cl.volume(v.id).await.unwrap().unwrap();
+        let head = (0, v.head_epoch);
+        let snap = (0, s.epoch);
+        let (data, from) = cl
+            .read_sourced(POOL, v.lineage, &v.layers(), 0, at(7))
+            .await
+            .unwrap();
+        let fills: Vec<u8> = (0..7).map(|b| data[at(b) as usize]).collect();
+        assert_eq!(fills, [0, 0, 3, 4, 0, 0, 0]);
+        assert!(data.chunks(4096).all(|c| c.iter().all(|x| *x == c[0])));
+        assert_eq!(from, [head, head, snap, snap, NONE, NONE, NONE]);
+        // The snapshot is as it was.
+        let sv = v.snapshot(s.epoch).unwrap().clone();
+        let got = cl
+            .read_at(POOL, v.lineage, &v.snapshot_layers(&sv), 0, at(6))
+            .await
+            .unwrap();
+        let fills: Vec<u8> = (0..6).map(|b| got[at(b) as usize]).collect();
+        assert_eq!(fills, [1, 2, 3, 4, 0, 0]);
+
+        // A clone's discard shows its parent's block; its write-zeroes
+        // doesn't.
+        let k = cl.clone_snapshot(v.id, s.epoch, "k", None).await.unwrap();
+        let ka = cl.attach(k.id).await.unwrap();
+        ka.write(at(0), vec![5; 4096]).await.unwrap();
+        ka.zero(at(0), 4096, false).await.unwrap();
+        ka.zero(at(2), 4096, true).await.unwrap();
+        assert_eq!(ka.read(at(0), 4096).await.unwrap(), vec![1; 4096]);
+        assert_eq!(ka.read(at(2), 4096).await.unwrap(), vec![0; 4096]);
+        assert_eq!(ka.read(at(1), 4096).await.unwrap(), vec![2; 4096]);
+        ka.detach().await.unwrap();
+
+        // Unaligned ranges are refused.
+        let a = cl.attach(v.id).await.unwrap();
+        assert!(matches!(
+            a.zero(512, 4096, true).await,
+            Err(hyperstor_client::ClientError::Unaligned)
+        ));
+        a.detach().await.unwrap();
+    });
+    c.stop();
+}
+
+/// Storage nodes from before D357 (protocol 5) are never sent a range to
+/// zero: a write-zeroes writes zeros, as before, and a discard does
+/// nothing, which it may.
+#[test]
+fn older_storage_nodes_get_zeros_written() {
+    let mut c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    for n in 0..4 {
+        c.kill(n);
+        c.older.set_version(n as u32, Some(5));
+        c.restart(n);
+    }
+    with_client(meta, 1, move |cl| async move {
+        wait_backfilled(&cl).await;
+        let v = cl
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap();
+        let a = cl.attach(v.id).await.unwrap();
+        a.write(0, vec![7; 8192]).await.unwrap();
+        a.zero(0, 4096, true).await.unwrap();
+        a.zero(4096, 4096, false).await.unwrap();
+        // Nothing held block 2: zeros written all the same.
+        a.zero(8192, 4096, true).await.unwrap();
+        a.detach().await.unwrap();
+        let v = cl.volume(v.id).await.unwrap().unwrap();
+        let (data, from) = cl
+            .read_sourced(POOL, v.lineage, &v.layers(), 0, 3 * 4096)
+            .await
+            .unwrap();
+        assert!(data[..4096].iter().all(|x| *x == 0));
+        assert!(data[4096..8192].iter().all(|x| *x == 7));
+        assert!(data[8192..].iter().all(|x| *x == 0));
+        let head = (0, v.head_epoch);
+        assert_eq!(from, [head, head, head]);
     });
     c.stop();
 }

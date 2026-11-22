@@ -191,7 +191,7 @@ reactor thread with no other runtime.
 | | `hyperstor-ublk` | `hyperstor-vhost` |
 |---|---|---|
 | Serves | One volume as `/dev/ublkbN`, through the kernel's ublk driver | Every VM disk of a compute node, over vhost-user-blk: a socket per volume, which Cloud Hypervisor or QEMU connects to |
-| Queues | ublk's `uring_cmd`s, one task per tag | Each virtqueue a task woken by its kick eventfd; `EVENT_IDX`, indirect descriptors, multiqueue, flush, write-zeroes |
+| Queues | ublk's `uring_cmd`s, one task per tag; discard and write-zeroes | Each virtqueue a task woken by its kick eventfd; `EVENT_IDX`, indirect descriptors, multiqueue, flush, discard, write-zeroes |
 | Sectors | 4 KiB | 512-byte sectors on 4 KiB blocks (512e) |
 | Device full | `ENOSPC` at once | The write is held and tried every second for up to 5 minutes, then `IOERR` |
 
@@ -245,13 +245,34 @@ keeping the image volume it reads from; glidex deletes leftover image
 volumes once their image is gone and the clone is purged. Metering of
 hyperstor disks in glidex is still to come.
 
+## Discard and write-zeroes
+
+Both front ends pass a discard or write-zeroes of whole blocks to the
+client as one call, `Attached::zero`, which sends each chunk's primary a
+range to zero (`WireOp::ZeroRange`, protocol 6; D357, D358). The primary
+decides per block, from the chunk's versions and branches, which are all
+in its PG:
+
+| The block is held by | Write-zeroes | Discard |
+|---|---|---|
+| the head version only | dropped | dropped |
+| a snapshot or the clone's parent (the head too, or not) | zeros written in the head | dropped from the head: reads as theirs |
+| nothing | nothing done | nothing done |
+
+Replicas get only the drops (`WireOp::Zero`) and writes the primary
+decided, so the log, checkpoints and the protocol between copies are as
+before. A primary from before protocol 6 is never sent a range to zero:
+the client writes zeros instead, and does nothing for a discard. In
+`hyperstor-vhost`, a partial block at either end of a write-zeroes is
+read, merged and written with zeros, and left as it is by a discard.
+
 ## Planned
 
 - Read-only attachments of snapshots, by several clients at once, with
   reads from any copy.
-- Discard and write-zeroes that allocate nothing: discard can't simply
-  unmap the head's blocks, or a read would fall through to a snapshot's,
-  so it needs a "zeroed" marker in the head version.
+- Write-zeroes that allocates nothing even over a snapshot's blocks: a
+  block map entry that reads as zeros, with the on-device index's
+  format (D357).
 - Telling a running guest its disk grew (virtio's config-change event);
   today it sees the new size at its next attach.
 - In `hyperstor-vhost`: queues on several reactors, one per NUMA node,

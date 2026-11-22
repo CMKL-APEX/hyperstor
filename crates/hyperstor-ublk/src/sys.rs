@@ -25,8 +25,12 @@ pub const F_CMD_IOCTL_ENCODE: u64 = 1 << 6;
 pub const IO_OP_READ: u8 = 0;
 pub const IO_OP_WRITE: u8 = 1;
 pub const IO_OP_FLUSH: u8 = 2;
+pub const IO_OP_DISCARD: u8 = 3;
+pub const IO_OP_WRITE_ZEROES: u8 = 5;
 
 pub const PARAM_TYPE_BASIC: u32 = 1;
+/// Discard and write-zeroes limits (`UBLK_PARAM_TYPE_DISCARD`).
+pub const PARAM_TYPE_DISCARD: u32 = 1 << 1;
 
 /// Queue descriptors are mapped at this offset of `/dev/ublkcN`, one
 /// area of this size per queue (`UBLKSRV_CMD_BUF_OFFSET`, and

@@ -150,6 +150,37 @@ fn a_volume_is_served_over_vhost_user_blk() {
     let mut zeroed = sectors.concat();
     zeroed[512..1536].fill(0);
     assert!(g.read(blk, 4096) == zeroed, "two sectors zeroed");
+    // Discard and write-zeroes drop whole blocks (D357, D358), one range
+    // of up to 16 MiB, discards on 4 KiB blocks.
+    assert_eq!(g.config_u32(36), 32768, "max_discard_sectors");
+    assert_eq!(g.config_u32(40), 1, "max_discard_seg");
+    assert_eq!(g.config_u32(44), 8, "discard_sector_alignment");
+    assert_eq!(g.config_u8(56), 1, "write_zeroes_may_unmap");
+    let range = |at: u64, sectors: u32| {
+        let mut r = (at / 512).to_le_bytes().to_vec();
+        r.extend(sectors.to_le_bytes());
+        r.extend(0u32.to_le_bytes());
+        r
+    };
+    // A discard from a sector inside a block: that block is kept, the
+    // two whole blocks after it read as zeros (no snapshot holds them).
+    let d = off + 40960;
+    assert_eq!(g.request(T_DISCARD, 0, &range(d + 512, 23), 0).0, S_OK);
+    assert!(
+        g.read(d, 4096) == data[40960..45056],
+        "a partial block is kept"
+    );
+    assert!(g.read(d + 4096, 8192).iter().all(|b| *b == 0), "dropped");
+    assert!(g.read(d + 12288, 4096) == data[53248..57344]);
+    // A write-zeroes partial at both ends: exactly its sectors.
+    let w = off + 81920;
+    assert_eq!(
+        g.request(T_WRITE_ZEROES, 0, &range(w + 1024, 15), 0).0,
+        S_OK
+    );
+    let mut want = data[81920..98304].to_vec();
+    want[1024..1024 + 15 * 512].fill(0);
+    assert!(g.read(w, 16384) == want, "zeroed sectors only");
     // The hypervisor reconnects (it restarted, say): the volume stayed
     // attached and serves the same data.
     drop(g);

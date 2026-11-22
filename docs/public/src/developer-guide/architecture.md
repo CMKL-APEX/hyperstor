@@ -26,7 +26,7 @@
 | `hyperstor-mgmt` | yes | The management service: people log in with their host password or an identity provider (OIDC), get roles (viewer, operator, storage admin, security admin) checked by Cedar policies, and call the cluster API through it, named in its audit log. It serves the React web UI over HTTPS |
 | `hyperstor-authd` | yes | A small root helper that checks people's passwords with PAM for the management service, so it never runs as root |
 | `hyperstor-ublk` | yes | Serves a volume as a Linux block device (`/dev/ublkbN`) through the kernel's ublk driver |
-| `hyperstor-vhost` | yes, partly | Serves volumes to VMs over vhost-user-blk, one service per compute node; glidex attaches and detaches volumes through its control socket. Discard, adaptive polling and zero copy are planned |
+| `hyperstor-vhost` | yes, partly | Serves volumes to VMs over vhost-user-blk, one service per compute node; glidex attaches and detaches volumes through its control socket. Adaptive polling and zero copy are planned |
 | `hyperstor-s3` | yes | The S3 gateway: buckets and objects over S3's HTTP API, objects' data in chunks and buckets' indexes in key-value ranges, access keys read from the map service; one or more per realm |
 | `hyperstor-smart` | yes | A small root helper that reads NVMe drives' health logs for `hyperstord`, which runs unprivileged |
 | NVMe-oF target, GPU-direct library | planned | Further front ends on the same object layer |

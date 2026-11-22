@@ -3186,6 +3186,48 @@ impl Shard {
         Some(out)
     }
 
+    /// The blocks of `[lb, lb + n)` that an object other than `key` holds,
+    /// among those of its pool, PG and namespace whose names start with
+    /// `key.name[..prefix]`, as (first block, count) in order, merged: for
+    /// a volume chunk's version, its chunk's other versions and branches,
+    /// which a layered read may fall through to (08-engine.md §7.2, D357).
+    pub fn held_elsewhere(&self, key: &ObjKey, prefix: usize, lb: u64, n: u64) -> Vec<(u64, u64)> {
+        let stem = &key.name[..prefix.min(key.name.len())];
+        let lo = ObjKey {
+            name: stem.to_vec(),
+            version: 0,
+            ..key.clone()
+        };
+        let end = lb.saturating_add(n);
+        let mut held = vec![false; n as usize];
+        for (k, o) in self.index.objects.range(lo..) {
+            if k.pool != key.pool || k.pg != key.pg || k.ns != key.ns || !k.name.starts_with(stem) {
+                break;
+            }
+            if k == key {
+                continue;
+            }
+            for (first, _, crcs) in o.blocks.runs() {
+                let (a, b) = (first.max(lb), (first + crcs.len() as u64).min(end));
+                for x in a..b.max(a) {
+                    held[(x - lb) as usize] = true;
+                }
+            }
+        }
+        let mut out: Vec<(u64, u64)> = Vec::new();
+        for (i, h) in held.into_iter().enumerate() {
+            if !h {
+                continue;
+            }
+            let x = lb + i as u64;
+            match out.last_mut() {
+                Some((f, c)) if *f + *c == x => *c += 1,
+                _ => out.push((x, 1)),
+            }
+        }
+        out
+    }
+
     /// A digest of which blocks object `key` holds, and how many (D223):
     /// copies with equal [`Shard::digest`]s that differ here differ only in
     /// blocks of zeros one holds where another has a hole. From the index.
@@ -3450,6 +3492,42 @@ mod tests {
         assert_eq!(sum(100), (15, 1));
         assert_eq!(sum(2), (15, 3));
         assert_eq!(sh.pg_blocks(1, 4, None, 2), (0, None));
+    }
+
+    /// D357: the blocks a chunk's other versions and branches hold, and
+    /// none of another chunk's, another PG's or the object's own.
+    #[test]
+    fn blocks_held_elsewhere_are_the_chunks_other_objects() {
+        let mut sh = small_shard(512);
+        let k = |pg: u32, name: &[u8], version: u64| {
+            ObjKey::new(1, pg, Namespace::Vol, name.to_vec(), version)
+        };
+        let stem = b"chunk-a".to_vec();
+        let branch = [stem.clone(), vec![0, 0, 0, 1]].concat();
+        let head = k(1, &stem, 9);
+        put(&mut sh, &head, 0, vec![1; 8 * BLOCK]);
+        // An older version holds blocks 2 and 3, a branch block 6.
+        put(
+            &mut sh,
+            &k(1, &stem, 4),
+            2 * BLOCK as u64,
+            vec![2; 2 * BLOCK],
+        );
+        put(&mut sh, &k(1, &branch, 4), 6 * BLOCK as u64, vec![3; BLOCK]);
+        // Another chunk, and this chunk's name in another PG: not counted.
+        put(&mut sh, &k(1, b"chunk-b", 4), 0, vec![4; 8 * BLOCK]);
+        put(&mut sh, &k(2, &stem, 4), 0, vec![5; 8 * BLOCK]);
+        assert_eq!(
+            sh.held_elsewhere(&head, stem.len(), 0, 8),
+            vec![(2, 2), (6, 1)]
+        );
+        assert_eq!(sh.held_elsewhere(&head, stem.len(), 3, 2), vec![(3, 1)]);
+        assert_eq!(sh.held_elsewhere(&head, stem.len(), 7, 4), vec![]);
+        // From the branch's side, the head and the older version count.
+        assert_eq!(
+            sh.held_elsewhere(&k(1, &branch, 4), stem.len(), 0, 8),
+            vec![(0, 8)]
+        );
     }
 
     /// D177: the PGs a shard holds, each once, across pools and
