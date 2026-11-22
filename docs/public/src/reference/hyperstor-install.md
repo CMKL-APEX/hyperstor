@@ -4,7 +4,7 @@ Checks a host and installs Hyperstor on it. See
 [Installation](../admin-guide/installation.md).
 
 ```text
-usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--libblkid-deb DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
+usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--json] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--libblkid-deb DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]
 ```
 
 | Command | Does |
@@ -41,6 +41,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--mgmt-port P` | 8852 | The dashboard (`hyperstor-mgmt`), on `127.0.0.1`, on the map service's host |
 | `--root DIR` | `/` | Write every file under DIR instead (for packaging and tests); no users or services are touched |
 | `--no-start` | off | Install the files but don't enable or start the services |
+| `--json` | off | `check`: print the results as one JSON object instead of lines, for provisioning tools: the worst level, then each check's `name`, `level` and `detail` (see [Host checks for tools](../admin-guide/installation.md#host-checks-for-tools)). The exit status is the same |
 | `--out FILE` | | `root-backup`: the backup to write (created mode 0600; an existing file is never overwritten) |
 | `--in FILE` | | `root-restore`: the backup to read |
 | `--passphrase-file F` | | `root-backup`, `root-restore`: the passphrase, at least 12 characters, from a file; or `$HYPERSTOR_BACKUP_PASSPHRASE`. Never on the command line |

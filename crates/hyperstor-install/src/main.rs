@@ -1,6 +1,6 @@
 //! `hyperstor-install check|install|uninstall [--all-in-one] [--nodes N]
 //!                   [--size-gib G] [--data-dir DIR] [--api-port P]
-//!                   [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start]`
+//!                   [--map-port P] [--node-port P] [--admin-port P] [--root DIR] [--no-start] [--json]`
 //!
 //! The installer of spec/19-administration.md §23.4: one linear file,
 //! non-interactive and convergent. Every run compares what is installed
@@ -82,7 +82,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--libblkid-deb DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
+const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--json] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--libblkid-deb DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
@@ -442,6 +442,7 @@ fn main() {
     }
     let mut root = PathBuf::from("/");
     let mut no_start = false;
+    let mut json = false;
     let mut cluster_file: Option<String> = None;
     // Never saved: where this install's UI comes from.
     let mut ui_from: Option<String> = None;
@@ -476,6 +477,10 @@ fn main() {
             }
             "--no-start" => {
                 no_start = true;
+                continue;
+            }
+            "--json" => {
+                json = true;
                 continue;
             }
             "--cluster" => {
@@ -706,6 +711,10 @@ fn main() {
     {
         usage();
     }
+    // --json belongs to check only.
+    if json && cmd != "check" {
+        usage();
+    }
     // --out, --in and --remove-key belong to the backup commands only.
     let backup = cmd.starts_with("root-");
     if (!backup && (out_file.is_some() || in_file.is_some() || remove_key))
@@ -722,6 +731,7 @@ fn main() {
         pki_dir(&root);
     }
     match cmd.as_str() {
+        "check" if json => std::process::exit(i32::from(check_json(&root, &s))),
         "check" => std::process::exit(i32::from(check(&root, &s))),
         "root-backup" => root_backup(
             &root,
@@ -820,20 +830,79 @@ enum Level {
     Fail,
 }
 
-/// Runs every check, printing one line each; returns whether one failed.
-fn check(root: &Path, s: &Settings) -> bool {
-    let mut worst = Level::Ok;
-    let mut note = |l: Level, what: &str, detail: String| {
-        if l > worst {
-            worst = l;
-        }
-        let tag = match l {
-            Level::Ok => "ok  ",
+impl Level {
+    /// The level's name in `check --json`, stable for tools (#416).
+    fn name(self) -> &'static str {
+        match self {
+            Level::Ok => "ok",
             Level::Info => "info",
             Level::Warn => "warn",
+            Level::Fail => "fail",
+        }
+    }
+}
+
+/// One check's result. `name` is stable for tools that match on it
+/// (19-administration.md §23.4.1); `detail` is for people.
+struct Finding {
+    level: Level,
+    name: &'static str,
+    detail: String,
+}
+
+/// The worst level of `found`; `ok` when there is none.
+fn worst(found: &[Finding]) -> Level {
+    found
+        .iter()
+        .map(|f| f.level)
+        .fold(Level::Ok, |w, l| if l > w { l } else { w })
+}
+
+/// Runs every check, printing one line each; returns whether one failed.
+fn check(root: &Path, s: &Settings) -> bool {
+    let found = checks(root, s);
+    for f in &found {
+        let tag = match f.level {
             Level::Fail => "FAIL",
+            l => l.name(),
         };
-        println!("{tag}  {what:<9} {detail}");
+        println!("{tag:<4}  {:<9} {}", f.name, f.detail);
+    }
+    worst(&found) == Level::Fail
+}
+
+/// `check --json` (#416): the checks as one JSON object, for provisioning
+/// tools; returns whether one failed, as `check` does.
+fn check_json(root: &Path, s: &Settings) -> bool {
+    let found = checks(root, s);
+    println!("{}", check_report(&found));
+    worst(&found) == Level::Fail
+}
+
+/// `{"worst": LEVEL, "checks": [{"name", "level", "detail"}, ...]}`.
+fn check_report(found: &[Finding]) -> serde_json::Value {
+    serde_json::json!({
+        "worst": worst(found).name(),
+        "checks": found
+            .iter()
+            .map(|f| serde_json::json!({
+                "name": f.name,
+                "level": f.level.name(),
+                "detail": f.detail,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Runs every check, changing nothing.
+fn checks(root: &Path, s: &Settings) -> Vec<Finding> {
+    let mut found = Vec::new();
+    let mut note = |level: Level, name: &'static str, detail: String| {
+        found.push(Finding {
+            level,
+            name,
+            detail,
+        });
     };
 
     // Kernel: io_uring with uring_cmd for NVMe passthrough needs 5.19;
@@ -1137,7 +1206,7 @@ fn check(root: &Path, s: &Settings) -> bool {
             note(l, "libblkid", d);
         }
     }
-    worst == Level::Fail
+    found
 }
 
 /// What the patched build's version adds to Ubuntu's (D332). Installers
@@ -5623,6 +5692,35 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #416: `check --json` names each check and its level, and the worst
+    /// level, as tools read them; none found is `ok`.
+    #[test]
+    fn the_json_report_names_each_check_and_the_worst_level() {
+        let f = |level, name: &'static str| Finding {
+            level,
+            name,
+            detail: format!("{name} detail"),
+        };
+        let found = [
+            f(Level::Ok, "kernel"),
+            f(Level::Warn, "clock"),
+            f(Level::Info, "nvme"),
+        ];
+        assert_eq!(
+            check_report(&found),
+            serde_json::json!({
+                "worst": "warn",
+                "checks": [
+                    {"name": "kernel", "level": "ok", "detail": "kernel detail"},
+                    {"name": "clock", "level": "warn", "detail": "clock detail"},
+                    {"name": "nvme", "level": "info", "detail": "nvme detail"},
+                ],
+            })
+        );
+        assert_eq!(check_report(&[f(Level::Fail, "io_uring")])["worst"], "fail");
+        assert_eq!(check_report(&[])["worst"], "ok");
+    }
 
     /// D332–D334: the patched libblkid's file name follows Ubuntu's version
     /// (without an epoch), and the host check says whether the library

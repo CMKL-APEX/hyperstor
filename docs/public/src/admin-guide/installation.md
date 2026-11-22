@@ -68,7 +68,9 @@ hyperstorctl io-test
 `check` reports each requirement as `ok`, `info`, `warn` or `FAIL`. On a
 storage host whose devices have [endpoints](planning.md#several-networks),
 it also warns about endpoint addresses that share a subnet with another
-port and have no routing rule of their own (`routing`).
+port and have no routing rule of their own (`routing`). For tools,
+`check --json` gives the same results as JSON (see
+[Host checks for tools](#host-checks-for-tools)).
 `install` runs the checks, copies the binaries to `/usr/local/bin`,
 creates the `hyperstor` user, writes the configuration in
 `/etc/hyperstor`, the cluster's certificates in `/etc/hyperstor/pki`,
@@ -105,6 +107,45 @@ and the `hyperstor-admin` group: run it with `sudo`, or join the group
 
 To log in to the web UI, see [Logins and roles](managing.md#logins-and-roles).
 Then see [Managing a cluster](managing.md).
+
+### Host checks for tools
+
+A provisioning tool can run `hyperstor-install check --json` before it
+installs: the same checks as one JSON object, and the same exit status
+(1 when a check fails, 0 otherwise).
+
+```json
+{
+  "worst": "warn",
+  "checks": [
+    {"name": "kernel", "level": "ok", "detail": "6.8.0-45-generic"},
+    {"name": "clock", "level": "warn", "detail": "not synchronized (NTP)"}
+  ]
+}
+```
+
+`level` is `ok`, `info`, `warn` or `fail`, and `worst` is the highest of
+them (`ok` with no checks). The names are stable, so a tool can match on
+them; `detail` is for people and may change.
+
+| Name | What it checks |
+|---|---|
+| `kernel` | Linux 6.1 or later; 5.19 works with a warning |
+| `io_uring` | an io_uring ring can be created |
+| `memlock` | the locked-memory limit (the units raise it) |
+| `cpus` | more online CPUs than storage nodes |
+| `nvme` | NVMe generic devices (`/dev/ng*`), for information |
+| `clock` | NTP synchronization |
+| `disk` | free space for the device files |
+| `ports` | the cluster's ports are free, or hyperstor's own |
+| `rootkey` | the root CA's key is backed up, or not on this host |
+| `systemd` | systemd is running |
+| `vhost` | with `--vhost`: the `--vhost-user` users exist |
+| `routing` | on a storage host with endpoints: each endpoint address leaves by its own port |
+| `libblkid` | libblkid knows Hyperstor's devices, and apt is whole; may appear twice |
+
+Checks that don't apply to the host are left out, and later versions may
+add names.
 
 ## Joining hosts with tokens
 
