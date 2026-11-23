@@ -51,7 +51,7 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
   - discard and write-zeroes through `IORING_OP_FALLOCATE` (punch hole
     and zero range on the block device), which the kernel turns into the
     device's own commands. As built, there is no write-zeroes (a client's
-    write-zeroes drops blocks, §7.4), and freed space is discarded with
+    write-zeroes and discard drop blocks, §7.4), and freed space is discarded with
     `BLKDISCARD` on a block device and a punched hole on a file, from a
     thread of the device's own (§7.4; G58 asks which command a punched
     hole on a block device becomes);
@@ -308,7 +308,15 @@ device is formatted with the cluster's id; a superblock without one
   the extents the index and the checkpoint use (as built; no bitmap on
   disk).
 - Discard and write-zeroes from a client drop blocks from the head
-  version. Blocks no version holds any more are freed.
+  version (as built, D357, D358, I434). The chunk's primary decides per
+  block, from the chunk's versions and branches, all in its PG: a block
+  the head holds is dropped; for a write-zeroes, a block another
+  version or branch holds is written with zeros instead, since dropping
+  it would let a read fall through to theirs (§7.2). A discard only
+  drops, so such a block reads as theirs. Replicas get the drops and
+  writes decided. Blocks no version holds any more are freed. Later: a
+  block map entry that reads as zeros, so a write-zeroes never
+  allocates, with the on-device index's format (D357, #299).
 - **Freed space is discarded** (as built, D275, I322). Freed extents are
   queued, merged into runs, and become ready once a checkpoint that
   began after they were freed is named. The daemon takes them in

@@ -1848,3 +1848,14 @@ with glidex's host-topology work and was the one to weigh.
 | 320 | Which code moves (the six crates hyperstor uses and the UI kit, `glidex-topology` included or kept in glidex), how it moves (history kept, names kept), how dependents pin it (release tags, recommended; or revisions), how the UI kit reaches apps (the checked copy of I140, recommended; or a registry), and where the crates' specs live (glidex's `spec/`, recommended) | As recommended: all six crates and the kit, `glidex-topology` too, with their history and names; tags; the checked copy; specs in glidex | D356 |
 | 322 | A pilot host was lost while 57 PGs of a `min` 1 pool had their only current copy on it (#419): keep them down until it returns, or let an operator promote an older copy on a live member | Build the forced promote (the owner, 2026-11-23) | D359 |
 
+## Discard and write-zeroes (2026-11-22)
+
+The owner chose discard and write-zeroes for VM disks next (HS3; I159:
+discard wasn't offered, and write-zeroes wrote zero blocks). Dropping a
+head version's blocks lets a read fall through to a snapshot's or a
+clone parent's (08-engine.md §7.2), so either the engine learns a block
+that reads as zeros, or something decides where dropping is safe.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 321 | How to zero without allocating: the chunk's primary decides per block, with no format change (recommended), or a zero marker in the engine's block maps (never allocates; log, checkpoint and wire formats change); what a discard does to a block an older version holds: drop it so theirs shows (recommended), leave it, or write zeros; and whether the expand notice and ublk come in the same work | Per block now, the marker later with #299's format change; drop it; both, yes | D357, D358 |

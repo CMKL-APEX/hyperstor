@@ -727,8 +727,18 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Discard and write-zeroes without allocating; expand signalled to the guest"
-spec = ["11-frontends.md §11.1", "I159"]
+what = "Discard and write-zeroes that drop blocks rather than write them, in hyperstor-vhost and hyperstor-ublk, decided per block by each chunk's primary"
+spec = ["11-frontends.md §11.1", "08-engine.md §7.4", "D357", "D358", "I159", "I434"]
+status = "done"
+tests = [
+    "cluster::write_zeroes_and_discard_drop_blocks",
+    "cluster::older_storage_nodes_get_zeros_written",
+    "hyperstor_engine::shard::tests::blocks_held_elsewhere_are_the_chunks_other_objects",
+]
+
+[[milestone.item]]
+what = "Expand signalled to the guest (the config-change event)"
+spec = ["11-frontends.md §11.1", "I159", "I434"]
 status = "planned"
 
 [[milestone.item]]

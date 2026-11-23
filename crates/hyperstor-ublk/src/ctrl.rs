@@ -153,13 +153,27 @@ impl Control {
     }
 }
 
+/// Sectors per discard or write-zeroes request (16 MiB), which carry no
+/// data: each chunk's primary drops blocks (04-decisions.md D357).
+pub const ZEROES_MAX_SECTORS: u32 = (16 << 20) >> 9;
+
 /// The parameters of a volume of `bytes` served in requests of at most
 /// `buf_bytes`: 4 KiB blocks, and no volatile cache, since a write is
 /// answered once every copy has it (so the kernel sends no flushes).
+/// Discard and write-zeroes of whole blocks, one range per request (the
+/// driver takes no more, and wants a granularity).
 pub fn params(bytes: u64, buf_bytes: u32) -> Params {
     Params {
         len: size_of::<Params>() as u32,
-        types: PARAM_TYPE_BASIC,
+        types: PARAM_TYPE_BASIC | PARAM_TYPE_DISCARD,
+        discard: ParamDiscard {
+            discard_alignment: 0,
+            discard_granularity: 4096,
+            max_discard_sectors: ZEROES_MAX_SECTORS,
+            max_write_zeroes_sectors: ZEROES_MAX_SECTORS,
+            max_discard_segments: 1,
+            reserved0: 0,
+        },
         basic: ParamBasic {
             attrs: 0,
             logical_bs_shift: 12,

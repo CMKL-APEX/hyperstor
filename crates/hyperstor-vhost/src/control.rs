@@ -318,6 +318,7 @@ pub fn error_code(e: &ClientError) -> &'static str {
             code: hyperstor_proto::Code::Invalid,
             ..
         }
+        | ClientError::OldPeer { .. }
         | ClientError::BadVolume(_) => "invalid",
         ClientError::Rpc(_) | ClientError::NoPrimary(..) | ClientError::Exhausted(..) => {
             "unavailable"

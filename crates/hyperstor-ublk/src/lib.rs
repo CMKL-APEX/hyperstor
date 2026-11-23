@@ -246,6 +246,11 @@ mod tests {
         assert_eq!(p.basic.max_sectors, super::BUF_BYTES / 512);
         assert_eq!(p.basic.logical_bs_shift, 12);
         assert_eq!(p.basic.attrs, 0, "no volatile cache: no flushes");
+        // Discard and write-zeroes (D357): one range of whole blocks.
+        assert_ne!(p.types & super::sys::PARAM_TYPE_DISCARD, 0);
+        assert_eq!(p.discard.discard_granularity, 4096);
+        assert_eq!(p.discard.max_discard_segments, 1);
+        assert_eq!(p.discard.max_write_zeroes_sectors, (16 << 20) / 512);
         assert_eq!(p.len as usize, size_of::<super::sys::Params>());
     }
 }

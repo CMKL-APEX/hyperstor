@@ -23,6 +23,7 @@ pub const T_IN: u32 = 0;
 pub const T_OUT: u32 = 1;
 pub const T_FLUSH: u32 = 4;
 pub const T_GET_ID: u32 = 8;
+pub const T_DISCARD: u32 = 11;
 pub const T_WRITE_ZEROES: u32 = 13;
 pub const S_OK: u8 = 0;
 pub const S_IOERR: u8 = 1;

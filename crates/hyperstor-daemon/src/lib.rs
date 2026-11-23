@@ -1063,11 +1063,14 @@ fn unix_secs() -> u64 {
 }
 
 /// An operation list as `version` decodes it: builds from before D279
-/// don't know checksummed writes.
+/// don't know checksummed writes, nor those from before D357 ranges to
+/// zero.
 fn decode_ops_as(version: u16, payload: &[u8]) -> Option<Vec<WireOp>> {
     let ops = decode_ops(payload).ok()?;
-    let known = |o: &WireOp| {
-        version >= hyperstor_proto::WRITE_CRCS_VERSION || !matches!(o, WireOp::WriteCrcs { .. })
+    let known = |o: &WireOp| match o {
+        WireOp::WriteCrcs { .. } => version >= hyperstor_proto::WRITE_CRCS_VERSION,
+        WireOp::ZeroRange { .. } => version >= hyperstor_proto::ZERO_RANGE_VERSION,
+        _ => true,
     };
     ops.iter().all(known).then_some(ops)
 }
@@ -1089,14 +1092,60 @@ fn check_write_crcs(ops: &[WireOp]) -> Result<(), (Code, &'static str)> {
     Ok(())
 }
 
+/// Whether a list holds a range to zero, which only a client sends a
+/// primary (D357): the primary sends its replicas what it decided, so a
+/// list that reaches anything else with one is refused.
+fn has_zero_range(ops: &[WireOp]) -> bool {
+    ops.iter().any(|o| matches!(o, WireOp::ZeroRange { .. }))
+}
+
+/// What a primary sends its replicas for a client's [`WireOp::ZeroRange`]
+/// on the volume chunk version `okey` (D357, D358), as `sh` holds it now:
+/// the range dropped from the version, if it exists or an earlier effect
+/// of the list made it; with `fill`, zeros written over the blocks another
+/// version or branch of the chunk holds, so they read as zeros rather than
+/// as theirs. A range of a chunk version nothing holds needs nothing.
+fn zero_range_effects(
+    sh: &hyperstor_engine::Shard,
+    okey: &ObjKey,
+    made: bool,
+    off: u64,
+    len: u64,
+    fill: bool,
+) -> Result<Vec<WireOp>, &'static str> {
+    const B: u64 = hyperstor_engine::BLOCK as u64;
+    if okey.ns != Namespace::Vol || okey.name.len() < CHUNK_NAME_LEN {
+        return Err("a range to zero is a volume chunk's");
+    }
+    if !off.is_multiple_of(B) || !len.is_multiple_of(B) {
+        return Err("a range to zero is not whole blocks");
+    }
+    let mut out = Vec::new();
+    if made || sh.stat(okey).is_some() {
+        out.push(WireOp::Zero { off, len });
+    }
+    if fill {
+        for (lb, n) in sh.held_elsewhere(okey, CHUNK_NAME_LEN, off / B, len / B) {
+            let data = vec![0u8; (n * B) as usize];
+            out.push(WireOp::WriteCrcs {
+                off: lb * B,
+                crcs: block_crcs(&data),
+                data,
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// The engine operation of an operation list's effect (assertions have
-/// none: the primary decides them).
+/// none: the primary decides them, as it does ranges to zero).
 fn engine_op(key: &ObjKey, op: WireOp) -> Option<Op> {
     Some(match op {
         WireOp::AssertExists
         | WireOp::AssertAbsent
         | WireOp::AssertAttr { .. }
-        | WireOp::AssertKv { .. } => return None,
+        | WireOp::AssertKv { .. }
+        | WireOp::ZeroRange { .. } => return None,
         WireOp::Touch => Op::Touch,
         WireOp::Write { off, data } => Op::Write {
             off,
@@ -2895,11 +2944,30 @@ impl ShardState {
         self.kv_wrote(&to, &key);
         let decide = |me: &Self, okey: &ObjKey| match me.assertions_hold(okey, &ops) {
             Err(why) => Err(err(Code::Conflict, &me.map(), why)),
-            Ok(()) => Ok(ops
-                .iter()
-                .filter(|o| !o.is_assertion())
-                .cloned()
-                .collect::<Vec<_>>()),
+            Ok(()) => {
+                let mut effects = Vec::new();
+                for o in ops.iter().filter(|o| !o.is_assertion()) {
+                    match o {
+                        // Decided here, on the object and its chunk as they
+                        // are now (D357).
+                        WireOp::ZeroRange { off, len, fill } => {
+                            let sh = me.shard.borrow();
+                            let more = zero_range_effects(
+                                &sh,
+                                okey,
+                                !effects.is_empty(),
+                                *off,
+                                *len,
+                                *fill,
+                            )
+                            .map_err(|why| err(Code::Invalid, &me.map(), why))?;
+                            effects.extend(more);
+                        }
+                        o => effects.push(o.clone()),
+                    }
+                }
+                Ok(effects)
+            }
         };
         let done = self.decide_and_apply(instance, to, key, decide).await;
         spawn(async move {
@@ -3443,6 +3511,13 @@ impl ShardState {
         let Some(ops) = decode_ops_as(self.version(), &payload) else {
             return err(Code::Invalid, &self.map(), "malformed operation list");
         };
+        if has_zero_range(&ops) {
+            return err(
+                Code::Invalid,
+                &self.map(),
+                "a range to zero goes alone to an exec",
+            );
+        }
         // As for any operation list (I374): checked before the holder is
         // quiesced, so a list refused for its data holds nothing up.
         if let Err((code, why)) = check_write_crcs(&ops) {
@@ -4076,6 +4151,14 @@ impl ShardState {
         let Some(ops) = decode_ops_as(self.version(), &payload) else {
             return send(err(Code::Invalid, &self.map(), "malformed operation list"));
         };
+        // A primary decides ranges to zero; its replicas get what it decided.
+        if has_zero_range(&ops) {
+            return send(err(
+                Code::Invalid,
+                &self.map(),
+                "a range to zero reached a replica",
+            ));
+        }
         // Checked again here: damage between the primary and this copy.
         if let Err((code, why)) = check_write_crcs(&ops) {
             return send(err(code, &self.map(), why));

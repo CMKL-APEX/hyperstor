@@ -954,6 +954,49 @@ impl Attached {
         self.check(r)
     }
 
+    /// Zeroes `[off, off + len)` (whole blocks) at the head epoch of the
+    /// volume's branch, as [`Self::write`] writes (D357, D358): with
+    /// `fill` (write-zeroes) it reads as zeros after; without (discard) a
+    /// block an older snapshot or the clone's parent holds reads as
+    /// theirs, and the rest as zeros.
+    pub async fn zero(&self, off: u64, len: u64, fill: bool) -> Result<(), ClientError> {
+        while self.paused.get() {
+            sleep(Duration::from_millis(1)).await;
+        }
+        let v = self.usable(off, len)?;
+        if self.standby.get() {
+            return Err(ClientError::BadVolume(format!(
+                "volume {:032x}: a delegate waiting for promotion doesn't write",
+                v.id
+            )));
+        }
+        self.wait_fenced().await?;
+        self.inflight.set(self.inflight.get() + 1);
+        self.writes.set(self.writes.get() + 1);
+        if let Some(blocks) = self.blocks(&v, off, len) {
+            let mut known = self.known.borrow_mut();
+            for b in blocks {
+                known.remove(&b);
+            }
+        }
+        let r = self
+            .client
+            .zero_under(
+                self.lease,
+                v.pool,
+                v.lineage,
+                v.branch,
+                v.head_epoch,
+                off,
+                len,
+                fill,
+            )
+            .await;
+        self.writes.set(self.writes.get() + 1);
+        self.inflight.set(self.inflight.get() - 1);
+        self.check(r)
+    }
+
     /// After a promotion, waits until the old holder and its delegates are
     /// blocklisted (I421): a write of the old holder's that a storage node
     /// still holds (a full pool's, D183) is refused from then on, so none

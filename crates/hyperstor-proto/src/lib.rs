@@ -24,8 +24,11 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// delegates and per-volume fencing (D150, D152). 3: [`Msg::Host`], sent
 /// only to a peer whose `HelloOk` answers 3 or more (D261). 4:
 /// [`WireOp::WriteCrcs`] in operation lists (D279). 5:
-/// [`Msg::LeasePromote`] (D351).
-pub const VERSION: u16 = 5;
+/// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
+/// operation lists (D357).
+pub const VERSION: u16 = 6;
+/// The first version whose primaries take [`WireOp::ZeroRange`] (D357).
+pub const ZERO_RANGE_VERSION: u16 = 6;
 /// The first version that decodes [`Msg::LeasePromote`] (D351).
 pub const PROMOTE_VERSION: u16 = 5;
 /// The first version that decodes [`WireOp::WriteCrcs`] (D279).
@@ -2127,6 +2130,20 @@ pub enum WireOp {
         data: Vec<u8>,
         crcs: Vec<u32>,
     },
+    /// A volume chunk version's blocks `[off, off + len)` (whole blocks)
+    /// dropped, from a client to the primary, which decides each block
+    /// (D357, D358): a block the version holds is dropped; with `fill`
+    /// (write-zeroes), a block another version or branch of the chunk
+    /// holds is written with zeros instead, so it reads as zeros rather
+    /// than as theirs. Without `fill` (discard), such a block is only
+    /// dropped from this version. The primary sends replicas the plain
+    /// [`WireOp::Zero`] and writes it decided, never this. Sent only to a
+    /// primary of [`ZERO_RANGE_VERSION`] or later.
+    ZeroRange {
+        off: u64,
+        len: u64,
+        fill: bool,
+    },
 }
 
 impl WireOp {
@@ -2213,6 +2230,9 @@ pub fn encode_ops(ops: &[WireOp]) -> Vec<u8> {
                     e.u32(*c);
                 });
             }
+            WireOp::ZeroRange { off, len, fill } => {
+                e.u8(17).u64(*off).u64(*len).bool(*fill);
+            }
         }
     }
     e.into_vec()
@@ -2267,6 +2287,11 @@ pub fn decode_ops(b: &[u8]) -> Result<Vec<WireOp>, DecodeError> {
                 off: d.u64()?,
                 data: bytes(&mut d)?,
                 crcs: d.seq(4, |d| d.u32())?,
+            },
+            17 => WireOp::ZeroRange {
+                off: d.u64()?,
+                len: d.u64()?,
+                fill: d.bool()?,
             },
             k => {
                 return Err(DecodeError::Invalid {
@@ -3102,6 +3127,16 @@ mod tests {
                 data: vec![1; 4096],
             },
             WireOp::Zero { off: 0, len: 4096 },
+            WireOp::ZeroRange {
+                off: 8192,
+                len: 4096,
+                fill: true,
+            },
+            WireOp::ZeroRange {
+                off: 0,
+                len: 8192,
+                fill: false,
+            },
             WireOp::Truncate(9),
             WireOp::SetAttr(b"a".to_vec(), b"b".to_vec()),
             WireOp::RmAttr(b"a".to_vec()),

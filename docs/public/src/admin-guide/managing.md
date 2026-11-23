@@ -538,7 +538,11 @@ sudo hyperstor-vhost ctl detach ID                     # refused while a VM uses
   the user the VM runs as.
 - **Disks.** The guest sees a virtio disk with 512-byte sectors on
   4 KiB physical blocks and no volatile write cache: a write is answered
-  once every copy has it. Discard isn't offered yet.
+  once every copy has it. Discard (`fstrim`, `mount -o discard`) gives
+  space back: discarded blocks are dropped from the volume, and a block
+  a snapshot or the clone's parent also holds reads as theirs again.
+  Write-zeroes reads as zeros and drops blocks too, writing zeros only
+  over blocks a snapshot or the parent holds.
 - **One holder.** A volume is attached on one host at a time. Attaching
   it elsewhere is refused (`held`, naming the holder, such as
   `vhost:NAME` for another host's service) unless `--take-over` (its

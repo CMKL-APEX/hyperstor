@@ -80,8 +80,13 @@ user `--allow-uid` names.
 The VM's memory must be shared with the service (`shared=on` in Cloud
 Hypervisor; a `memory-backend-memfd` with `share=on` in QEMU). The disk
 has 512-byte sectors on 4 KiB physical blocks and no volatile write
-cache: a write is answered once every copy has it. Discard isn't offered
-yet.
+cache: a write is answered once every copy has it. Discard and
+write-zeroes drop blocks rather than write them: one range of up to
+16 MiB a request, discards on 4 KiB blocks (a partial block at either
+end is left as it is), and write-zeroes may drop blocks
+(`write_zeroes_may_unmap`). After a discard, a block a snapshot or the
+clone's parent holds reads as theirs; after a write-zeroes, everything
+reads as zeros.
 
 The control socket takes one JSON request per line and answers each on
 one line:

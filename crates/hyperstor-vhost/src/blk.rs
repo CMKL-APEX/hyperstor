@@ -4,10 +4,11 @@
 //! volume; [`crate::device`] does.
 
 use virtio_bindings::virtio_blk::{
-    VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_MQ, VIRTIO_BLK_F_SEG_MAX,
-    VIRTIO_BLK_F_SIZE_MAX, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_WRITE_ZEROES, VIRTIO_BLK_ID_BYTES,
-    VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP, VIRTIO_BLK_T_FLUSH,
-    VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_WRITE_ZEROES,
+    VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_DISCARD, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_MQ,
+    VIRTIO_BLK_F_SEG_MAX, VIRTIO_BLK_F_SIZE_MAX, VIRTIO_BLK_F_TOPOLOGY, VIRTIO_BLK_F_WRITE_ZEROES,
+    VIRTIO_BLK_ID_BYTES, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP,
+    VIRTIO_BLK_T_DISCARD, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN,
+    VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_WRITE_ZEROES,
 };
 use virtio_bindings::virtio_config::VIRTIO_F_VERSION_1;
 use virtio_bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC};
@@ -36,14 +37,12 @@ pub const REQUEST_MAX: u64 = 1 << 30;
 /// Descriptors in one chain at most: the data segments, and the header
 /// and the status besides.
 pub const DESCRIPTORS_MAX: usize = SEG_MAX as usize + 2;
-/// Bytes per write-zeroes range.
+/// Sectors per write-zeroes or discard range (16 MiB).
 pub const ZEROES_MAX_SECTORS: u32 = (16 << 20) / 512;
-/// Write-zeroes are written in pieces of this many bytes.
-pub const ZERO_PIECE: u64 = 1 << 20;
 
-/// Virtio features offered. Not offered yet (01-implementation-notes.md):
-/// discard, which needs a way to drop the head's blocks without
-/// uncovering a snapshot's; packed rings, which `virtio-queue` lacks.
+/// Virtio features offered. Discard and write-zeroes drop blocks rather
+/// than write them (04-decisions.md D357, D358). Not offered yet
+/// (01-implementation-notes.md): packed rings, which `virtio-queue` lacks.
 pub fn features() -> u64 {
     [
         VIRTIO_BLK_F_SIZE_MAX,
@@ -53,6 +52,7 @@ pub fn features() -> u64 {
         VIRTIO_BLK_F_FLUSH,
         VIRTIO_BLK_F_MQ,
         VIRTIO_BLK_F_WRITE_ZEROES,
+        VIRTIO_BLK_F_DISCARD,
         VIRTIO_RING_F_INDIRECT_DESC,
         VIRTIO_RING_F_EVENT_IDX,
         VIRTIO_F_VERSION_1,
@@ -79,10 +79,14 @@ pub fn config(size: u64, queues: u16) -> Vec<u8> {
     c.push(0); // writeback: write-through (10-volumes.md §10.1)
     c.push(0);
     c.extend(queues.to_le_bytes()); // num_queues
-    c.extend([0u8; 12]); // discard: not offered
+    // Discard: one range per request, in whole volume blocks; a partial
+    // block at either end is left as it is.
+    c.extend(ZEROES_MAX_SECTORS.to_le_bytes()); // max_discard_sectors
+    c.extend(1u32.to_le_bytes()); // max_discard_seg
+    c.extend(((BLOCK / SECTOR) as u32).to_le_bytes()); // discard_sector_alignment
     c.extend(ZEROES_MAX_SECTORS.to_le_bytes()); // max_write_zeroes_sectors
     c.extend(1u32.to_le_bytes()); // max_write_zeroes_seg
-    c.push(0); // write_zeroes_may_unmap
+    c.push(1); // write_zeroes_may_unmap: blocks are dropped (D357)
     c.extend([0u8; 3]);
     debug_assert_eq!(c.len(), 60);
     c
@@ -105,6 +109,8 @@ pub enum Request {
     GetId,
     /// (offset, length) ranges, in bytes.
     WriteZeroes(Vec<(u64, u64)>),
+    /// (offset, length) ranges, in bytes.
+    Discard(Vec<(u64, u64)>),
     Unsupported(u32),
 }
 
@@ -173,19 +179,29 @@ pub fn decode(
             }
             Request::GetId
         }
-        VIRTIO_BLK_T_WRITE_ZEROES => {
+        VIRTIO_BLK_T_WRITE_ZEROES | VIRTIO_BLK_T_DISCARD => {
             let segs = &readable[16..];
             if segs.len() < 16 || !segs.len().is_multiple_of(16) {
                 return Err(Bad::Malformed);
             }
             let mut ranges = Vec::new();
             for s in segs.as_chunks::<16>().0 {
+                // A discard with the unmap flag is answered UNSUPP (virtio
+                // 1.2, section 5.2.6.2).
+                let flags = u32::from_le_bytes(s[12..16].try_into().unwrap());
+                if kind == VIRTIO_BLK_T_DISCARD && flags & 1 != 0 {
+                    return Ok(Request::Unsupported(kind));
+                }
                 let sector = u64::from_le_bytes(s[0..8].try_into().unwrap());
                 let n = u32::from_le_bytes(s[8..12].try_into().unwrap()) as u64;
                 let off = sector.checked_mul(SECTOR).ok_or(Bad::Range)?;
                 ranges.push(range(off, n * SECTOR)?);
             }
-            Request::WriteZeroes(ranges)
+            if kind == VIRTIO_BLK_T_DISCARD {
+                Request::Discard(ranges)
+            } else {
+                Request::WriteZeroes(ranges)
+            }
         }
         k => Request::Unsupported(k),
     })
@@ -270,6 +286,37 @@ mod tests {
             decode(&h, 32, 1, 3, size),
             Ok(Request::WriteZeroes(vec![(8192, 4096)]))
         );
+        let mut h = header(VIRTIO_BLK_T_DISCARD, 0);
+        h.extend(9u64.to_le_bytes());
+        h.extend(23u32.to_le_bytes());
+        h.extend(0u32.to_le_bytes());
+        assert_eq!(
+            decode(&h, 32, 1, 3, size),
+            Ok(Request::Discard(vec![(4608, 23 * 512)]))
+        );
+        // The unmap flag is only for write-zeroes.
+        let mut h = header(VIRTIO_BLK_T_DISCARD, 0);
+        h.extend(8u64.to_le_bytes());
+        h.extend(8u32.to_le_bytes());
+        h.extend(1u32.to_le_bytes());
+        assert_eq!(
+            decode(&h, 32, 1, 3, size),
+            Ok(Request::Unsupported(VIRTIO_BLK_T_DISCARD))
+        );
+        let mut h = header(VIRTIO_BLK_T_WRITE_ZEROES, 0);
+        h.extend(8u64.to_le_bytes());
+        h.extend(8u32.to_le_bytes());
+        h.extend(1u32.to_le_bytes());
+        assert_eq!(
+            decode(&h, 32, 1, 3, size),
+            Ok(Request::WriteZeroes(vec![(4096, 4096)]))
+        );
+        // Past the volume's end.
+        let mut h = header(VIRTIO_BLK_T_DISCARD, 0);
+        h.extend((size / 512).to_le_bytes());
+        h.extend(1u32.to_le_bytes());
+        h.extend(0u32.to_le_bytes());
+        assert_eq!(decode(&h, 32, 1, 3, size), Err(Bad::Range));
     }
 
     /// A chain with more descriptors, or more data, than one request may
@@ -364,6 +411,17 @@ mod tests {
         assert_eq!(blocks(3584, 1024), (0, 8192));
         assert_eq!(blocks(4096, 4096), (4096, 8192));
         assert_eq!(u16::from_le_bytes(c[34..36].try_into().unwrap()), 4);
+        // Discard and write-zeroes (D357): one range of up to 16 MiB each,
+        // discards on volume blocks, and write-zeroes may drop blocks.
+        let u32_at = |o: usize| u32::from_le_bytes(c[o..o + 4].try_into().unwrap());
+        assert_eq!(u32_at(36), ZEROES_MAX_SECTORS);
+        assert_eq!(u32_at(40), 1);
+        assert_eq!(u32_at(44), 8);
+        assert_eq!(u32_at(48), ZEROES_MAX_SECTORS);
+        assert_eq!(u32_at(52), 1);
+        assert_eq!(c[56], 1);
+        assert!(features() & (1 << VIRTIO_BLK_F_DISCARD) != 0);
+        assert!(features() & (1 << VIRTIO_BLK_F_WRITE_ZEROES) != 0);
         assert_eq!(id("abc")[..4], *b"abc\0");
         assert_eq!(id(&"x".repeat(30)).len(), 20);
         assert!(features() & (1 << VIRTIO_F_VERSION_1) != 0);
