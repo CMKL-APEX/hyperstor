@@ -723,7 +723,6 @@ status = "done"
 tests = [
     "cluster::write_zeroes_and_discard_drop_blocks",
     "cluster::older_storage_nodes_get_zeros_written",
-    "cluster::random_snapshot_operations_match_a_model",
     "vhost::a_volume_is_served_over_vhost_user_blk",
     "hyperstor_engine::shard::tests::blocks_held_elsewhere_are_the_chunks_other_objects",
 ]
