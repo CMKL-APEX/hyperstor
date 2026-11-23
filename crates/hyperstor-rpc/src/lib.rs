@@ -345,9 +345,13 @@ pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Frame>) {
 impl Conn {
     /// Connects to `addr` and starts the connection's tasks.
     pub async fn connect(addr: SocketAddr) -> Result<Conn, RpcError> {
-        let s = match hyperstor_reactor::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(addr))
-            .await
-        {
+        Self::connect_within(addr, CONNECT_TIMEOUT).await
+    }
+
+    /// [`Conn::connect`], giving up after `limit` rather than
+    /// [`CONNECT_TIMEOUT`].
+    pub async fn connect_within(addr: SocketAddr, limit: Duration) -> Result<Conn, RpcError> {
+        let s = match hyperstor_reactor::time::timeout(limit, TcpStream::connect(addr)).await {
             Ok(r) => r.map_err(|e| RpcError::Io(e.to_string()))?,
             Err(_) => return Err(RpcError::Timeout),
         };

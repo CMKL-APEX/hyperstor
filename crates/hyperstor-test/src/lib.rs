@@ -182,6 +182,52 @@ pub fn free_ports(n: u16) -> u16 {
     }
 }
 
+/// A loopback address whose connects are never answered, as a host that
+/// is gone (#421): its listener's accept queue is held full, and Linux
+/// drops a SYN to a full queue, so a connect waits until its own timeout
+/// rather than being refused. Held while this lives.
+pub struct Blackhole {
+    pub addr: std::net::SocketAddr,
+    _listener: std::net::TcpListener,
+    _held: Vec<std::net::TcpStream>,
+}
+
+impl Blackhole {
+    pub fn new() -> Blackhole {
+        use std::os::fd::AsRawFd;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        // SAFETY: a valid listening socket's descriptor, owned by
+        // `listener`; listening again only changes its backlog.
+        let r = unsafe { libc::listen(listener.as_raw_fd(), 0) };
+        assert_eq!(r, 0, "listen: {}", std::io::Error::last_os_error());
+        let addr = listener.local_addr().unwrap();
+        // Connects that complete fill the queue; they are never accepted.
+        let mut held = Vec::new();
+        while held.len() < 8 {
+            match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+                Ok(s) => held.push(s),
+                Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+                Err(e) => panic!("filling the blackhole's queue: {e}"),
+            }
+        }
+        assert!(
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_err(),
+            "a connect to the blackhole was answered"
+        );
+        Blackhole {
+            addr,
+            _listener: listener,
+            _held: held,
+        }
+    }
+}
+
+impl Default for Blackhole {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A scratch directory, removed on drop unless `HS_E2E_KEEP` is set or
 /// the test is failing, with a short runtime directory for sockets beside
 /// it: a Unix socket's
