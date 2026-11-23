@@ -561,6 +561,16 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "Promoting a live member of a PG whose copies are lost"
+spec = ["09-replication.md §15", "D359", "I435"]
+status = "done"
+tests = [
+    "hyperstor_map::tests::a_pg_whose_copies_are_lost_is_promoted_to_a_live_member",
+    "hyperstor_meta::tests::the_member_promoted_holds_the_copy",
+    "cluster::a_pg_whose_copies_are_lost_serves_the_member_promoted",
+]
+
+[[milestone.item]]
 what = "Blocklist and forced takeovers"
 spec = ["06-metadata.md §4.1", "06-metadata.md §9", "D24", "D76", "I75", "I76", "I77"]
 status = "done"

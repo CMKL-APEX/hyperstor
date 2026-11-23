@@ -55,6 +55,15 @@ enum MetaCmd {
     Formats(std::sync::mpsc::Sender<(std::collections::BTreeMap<u32, u8>, Vec<u32>)>),
     /// The map the map service has published.
     Published(std::sync::mpsc::Sender<ClusterMap>),
+    /// Promotes a member of each PG of a pool whose copies are lost
+    /// (D359): pool, the member to promote, dry run; answers once the map
+    /// with them is published.
+    Promote(
+        u32,
+        Option<u32>,
+        bool,
+        std::sync::mpsc::Sender<Result<Vec<hyperstor_meta::Promotion>, String>>,
+    ),
     /// The leader's space counts (D335).
     Space(std::sync::mpsc::Sender<Result<hyperstor_meta::space::SpaceView, String>>),
     /// Forgets the primaries' space reports, as a new leader would.
@@ -464,6 +473,15 @@ impl Cluster {
                         MetaCmd::Published(tx) => {
                             let _ = tx.send(meta.published.borrow().clone());
                         }
+                        MetaCmd::Promote(pool, device, dry, tx) => {
+                            let r = meta.promote_pgs(pool, Vec::new(), device, dry).await;
+                            let epoch = meta.map.borrow().epoch;
+                            let r = match r {
+                                Ok(p) => meta.published_by(epoch).await.map(|()| p),
+                                Err(e) => Err(e),
+                            };
+                            let _ = tx.send(r);
+                        }
                         MetaCmd::Split(pool, pgs, tx) => {
                             let change = hyperstor_meta::PoolChange {
                                 pg_count: Some(pgs),
@@ -677,6 +695,22 @@ impl Cluster {
     fn published(&self) -> ClusterMap {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::Published(tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// Promotes a member of each PG of `pool` whose copies are lost (D359).
+    fn promote(
+        &self,
+        pool: u32,
+        device: Option<u32>,
+        dry: bool,
+    ) -> Result<Vec<hyperstor_meta::Promotion>, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::Promote(pool, device, dry, tx))
+                .is_ok()
+        );
         rx.recv().unwrap()
     }
 
@@ -1322,6 +1356,123 @@ fn a_node_returns_with_stale_data_and_is_refilled() {
         .flat_map(|v| (0..8u64).map(move |c| (v, c)))
         .collect();
     copies_agree(&settled, devs, &chunks);
+}
+
+/// D359: when every copy of a PG that has its writes is down for good, a
+/// returning member of its up set is promoted and serves the copy it
+/// holds; a member holding nothing is never promoted, and nothing is
+/// promoted while an acting member lives.
+#[test]
+fn a_pg_whose_copies_are_lost_serves_the_member_promoted() {
+    let mut c = Cluster::start_full(
+        3,
+        1,
+        LEASE,
+        DOWN_AFTER,
+        std::time::Duration::ZERO,
+        std::time::Duration::ZERO,
+        // Nothing marked out: the members stay in the up sets.
+        std::time::Duration::from_secs(600),
+    );
+    let meta = c.meta_addr;
+    let v1 = pattern(31, 8 * CHUNK as usize);
+    let v1c = v1.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 5).await.unwrap();
+            cl.write(POOL, 1, 0, v1c).await.unwrap();
+        })
+    })
+    .join()
+    .unwrap();
+    assert!(
+        c.promote(POOL, None, true).unwrap().is_empty(),
+        "every PG has its copies"
+    );
+    // Nodes 1 and 2 go, so node 0 alone acts for each PG; then node 0.
+    let down = |c: &Cluster, n: u32| {
+        let t = std::time::Instant::now();
+        while c.published().nodes[&n].up {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(20),
+                "node {n} down"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    for n in [1, 2] {
+        c.kill(n);
+        down(&c, n as u32);
+    }
+    c.kill(0);
+    down(&c, 0);
+    let map = c.published();
+    assert!(
+        map.pgs
+            .iter()
+            .all(|((p, _), i)| *p != POOL || i.acting == vec![0])
+    );
+    // Node 1 returns with the copies it had: it is backfilled from no one.
+    c.restart(1);
+    let t = std::time::Instant::now();
+    while !c.published().nodes[&1].up {
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(20),
+            "node 1 up"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let used: std::collections::BTreeSet<u32> = (0..8u64)
+        .map(|ch| pg_of(1, ch, map.pools[&POOL].pg_count))
+        .collect();
+    let dry = c.promote(POOL, None, true).unwrap();
+    assert_eq!(dry.len(), map.pools[&POOL].pg_count as usize, "every PG");
+    for p in &dry {
+        assert_eq!(p.candidates.len(), 1, "{p:?}");
+        if used.contains(&p.pg) {
+            assert_eq!(p.device, Ok(1000), "{p:?}");
+            assert!(p.candidates[0].1.unwrap() > 0);
+        } else {
+            // Nothing there: promoting it would serve zeros.
+            assert_eq!(p.candidates[0].1, Some(0), "{p:?}");
+            assert!(p.device.is_err(), "{p:?}");
+        }
+    }
+    let acting = |m: &ClusterMap| -> Vec<Vec<u32>> {
+        m.pgs
+            .iter()
+            .filter(|((p, _), _)| *p == POOL)
+            .map(|(_, i)| i.acting.clone())
+            .collect()
+    };
+    assert_eq!(
+        acting(&c.published()),
+        acting(&map),
+        "a dry run changes nothing"
+    );
+    let named = c.promote(POOL, Some(2000), false).unwrap();
+    assert!(
+        named.iter().all(|p| p.device.is_err()),
+        "device 2000 is down"
+    );
+    let done = c.promote(POOL, None, false).unwrap();
+    assert_eq!(done.iter().filter(|p| p.device.is_ok()).count(), used.len());
+    let map = c.published();
+    for pg in &used {
+        assert_eq!(map.pgs[&(POOL, *pg)].acting, vec![1000]);
+    }
+    // The promoted copies serve what was written.
+    let v1r = v1.clone();
+    std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 6).await.unwrap();
+            assert!(cl.read(POOL, 1, 0, v1r.len() as u64).await.unwrap() == v1r);
+        })
+    })
+    .join()
+    .unwrap();
+    c.assert_alive();
+    c.stop();
 }
 
 /// Delta recovery (09-replication.md §8.5): a node that returns after a short

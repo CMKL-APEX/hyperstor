@@ -25,6 +25,34 @@
 If every copy of a PG is down, the PG stays down, and requests for its
 data fail until one of its nodes returns. It is never reset to empty.
 
+### When the last copies won't return
+
+A pool whose `min` is 1 takes writes on one copy. If that copy's node
+then fails for good, its PG's other members (in its up set, being
+backfilled) hold older copies, and the PG stays down. As a last resort,
+`hyperstorctl pg promote` makes one of them the PG's only copy, so it
+serves again; the others are backfilled from it.
+
+**It gives up data:** whatever the lost copies acknowledged after the
+promoted member last had every write. A volume then holds that PG's data
+from earlier than the rest of the volume, which is not the same as a
+crash at one moment: check the filesystems on it. Bring the lost node
+back instead if you can, and keep its storage node stopped after a
+promotion (its copies would be deleted as strays once it rejoins).
+
+```
+hyperstorctl pg promote --pool 3 --dry-run       # each PG, what each member holds
+hyperstorctl pg promote --pool 3 --force         # promote them
+hyperstorctl pg promote --pool 3 --pg 17 --device 3001 --force
+```
+
+With nothing named, each PG takes the only member that holds anything,
+or the first of those holding the same objects. A PG is refused when its
+members hold different copies (nothing records which is newer: name one
+with `--device`, usually the one holding most objects), when a member
+doesn't answer, and when none holds anything. Promoting needs step-up
+through hyperstor-mgmt and is audited.
+
 ## A storage node returns
 
 When the node starts again and sends heartbeats, the map service marks it
