@@ -84,6 +84,63 @@ const RETRIES: usize = 20;
 /// (D296).
 const BUSY_WAIT: Duration = Duration::from_secs(30);
 
+/// How long a connect to a map service member may take: well under the
+/// leader's liveness timeout (0.8 s, D48), so a storage node whose
+/// heartbeat tries a member whose host is gone still reaches another in
+/// time (#421). A member's connect is answered in a round trip.
+pub const MEMBER_CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+
+/// A member that didn't answer is skipped for this long, doubled for each
+/// failure in a row up to [`MEMBER_BACKOFF_MAX`] (#421).
+const MEMBER_BACKOFF: Duration = Duration::from_secs(1);
+const MEMBER_BACKOFF_MAX: Duration = Duration::from_secs(30);
+
+/// What a client knows of one map service member's answers.
+#[derive(Debug, Clone, Copy, Default)]
+struct MemberHealth {
+    /// Failures in a row since it last answered.
+    failures: u32,
+    /// Skipped until then, unless no member is left to try.
+    skip_until: Option<std::time::Instant>,
+    /// When it last answered.
+    answered: Option<std::time::Instant>,
+}
+
+/// How long a member is skipped after `failures` (at least 1) in a row.
+fn member_backoff(failures: u32) -> Duration {
+    MEMBER_BACKOFF
+        .saturating_mul(1 << failures.saturating_sub(1).min(5))
+        .min(MEMBER_BACKOFF_MAX)
+}
+
+/// Which of `members` to try, starting at `from`: the first not backing
+/// off; if every one is, the one that answered last (a member whose host
+/// is gone never has), else `from`.
+fn pick_member(
+    members: &[SocketAddr],
+    from: usize,
+    health: &HashMap<SocketAddr, MemberHealth>,
+    now: std::time::Instant,
+) -> usize {
+    let n = members.len();
+    let skipped = |a: &SocketAddr| {
+        health
+            .get(a)
+            .and_then(|h| h.skip_until)
+            .is_some_and(|t| t > now)
+    };
+    if let Some(i) = (0..n)
+        .map(|k| (from + k) % n)
+        .find(|&i| !skipped(&members[i]))
+    {
+        return i;
+    }
+    (0..n)
+        .filter_map(|i| health.get(&members[i])?.answered.map(|t| (t, i)))
+        .max()
+        .map_or(from % n, |(_, i)| i)
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ClientError {
     #[error("rpc: {0}")]
@@ -180,6 +237,9 @@ pub struct Client {
     members: RefCell<Vec<SocketAddr>>,
     /// The member believed to lead, an index into `members`.
     leader: std::cell::Cell<usize>,
+    /// Each member's recent answers: one that doesn't answer is skipped
+    /// for a while (#421).
+    member_health: RefCell<HashMap<SocketAddr, MemberHealth>>,
     map: RefCell<Rc<ClusterMap>>,
     conns: rpc::Pool,
     /// Volumes attached through this client, whose leases it renews
@@ -253,6 +313,7 @@ impl Client {
         let c = Rc::new(Client {
             members: RefCell::new(members),
             leader: std::cell::Cell::new(0),
+            member_health: RefCell::new(HashMap::new()),
             map: RefCell::new(Rc::new(ClusterMap::default())),
             conns: Default::default(),
             attached: RefCell::new(HashMap::new()),
@@ -334,16 +395,53 @@ impl Client {
         }
     }
 
-    /// The member requests go to first.
+    /// The member requests go to first: the one believed to lead, unless
+    /// it is backing off after failing to answer (#421).
     fn member(&self) -> SocketAddr {
         let m = self.members.borrow();
-        m[self.leader.get() % m.len()]
+        let i = pick_member(
+            &m,
+            self.leader.get(),
+            &self.member_health.borrow(),
+            std::time::Instant::now(),
+        );
+        self.leader.set(i);
+        m[i]
     }
 
     /// Try the next member next time (this one didn't answer).
     fn next_member(&self) {
         let n = self.members.borrow().len();
         self.leader.set((self.leader.get() + 1) % n);
+    }
+
+    /// Member `addr` answered: it is tried again at once.
+    fn member_answered(&self, addr: SocketAddr) {
+        let mut h = self.member_health.borrow_mut();
+        let e = h.entry(addr).or_default();
+        *e = MemberHealth {
+            failures: 0,
+            skip_until: None,
+            answered: Some(std::time::Instant::now()),
+        };
+    }
+
+    /// Member `addr` didn't answer (no connection, or none in time): it is
+    /// skipped for a while, longer each time in a row, and the next tried.
+    fn member_failed(&self, addr: SocketAddr) {
+        {
+            let mut h = self.member_health.borrow_mut();
+            let e = h.entry(addr).or_default();
+            e.failures = e.failures.saturating_add(1);
+            e.skip_until = Some(std::time::Instant::now() + member_backoff(e.failures));
+        }
+        self.next_member();
+    }
+
+    /// A connection to map service member `addr`, whose connect gives up
+    /// after [`MEMBER_CONNECT_TIMEOUT`].
+    async fn member_conn(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
+        self.conn_within(addr, MEMBER_CONNECT_TIMEOUT).await
     }
 
     /// Fetches the map if the service has a newer one. Any member serves
@@ -355,9 +453,10 @@ impl Client {
         let mut reply = None;
         for _ in 0..tries {
             let addr = self.member();
-            match self.conn(addr).await {
+            match self.member_conn(addr).await {
                 Ok(conn) => match conn.call(&Msg::GetMap { have_epoch: have }, &[]).await {
                     Ok((m, _)) => {
+                        self.member_answered(addr);
                         reply = Some(m);
                         break;
                     }
@@ -365,7 +464,7 @@ impl Client {
                 },
                 Err(e) => last = Some(e),
             }
-            self.next_member();
+            self.member_failed(addr);
         }
         let Some(msg) = reply else {
             return Err(last.expect("at least one member"));
@@ -405,7 +504,7 @@ impl Client {
         let mut last = None;
         for _ in 0..tries {
             let addr = self.member();
-            let reply = match self.conn(addr).await {
+            let reply = match self.member_conn(addr).await {
                 // A member that doesn't answer is let go: the next is tried.
                 Ok(conn) => conn
                     .call_within(msg, payload, rpc::CALL_TIMEOUT)
@@ -413,6 +512,9 @@ impl Client {
                     .map_err(ClientError::Rpc),
                 Err(e) => Err(e),
             };
+            if reply.is_ok() {
+                self.member_answered(addr);
+            }
             match reply {
                 Ok((
                     Msg::Error {
@@ -438,7 +540,7 @@ impl Client {
                 }
                 Ok(r) => return Ok(r),
                 Err(e) => {
-                    self.next_member();
+                    self.member_failed(addr);
                     last = Some(e);
                 }
             }
@@ -446,8 +548,13 @@ impl Client {
         Err(last.expect("at least one try"))
     }
 
-    /// Send leader-only requests to `leader` from now on.
+    /// Send leader-only requests to `leader` from now on: a member that
+    /// answers names it, so it is tried even while backing off (a leader
+    /// restarted moments ago).
     fn follow(&self, leader: SocketAddr) {
+        if let Some(h) = self.member_health.borrow_mut().get_mut(&leader) {
+            h.skip_until = None;
+        }
         let mut m = self.members.borrow_mut();
         let i = match m.iter().position(|a| *a == leader) {
             Some(i) => i,
@@ -462,6 +569,16 @@ impl Client {
     /// A connection to `addr`, opened (with `Hello`) if needed; callers at
     /// once share one connect (I184).
     pub async fn conn(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
+        self.conn_within(addr, rpc::CONNECT_TIMEOUT).await
+    }
+
+    /// [`Self::conn`], a new connection's connect giving up after
+    /// `connect_limit`.
+    async fn conn_within(
+        &self,
+        addr: SocketAddr,
+        connect_limit: Duration,
+    ) -> Result<Conn, ClientError> {
         let hello = Msg::Hello {
             min_version: hyperstor_proto::OLDEST_VERSION,
             max_version: VERSION,
@@ -472,7 +589,7 @@ impl Client {
         let c = self
             .conns
             .get_with(addr, |addr| async move {
-                let c = Conn::connect(addr).await?;
+                let c = Conn::connect_within(addr, connect_limit).await?;
                 let (ok, _) = c.call_within(&hello, &[], rpc::CALL_TIMEOUT).await?;
                 if let Msg::HelloOk { version, .. } = ok {
                     c.set_version(version);
@@ -1114,5 +1231,74 @@ impl Client {
                 "unexpected {m:?}"
             )))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn addrs(n: u16) -> Vec<SocketAddr> {
+        (0..n)
+            .map(|i| SocketAddr::from(([127, 0, 0, 1], 9000 + i)))
+            .collect()
+    }
+
+    /// A member backing off is skipped: the next not backing off is
+    /// tried, wrapping around the list (#421).
+    #[test]
+    fn a_member_backing_off_is_skipped() {
+        let m = addrs(3);
+        let now = Instant::now();
+        let mut h = HashMap::new();
+        assert_eq!(pick_member(&m, 0, &h, now), 0);
+        h.insert(
+            m[0],
+            MemberHealth {
+                failures: 1,
+                skip_until: Some(now + Duration::from_secs(1)),
+                answered: None,
+            },
+        );
+        assert_eq!(pick_member(&m, 0, &h, now), 1);
+        h.insert(m[2], h[&m[0]]);
+        assert_eq!(pick_member(&m, 2, &h, now), 1);
+        // Its backoff over, it is tried again.
+        assert_eq!(pick_member(&m, 0, &h, now + Duration::from_secs(2)), 0);
+    }
+
+    /// Every member backing off: the one that answered last, never one
+    /// that hasn't answered at all (a gone host first in `--meta`); with
+    /// none ever answered, the current one.
+    #[test]
+    fn with_every_member_backing_off_the_last_to_answer_is_tried() {
+        let m = addrs(3);
+        let now = Instant::now();
+        let later = Some(now + Duration::from_secs(5));
+        let mut h: HashMap<SocketAddr, MemberHealth> = m
+            .iter()
+            .map(|a| {
+                (
+                    *a,
+                    MemberHealth {
+                        failures: 2,
+                        skip_until: later,
+                        answered: None,
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(pick_member(&m, 1, &h, now), 1);
+        h.get_mut(&m[2]).unwrap().answered = Some(now - Duration::from_secs(3));
+        h.get_mut(&m[1]).unwrap().answered = Some(now - Duration::from_secs(1));
+        assert_eq!(pick_member(&m, 0, &h, now), 1);
+    }
+
+    /// The backoff doubles with each failure in a row, up to its cap.
+    #[test]
+    fn a_member_s_backoff_doubles_to_its_cap() {
+        let waits: Vec<u64> = (1..=8).map(|f| member_backoff(f).as_secs()).collect();
+        assert_eq!(waits, [1, 2, 4, 8, 16, 30, 30, 30]);
     }
 }

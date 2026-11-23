@@ -36,7 +36,11 @@ that no single node sees every change (D28):
   a change as one write set of the head and the PG rows that changed.
   Members talk Raft over TCP with mutual TLS; nodes and clients follow
   the leader by redirect (D72), and a new leader waits out the old
-  leases before it changes roles (D73).
+  leases before it changes roles (D73). A member is connected to within
+  300 ms, and one that doesn't answer is skipped for 1 s, doubling to
+  30 s; with every member skipped, the one that answered last is tried
+  (I436, #421): a member whose host is gone never holds a heartbeat past
+  the liveness timeout.
 - **The map** is all of these together, with a `map_epoch` that every
   change bumps. Daemons and clients hold the map and follow it by a
   watch stream of deltas. Every request carries the `map_epoch` its

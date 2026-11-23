@@ -931,3 +931,45 @@ fn a_token_waits_for_the_first_map() {
         "made in {took:?}, before the second member started"
     );
 }
+
+/// A map service member whose host is gone, first in a storage node's
+/// `--meta` (#421): restarting the map service makes each node's
+/// heartbeat look for another member, and none may wait on the gone one
+/// past the leader's liveness timeout (D48), so no node is marked down.
+#[test]
+fn a_gone_member_in_meta_marks_no_node_down() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut c = Cluster::all_in_one("gone-member", 2);
+    let hole = Blackhole::new();
+    for n in 0..2 {
+        let env = c.root.join(format!("etc/hyperstor/node-{n}.env"));
+        let text = std::fs::read_to_string(&env).unwrap();
+        let from = format!("--meta {}", c.map);
+        assert!(text.contains(&from), "{text}");
+        let to = format!("--meta {},{}", hole.addr, c.map);
+        std::fs::write(&env, text.replace(&from, &to)).unwrap();
+        c.kill_node(n);
+        c.start_node(n);
+    }
+    c.ctl(&["status", "--wait", "30"]).ok();
+    for round in 1..=3 {
+        c.stop_meta();
+        c.start_meta();
+        c.meta_serving();
+        c.ctl(&["status", "--wait", "30"]).ok();
+        // Heartbeats every 100 ms: a node sent to the gone member would
+        // miss the leader's 0.8 s within a few seconds.
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        let log = c.meta_log();
+        let downs: Vec<&str> = log
+            .lines()
+            .filter(|l| l.starts_with("hyperstor-meta: node ") && l.contains(" down ("))
+            .collect();
+        assert!(
+            downs.is_empty(),
+            "restart {round}: {downs:#?}\n--- node 0:\n{}\n--- node 1:\n{}",
+            c.node_log(0),
+            c.node_log(1)
+        );
+    }
+}
