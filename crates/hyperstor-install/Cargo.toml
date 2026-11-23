@@ -8,11 +8,11 @@ repository.workspace = true
 
 [dependencies]
 # The host's names and addresses for mgmt's web certificate (D108).
-glidex-tls = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0" }
+glidex-tls = { workspace = true }
 hyperstor-engine = { path = "../hyperstor-engine" }
 # The host's ports, to check routing by source for endpoints (D207, G47).
 hyperstor-fabric = { path = "../hyperstor-fabric" }
-glidex-topology = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0" }
+glidex-topology = { workspace = true }
 hyperstor-meta = { path = "../hyperstor-meta" }
 hyperstor-pki = { path = "../hyperstor-pki" }
 # Joining and renewing over the cluster API (spec/19-administration.md §23.4.2).
