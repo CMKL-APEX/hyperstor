@@ -1037,6 +1037,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetFullRatios", "full-ratios"),
     ("ClusterService.AddDevice", "device add"),
     ("ClusterService.RemoveDevice", "device remove"),
+    ("ClusterService.PromotePgs", "pg promote"),
     ("ClusterService.SetDeviceClass", "device class"),
     ("ClusterService.UpgradeDevices", "device upgrade"),
     ("ClusterService.SetEndpoints", "device endpoints"),
@@ -1822,6 +1823,67 @@ pub fn ops_text(ops: &[pb::Operation]) -> String {
             // Empty for the cluster's own (D283).
             dash(&op.realm),
             op.message
+        );
+    }
+    o
+}
+
+/// What `pg promote` did (D359), or with `dry` would do: each PG, what
+/// each live member of its up set holds, and the member promoted or why
+/// none is.
+pub fn promotions_text(pool: u32, dry: bool, r: &pb::PromotePgsResponse) -> String {
+    let mut o = String::new();
+    if r.pgs.is_empty() {
+        let _ = writeln!(o, "pool {pool} has no PG whose copies are lost");
+        return o;
+    }
+    let _ = writeln!(
+        o,
+        "{:<10} {:<36} {:>7}  PROMOTED",
+        "PG", "MEMBERS (OBJECTS)", "DIFFER"
+    );
+    let mut n = 0;
+    for p in &r.pgs {
+        let members: Vec<String> = p
+            .candidates
+            .iter()
+            .map(|c| match c.objects {
+                Some(k) => format!("{} ({k})", c.device),
+                None => format!("{} (?)", c.device),
+            })
+            .collect();
+        let members = if members.is_empty() {
+            "none live".to_string()
+        } else {
+            members.join(", ")
+        };
+        let what = match p.device {
+            Some(d) => {
+                n += 1;
+                format!("device {d}")
+            }
+            None => format!("no: {}", p.refused),
+        };
+        let _ = writeln!(
+            o,
+            "{:<10} {:<36} {:>7}  {what}",
+            format!("{pool}.{}", p.pg),
+            members,
+            p.differ
+        );
+    }
+    if dry {
+        let _ = writeln!(
+            o,
+            "dry run: {n} of {} PG(s) would be promoted; nothing changed",
+            r.pgs.len()
+        );
+    } else {
+        let _ = writeln!(
+            o,
+            "{n} of {} PG(s) promoted (map epoch {}); what only their lost copies held is given up",
+            r.pgs.len(),
+            r.map_epoch
         );
     }
     o

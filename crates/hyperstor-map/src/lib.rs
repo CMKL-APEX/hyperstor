@@ -1597,6 +1597,65 @@ impl ClusterMap {
         true
     }
 
+    /// Whether replicated PG `pool`.`pg` has lost every copy that holds
+    /// its acknowledged writes: it has acting members, and none is live.
+    /// It stays down until one returns (`recompute`), unless promoted.
+    pub fn copies_lost(&self, pool: u32, pg: u32) -> bool {
+        self.pools
+            .get(&pool)
+            .is_some_and(|p| p.kind == PoolKind::Replicated)
+            && self.pgs.get(&(pool, pg)).is_some_and(|i| {
+                i.acting.iter().any(|d| *d != NO_DEVICE) && !i.acting.iter().any(|d| self.live(*d))
+            })
+    }
+
+    /// The live members of `up` that could take over a PG whose copies
+    /// are lost ([`Self::copies_lost`]), in `up`'s order.
+    pub fn promotable(&self, pool: u32, pg: u32) -> Vec<u32> {
+        self.pgs.get(&(pool, pg)).map_or(Vec::new(), |i| {
+            i.up.iter()
+                .copied()
+                .filter(|d| self.live(*d) && !i.acting.contains(d))
+                .collect()
+        })
+    }
+
+    /// Makes `device` the only acting member of a PG whose copies are lost
+    /// (D359), if the PG is still at `pg_epoch` and `device` is one of
+    /// [`Self::promotable`]; the rest of `up` is backfilled from it. What
+    /// the lost copies acknowledged since `device` last had every write is
+    /// given up. Bumps the epoch.
+    pub fn promote(
+        &mut self,
+        pool: u32,
+        pg: u32,
+        pg_epoch: u64,
+        device: u32,
+    ) -> Result<(), String> {
+        let Some(info) = self.pgs.get(&(pool, pg)) else {
+            return Err(format!("no PG {pool}.{pg}"));
+        };
+        if info.epoch != pg_epoch {
+            return Err(format!("PG {pool}.{pg} changed (epoch {pg_epoch} gone)"));
+        }
+        if !self.copies_lost(pool, pg) {
+            return Err(format!(
+                "PG {pool}.{pg} has a live acting member, or isn't replicated: nothing to promote"
+            ));
+        }
+        if !self.promotable(pool, pg).contains(&device) {
+            return Err(format!(
+                "device {device} isn't a live member of PG {pool}.{pg}'s up set"
+            ));
+        }
+        let mut info = info.clone();
+        info.acting = vec![device];
+        self.epoch += 1;
+        info.epoch = self.epoch;
+        self.pgs.insert((pool, pg), info);
+        Ok(())
+    }
+
     pub fn blocked(&self, instance: u64) -> bool {
         !self.blocklist.is_empty() && self.blocklist.contains_key(&instance)
     }
@@ -3759,6 +3818,52 @@ mod tests {
         let e = m.pg(1, 5).unwrap().epoch;
         assert!(m.backfill_done(1, 5, e, slow));
         assert_eq!(m.pg(1, 5).unwrap().acting, before.acting);
+    }
+
+    #[test]
+    fn a_pg_whose_copies_are_lost_is_promoted_to_a_live_member() {
+        let mut m = map();
+        let before = m.pg(1, 5).unwrap().clone();
+        let node = |m: &ClusterMap, d: u32| m.devices[&d].node;
+        let (a, b, c) = (before.acting[0], before.acting[1], before.acting[2]);
+        // b and c drop out, so a alone takes writes; b comes back and is
+        // being backfilled when a goes down too.
+        for d in [b, c] {
+            let n = node(&m, d);
+            m.nodes.get_mut(&n).unwrap().up = false;
+        }
+        m.recompute();
+        assert_eq!(m.pg(1, 5).unwrap().acting, vec![a]);
+        let nb = node(&m, b);
+        m.nodes.get_mut(&nb).unwrap().up = true;
+        m.recompute();
+        assert!(!m.copies_lost(1, 5), "a still serves");
+        let e = m.pg(1, 5).unwrap().epoch;
+        assert!(m.promote(1, 5, e, b).is_err(), "a is live");
+        let na = node(&m, a);
+        m.nodes.get_mut(&na).unwrap().up = false;
+        m.recompute();
+        // Every copy that has every write is down: the PG stays as it was.
+        let pg = m.pg(1, 5).unwrap().clone();
+        assert_eq!(pg.acting, vec![a]);
+        assert!(m.copies_lost(1, 5));
+        assert_eq!(m.promotable(1, 5), vec![b]);
+        assert!(m.promote(1, 5, pg.epoch + 1, b).is_err(), "stale epoch");
+        assert!(m.promote(1, 5, pg.epoch, c).is_err(), "c is down");
+        assert!(m.promote(1, 5, pg.epoch, a).is_err(), "a is down");
+        let others = m.epoch;
+        m.promote(1, 5, pg.epoch, b).unwrap();
+        let pg = m.pg(1, 5).unwrap().clone();
+        assert_eq!(
+            (pg.acting.clone(), pg.epoch, m.epoch),
+            (vec![b], others + 1, others + 1)
+        );
+        assert!(!m.copies_lost(1, 5));
+        // Recomputing keeps b, and a, back, is backfilled from it.
+        m.nodes.get_mut(&na).unwrap().up = true;
+        m.recompute();
+        assert_eq!(m.pg(1, 5).unwrap().acting, vec![b]);
+        assert!(m.pg(1, 5).unwrap().backfilling().any(|d| d == a));
     }
 
     #[test]

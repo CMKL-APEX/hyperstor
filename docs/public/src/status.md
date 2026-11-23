@@ -101,6 +101,7 @@ covered by tests that run on every change.
 | Peering and delta recovery, by content digests instead of a PG log | Done |
 | Reads: under map leases (no replica read leases), served from a member when the primary's copy fails its checksums | Done |
 | Scrub | Done |
+| Promoting a live member of a PG whose copies are lost | Done |
 | Blocklist and forced takeovers | Done |
 | Down and out, and failed devices | Done |
 | Slow and unreachable replicas leave a PG | Done |

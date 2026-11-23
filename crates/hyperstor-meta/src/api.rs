@@ -2891,6 +2891,100 @@ impl ClusterService for Api {
         }
     }
 
+    async fn promote_pgs(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::PromotePgsRequest>,
+    ) -> ServiceResult<pb::PromotePgsResponse> {
+        let (pool, dry_run, device) = (req.pool, req.dry_run, req.device);
+        let pgs: Vec<u32> = req.pgs.to_vec();
+        let target = format!(
+            "pool {pool} PGs {}{}",
+            if pgs.is_empty() {
+                "whose copies are lost".to_string()
+            } else {
+                format!("{pgs:?}")
+            },
+            device.map_or(String::new(), |d| format!(" to device {d}"))
+        );
+        // A dry run only reads.
+        let who = self.authorize(&ctx, "PromotePgs", &target, !dry_run)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::PromotePgs {
+                pool,
+                pgs,
+                device,
+                dry_run,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        if !dry_run {
+            audit(
+                &who,
+                "PromotePgs",
+                &target,
+                &match &r {
+                    Some(Ok((epoch, p))) => {
+                        let done: Vec<String> = p
+                            .iter()
+                            .filter_map(|x| {
+                                x.device.as_ref().ok().map(|d| format!("{}->{d}", x.pg))
+                            })
+                            .collect();
+                        format!(
+                            "ok, {} of {} promoted [{}], map epoch {epoch}",
+                            done.len(),
+                            p.len(),
+                            done.join(" ")
+                        )
+                    }
+                    Some(Err(e)) => format!("failed: {e}"),
+                    None => "failed: map service stopped".into(),
+                },
+            );
+        }
+        let (map_epoch, promoted) = match r {
+            Some(Ok(r)) => r,
+            Some(Err(e)) if e.starts_with("no pool") => {
+                return Err(meta_error(e, ConnectError::not_found, "not_found"));
+            }
+            Some(Err(e)) => {
+                return Err(meta_error(
+                    e,
+                    ConnectError::failed_precondition,
+                    "pg_conflict",
+                ));
+            }
+            None => return Err(ConnectError::unavailable("map service stopped")),
+        };
+        Ok(pb::PromotePgsResponse {
+            map_epoch,
+            pgs: promoted
+                .into_iter()
+                .map(|p| pb::PgPromotion {
+                    pg: p.pg,
+                    candidates: p
+                        .candidates
+                        .iter()
+                        .map(|&(device, objects)| pb::PromotionCandidate {
+                            device,
+                            objects: objects.map(|n| n as u64),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    differ: p.differ as u64,
+                    device: p.device.as_ref().ok().copied(),
+                    refused: p.device.err().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn remove_device(
         &self,
         ctx: RequestContext,

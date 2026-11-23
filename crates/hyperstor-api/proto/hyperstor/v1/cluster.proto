@@ -66,6 +66,16 @@ service ClusterService {
   // with step-up.
   rpc RemoveDevice(RemoveDeviceRequest) returns (RemoveDeviceResponse);
 
+  // Promotes a live member of each replicated PG whose copies are lost
+  // (every acting member down) to hold it alone, so it serves again
+  // (04-decisions.md D359). What the lost copies acknowledged since that
+  // member last had every write is given up. The member is the one named,
+  // or the only one holding anything, or the first of those holding the
+  // same; refused for a PG whose members hold different copies, or none.
+  // dry_run changes nothing and says what each member holds. Write, with
+  // step-up.
+  rpc PromotePgs(PromotePgsRequest) returns (PromotePgsResponse);
+
   // Sets a device's class (24-pools-and-devices.md §27.2.4), or lets it
   // follow the device's kind again (04-decisions.md D178). A class holds
   // devices of one kind, and a class named after a kind only that kind.
@@ -1091,6 +1101,39 @@ message SetDeviceClassResponse {
   // The working map's epoch after the change; published once fenced.
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   string class = 2;
+}
+
+message PromotePgsRequest {
+  uint32 pool = 1;
+  // The PGs to promote; empty: every PG of the pool whose copies are lost.
+  repeated uint32 pgs = 2;
+  // The member to promote; absent: chosen by what each holds.
+  optional uint32 device = 3;
+  bool dry_run = 4 [json_name = "dry_run"];
+}
+
+message PromotePgsResponse {
+  // The map's epoch once published with the promotions.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  repeated PgPromotion pgs = 2;
+}
+
+message PgPromotion {
+  uint32 pg = 1;
+  // Each live member of the PG's up set and what it holds.
+  repeated PromotionCandidate candidates = 2;
+  // Objects the members holding some disagree on.
+  uint64 differ = 3;
+  // The member promoted (or, dry, to be); absent with `refused`.
+  optional uint32 device = 4;
+  // Why no member is, if none is.
+  string refused = 5;
+}
+
+message PromotionCandidate {
+  uint32 device = 1;
+  // Its objects of the PG; absent: it didn't answer.
+  optional uint64 objects = 2;
 }
 
 message RemoveDeviceRequest {
