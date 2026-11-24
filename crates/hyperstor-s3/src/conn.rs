@@ -26,8 +26,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::task::{Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+// tokio's clock: std's outside tests, which pause it to run the limits
+// in virtual time.
+use tokio::time::Instant;
 
 /// How long a connection may take over each part.
 #[derive(Clone, Copy, Debug)]
@@ -302,7 +305,10 @@ mod tests {
         String::from_utf8_lossy(&out).into_owned()
     }
 
-    #[tokio::test]
+    // On tokio's paused clock: sleeps and the watchdog's ticks take no real
+    // time and end exactly when due, so the limits are measured exactly
+    // however loaded the host is (issue #426).
+    #[tokio::test(start_paused = true)]
     async fn a_connection_that_sends_nothing_is_closed_at_the_head_limit() {
         let (_c, task) = serve(Duration::ZERO);
         let (took, why) = task.await.unwrap();
@@ -310,7 +316,7 @@ mod tests {
         assert!(took >= L.head && took < L.idle, "{took:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn headers_trickled_in_are_cut_off_at_the_head_limit() {
         let (mut c, task) = serve(Duration::ZERO);
         // A request answered, so the connection is kept…
@@ -329,23 +335,25 @@ mod tests {
         assert!(t.elapsed() < L.idle * 2, "{:?}", t.elapsed());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_kept_connection_lasts_until_idle_and_serves_meanwhile() {
         let (mut c, task) = serve(Duration::ZERO);
         // Requests a head limit apart keep it open past the head limit.
+        let mut last = Instant::now();
         for _ in 0..3 {
             c.write_all(GET).await.unwrap();
             assert!(answer(&mut c).await.starts_with("HTTP/1.1 200"));
+            last = Instant::now();
             tokio::time::sleep(L.head + Duration::from_millis(100)).await;
         }
-        let t = Instant::now();
         let (_, why) = task.await.unwrap();
         assert_eq!(why, "idle");
-        let idle = t.elapsed() + L.head + Duration::from_millis(100);
-        assert!(idle >= L.idle, "{idle:?}");
+        // Measured from the last answer, not rebuilt from the sleep.
+        let idle = last.elapsed();
+        assert!(idle >= L.idle && idle < L.idle + L.head, "{idle:?}");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_request_being_served_is_never_cut_off() {
         // The answer takes longer than either limit.
         let (mut c, task) = serve(L.idle * 2);
