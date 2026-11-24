@@ -12,6 +12,8 @@
 //! provider, chosen explicitly so the choice doesn't depend on which
 //! other crates enable which provider.
 
+pub mod seal;
+
 use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose, SanType,

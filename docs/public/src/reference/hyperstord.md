@@ -3,7 +3,7 @@
 A storage node. See [Storage nodes](../admin-guide/storage-nodes.md).
 
 ```text
-usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--no-discard ID[,ID...]|all] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]
+usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--no-discard ID[,ID...]|all] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]] [--api ADDR[,ADDR...] --identity DIR]
 ```
 
 | Option | Default | Meaning |
@@ -21,6 +21,7 @@ usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard 
 | `--no-discard ID[,ID...]\|all` | none | Devices that don't discard the blocks they free, or `all`. Every other device tells its drive which blocks hold nothing (a deallocate, TRIM), or punches holes in its file, in batches after each checkpoint; that keeps an SSD's spare area and write amplification as they should be. Name a drive here if it handles discards slowly. Each `ID` must be one of this node's `--shard` devices |
 | `--endpoint DEV=ADDR` | none | Also serve device `DEV` on `IP:PORT`: one of its endpoints on another network, as the [cluster file](cluster-file.md#endpoint) lists it. Repeat for each endpoint. `DEV` must be one of this node's `--shard` devices |
 | `--networks NAME[,NAME...]` | none | The data networks this node reaches other storage nodes on, in order: a peer's endpoint on the first network it has one on, else its device's address. Without it, devices' addresses only |
+| `--api ADDR[,ADDR...]` `--identity DIR` | none | Fetch the cluster's sealing keys from the [cluster API](cluster-api.md) at these addresses, tried in turn, as the identity in `DIR`: `node.crt` and `node.key`, or on a map service member `api.crt` and `api.key`, with `root.crt`. The node asks at start and every 30 s, and keeps the keys it has when no member answers. Both options go together. Without them the node holds no sealing key and opens no sealed capability. `hyperstor-install` sets them on every host that has an identity |
 
 **Diagnostic build.** Built with `HYPERSTOR_DIAG=1 cargo build --release
 -p hyperstor-daemon`, a node also logs, to standard error (the journal),

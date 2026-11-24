@@ -113,6 +113,20 @@ service CaService {
   // that has none, such as one that joined before the key existed.
   // Map service members ("meta" certificates) only; audited.
   rpc GetClusterKey(GetClusterKeyRequest) returns (GetClusterKeyResponse);
+
+  // Makes a new sealing key (04-decisions.md D133, D363): from now it
+  // seals NFS stateids and dataset capabilities, the key before it
+  // still opens them, and any older one is dropped. Write, on the
+  // leader; audited.
+  rpc RotateSealingKey(RotateSealingKeyRequest) returns (RotateSealingKeyResponse);
+
+  // The sealing keys kept, oldest first, without their bytes. Read.
+  rpc ListSealingKeys(ListSealingKeysRequest) returns (ListSealingKeysResponse);
+
+  // The sealing keys with their bytes, oldest first, for whoever checks
+  // sealed statements: storage nodes ("node" certificates) only. The
+  // first call in a cluster makes the first key, on the leader.
+  rpc GetSealingKeys(GetSealingKeysRequest) returns (GetSealingKeysResponse);
 }
 
 // Backups of the map service's store (04-decisions.md D86).
@@ -828,6 +842,46 @@ message GetClusterKeyResponse {
   // In its file's form; failed_precondition (no_cluster_key) where the
   // member answering has none.
   string cluster_key = 1 [json_name = "cluster_key"];
+}
+
+// A sealing key, without its bytes.
+message SealingKey {
+  // What sealed statements name it by, 1 to 255.
+  uint32 id = 1;
+  // Which key it is of all the cluster ever made, from 1.
+  uint64 seq = 2;
+  uint64 created_unix = 3 [json_name = "created_unix"];
+  string created_by = 4 [json_name = "created_by"];
+  // Whether new statements are sealed under it: the newest.
+  bool current = 5;
+}
+
+message RotateSealingKeyRequest {}
+
+message RotateSealingKeyResponse {
+  // The keys valid now, oldest first: the new one last.
+  repeated SealingKey keys = 1;
+}
+
+message ListSealingKeysRequest {}
+
+message ListSealingKeysResponse {
+  repeated SealingKey keys = 1;
+}
+
+message GetSealingKeysRequest {}
+
+message SealingKeySecret {
+  uint32 id = 1;
+  uint64 seq = 2;
+  // 32 bytes.
+  bytes key = 3;
+}
+
+message GetSealingKeysResponse {
+  // Oldest first; the last seals. failed_precondition (no_cluster_key)
+  // where the member answering can't open them.
+  repeated SealingKeySecret keys = 1;
 }
 
 // Tenants and projects (20-tenants.md §24.9, 04-decisions.md D299–D301):

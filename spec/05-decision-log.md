@@ -1878,4 +1878,6 @@ the command should be `hsfs`, and whether it stripes across clusters.
 | 328 | `send` and `receive` as the interface to `hyperstor-sync`, files included (recommended) | Yes, after snapshots | D366 |
 | 329 | Part of HS14, capabilities first (recommended) | Yes | D368 |
 | 330 | The command's name: `hsfs` (the owner's suggestion; recommended over `zfs`, which OpenZFS owns on the same hosts), with `hyperstorctl dataset` as the same API | `hsfs` | D361 |
-| 331 | Striping across clusters: never one file over two clusters; stripes at the home, snapshot replicas elsewhere (recommended); or PGs across clusters, against D63 | Never across clusters | D367 |
+| 331 | Striping across clusters: never one file over two clusters; stripes at the home, snapshot replicas elsewhere (recommended); or PGs across clusters, against D63 | Never across clusters | D367 || 332 | How a bare-metal client mounts: FUSE over io_uring as the general mount, a preloaded library as an opt-in fast path for data-heavy jobs, pNFS where our daemon can't run (recommended); or a kernel module; or virtio-fs through VDUSE | FUSE, with interception beside it | D369 |
+| 333 | How storage nodes get the sealing keys: a cluster API client in `hyperstord` on a thread of its own (recommended); or pushed to each host by the installer | The API client | D370 |
+| 334 | Which requests need a capability: a per-pool flag, off by default (recommended); or every native client at once | The per-pool flag | D371 |

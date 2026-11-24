@@ -87,6 +87,9 @@ enum Need {
     S3,
     /// Map service members (`meta`) only: the cluster key (D162).
     Member,
+    /// Storage nodes (`node`) only: the sealing keys they check sealed
+    /// statements with (D133, D363).
+    Node,
 }
 
 pub use hyperstor_api::{REASON_DOMAIN, reason_of, with_reason};
@@ -584,6 +587,12 @@ impl Api {
                     Need::Mgmt => who.is_mgmt_service(),
                     Need::S3 => who.role == hyperstor_pki::Role::S3,
                     Need::Member => who.role == hyperstor_pki::Role::Meta,
+                    // A member already holds the cluster key that seals them, and
+                    // its storage node has no certificate of its own (D370).
+                    Need::Node => matches!(
+                        who.role,
+                        hyperstor_pki::Role::Node | hyperstor_pki::Role::Meta
+                    ),
                     Need::Identity | Need::Anyone => true,
                 };
                 if !allowed {
@@ -597,6 +606,7 @@ impl Api {
                                     Need::Write => "change the cluster",
                                     Need::S3 => "read S3's keys",
                                     Need::Member => "read the cluster key",
+                                    Need::Node => "read the sealing keys",
                                     _ => "read the cluster's status",
                                 }
                             )),

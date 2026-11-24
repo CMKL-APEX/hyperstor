@@ -24,6 +24,7 @@
 
 use super::{Api, Need, audit, meta_error, with_reason};
 use crate::Admin;
+use crate::sealkeys::{self, SealKeyRow};
 use crate::tokens::{Record, TokenError};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
@@ -738,6 +739,70 @@ impl TokenService for Api {
     }
 }
 
+/// "1st", "2nd", …, for the audit's line.
+fn ordinal(n: u64) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    };
+    format!("{n}{suffix}")
+}
+
+fn sealing_keys_pb(keys: &[SealKeyRow]) -> Vec<pb::SealingKey> {
+    let newest = keys.last().map(|k| k.seq);
+    keys.iter()
+        .map(|k| pb::SealingKey {
+            id: u32::from(k.id),
+            seq: k.seq,
+            created_unix: k.created_unix,
+            created_by: k.created_by.clone(),
+            current: Some(k.seq) == newest,
+            ..Default::default()
+        })
+        .collect()
+}
+
+impl Api {
+    /// Runs `f` on the replicated store off the API's thread.
+    async fn seal_rows<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&crate::store::Db) -> Result<T, TokenError> + Send + 'static,
+    ) -> Result<T, ConnectError> {
+        let db = self.s3_store()?;
+        match tokio::task::spawn_blocking(move || f(&db)).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(self
+                .store_error(e, "sealing keys are written by the leader")
+                .await),
+            Err(e) => Err(ConnectError::internal(e.to_string())),
+        }
+    }
+
+    /// Makes the next sealing key, sealed under the cluster key, and
+    /// writes it through the leader; the keys valid afterwards. A caller
+    /// that lost a race with another rotation is refused (`aborted`).
+    async fn new_sealing_key(&self, who: &str) -> Result<Vec<SealKeyRow>, ConnectError> {
+        let cluster_key = self.cluster_key()?;
+        let have = self.seal_rows(sealkeys::keys).await?;
+        let seq = have.last().map_or(1, |k| k.seq + 1);
+        let id = sealkeys::id_of(seq);
+        let key = hyperstor_pki::seal::SealingKey::generate(id).map_err(ConnectError::internal)?;
+        let row = SealKeyRow {
+            seq,
+            id,
+            created_unix: now_unix(),
+            created_by: who.to_string(),
+            sealed: cluster_key
+                .seal(&sealkeys::context(seq, id), key.bytes())
+                .map_err(ConnectError::internal)?,
+        };
+        self.seal_rows(move |db| sealkeys::add(db, &row)).await
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl CaService for Api {
     async fn get_cluster_key(
@@ -763,6 +828,91 @@ impl CaService for Api {
         audit(&who, "GetClusterKey", "cluster key", "ok");
         Ok(pb::GetClusterKeyResponse {
             cluster_key,
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn rotate_sealing_key(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::RotateSealingKeyRequest>,
+    ) -> ServiceResult<pb::RotateSealingKeyResponse> {
+        let who = self.authorize(&ctx, "RotateSealingKey", "sealing keys", true)?;
+        let r = self.new_sealing_key(&who).await;
+        // The audit names the key by its id, never its bytes.
+        let target = match &r {
+            Ok(keys) => match keys.last() {
+                Some(k) => format!("sealing key {} (the cluster's {})", k.id, ordinal(k.seq)),
+                None => "sealing keys".to_string(),
+            },
+            Err(_) => "sealing keys".to_string(),
+        };
+        let keys = Self::audited(&who, "RotateSealingKey", &target, r)?;
+        Ok(pb::RotateSealingKeyResponse {
+            keys: sealing_keys_pb(&keys),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn list_sealing_keys(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::ListSealingKeysRequest>,
+    ) -> ServiceResult<pb::ListSealingKeysResponse> {
+        self.authorize(&ctx, "ListSealingKeys", "sealing keys", false)?;
+        let keys = self.seal_rows(sealkeys::keys).await?;
+        Ok(pb::ListSealingKeysResponse {
+            keys: sealing_keys_pb(&keys),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn get_sealing_keys(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::GetSealingKeysRequest>,
+    ) -> ServiceResult<pb::GetSealingKeysResponse> {
+        // Every storage node asks, again and again: refusals are audited
+        // (by `authorize_as`), answers aren't, as for a gateway's keys.
+        let who = self.authorize_as(&ctx, "GetSealingKeys", "sealing keys", Need::Node)?;
+        let cluster_key = self.cluster_key()?;
+        let mut keys = self.seal_rows(sealkeys::keys).await?;
+        if keys.is_empty() {
+            // The cluster's first: made when the first node asks, so no
+            // installer or operator has to. Audited as the change it is.
+            let r = self.new_sealing_key(&who).await;
+            keys = Self::audited(&who, "RotateSealingKey", "sealing key 1 (the first)", r)?;
+        }
+        let mut out = Vec::with_capacity(keys.len());
+        for k in keys {
+            let Some(key) = cluster_key.open(&sealkeys::context(k.seq, k.id), &k.sealed) else {
+                // Sealed with another cluster key (a member that made its
+                // own): a node given some keys and not others would refuse
+                // what its peers accept, so none are served.
+                eprintln!(
+                    "hyperstor-meta: sealing key {} doesn't open with this member's cluster key",
+                    k.id
+                );
+                return Err(with_reason(
+                    ConnectError::failed_precondition(format!(
+                        "sealing key {} doesn't open with this member's cluster key",
+                        k.id
+                    )),
+                    "no_cluster_key",
+                ));
+            };
+            out.push(pb::SealingKeySecret {
+                id: u32::from(k.id),
+                seq: k.seq,
+                key,
+                ..Default::default()
+            });
+        }
+        Ok(pb::GetSealingKeysResponse {
+            keys: out,
             ..Default::default()
         }
         .into())

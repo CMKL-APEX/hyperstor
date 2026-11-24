@@ -1840,6 +1840,22 @@ fn plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
     p
 }
 
+/// The cluster API a storage node fetches the sealing keys from (D370):
+/// this host's own where it runs the map service, as the member; on a
+/// host that joined as a storage host, the one it joined through and then
+/// every other member's, as its node. None on a host with neither
+/// identity (installed from a cluster file alone), whose nodes then hold
+/// no sealing key.
+fn node_api(s: &Settings, p: &Plan) -> Option<String> {
+    if p.meta.is_some() && !p.api.is_empty() {
+        Some(p.api.clone())
+    } else if !s.join.is_empty() && s.role == "storage" {
+        Some(api_candidates(&s.join, &p.map, s.api_port).join(","))
+    } else {
+        None
+    }
+}
+
 /// The gateway's options (D233): the cluster API is this host's own where
 /// it runs the map service, else the one it joined through.
 fn s3_plan(s: &Settings, p: &Plan) -> S3Plan {
@@ -3643,6 +3659,9 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             .collect();
         if !node.networks.is_empty() {
             more.push(format!(" --networks {}", node.networks.join(",")));
+        }
+        if let Some(api) = node_api(s, p) {
+            more.push(format!(" --api {api} --identity /etc/hyperstor/pki"));
         }
         out.push((
             format!("/etc/hyperstor/node-{n}.env"),
@@ -6383,6 +6402,30 @@ mod tests {
             !f.iter()
                 .any(|x| x.0.ends_with("meta.env") || x.0.ends_with("node-1.env"))
         );
+        // Installed from the cluster file alone, the host has no identity
+        // for the cluster API: its node fetches no sealing keys (D370).
+        assert!(
+            !env.contains("--api") && !env.contains("--identity"),
+            "{env}"
+        );
+        // Joined with a token, it has its node's: the API it joined
+        // through first, then every member's.
+        let mut j = s.clone();
+        j.join = "10.0.0.9:8850".into();
+        j.map = "10.0.0.9:8849,10.0.0.8:8849".into();
+        j.address = "10.0.0.1".into();
+        let pj = plan(Path::new("/nonexistent"), &j, None);
+        let fj = files(&j, &pj);
+        let env = &fj
+            .iter()
+            .find(|x| x.0 == "/etc/hyperstor/node-0.env")
+            .unwrap()
+            .1;
+        assert!(
+            env.trim_end()
+                .ends_with("--api 10.0.0.9:8850,10.0.0.8:8850 --identity /etc/hyperstor/pki"),
+            "{env}"
+        );
         // The map service's host: its options and hyperstorctl's, no node.
         s.role = "meta".into();
         let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
@@ -6645,6 +6688,20 @@ mod tests {
         // Two nodes: two copies, writes go on with one.
         assert!(cluster.contains("size 2 min 1"));
         assert_eq!(f.iter().filter(|x| x.0.contains("/node-")).count(), 2);
+        // Each node fetches the sealing keys from this host's own cluster
+        // API, as the member (D370).
+        for n in 0..2 {
+            let env = &f
+                .iter()
+                .find(|x| x.0 == format!("/etc/hyperstor/node-{n}.env"))
+                .unwrap()
+                .1;
+            assert!(
+                env.trim_end()
+                    .ends_with("--api 127.0.0.1:8850 --identity /etc/hyperstor/pki"),
+                "{env}"
+            );
+        }
         let unit = &f
             .iter()
             .find(|x| x.0.ends_with("hyperstord@.service"))

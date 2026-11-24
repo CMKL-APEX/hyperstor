@@ -1091,6 +1091,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("CaService.RevokeCertificate", "cert revoke"),
     // A member without the cluster key asks another (D162).
     ("CaService.GetClusterKey", "hyperstor-install install"),
+    ("CaService.ListSealingKeys", "sealing-key list"),
+    ("CaService.RotateSealingKey", "sealing-key rotate"),
+    // Storage nodes fetch the keys they check sealed statements with
+    // (D133, D363); no command reads a key's bytes.
+    ("CaService.GetSealingKeys", "hyperstord"),
     ("NodeService.DrainNode", "drain"),
     ("MapService.GetMapBackup", "map backup"),
     ("MemberService.ListMembers", "member list"),
@@ -1362,6 +1367,44 @@ pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<St
         ));
     }
     Ok(l.api_address.clone())
+}
+
+/// `hyperstorctl sealing-key list`.
+pub fn sealing_keys_text(keys: &[pb::SealingKey]) -> String {
+    let mut o = String::new();
+    if keys.is_empty() {
+        o.push_str("no sealing key yet: the first is made when a storage node asks, or by `sealing-key rotate`\n");
+        return o;
+    }
+    let _ = writeln!(
+        o,
+        "{:<4} {:<6} {:<16}  {:<8} MADE BY",
+        "ID", "NUMBER", "MADE (UTC)", "STATE"
+    );
+    for k in keys {
+        let _ = writeln!(
+            o,
+            "{:<4} {:<6} {:<16}  {:<8} {}",
+            k.id,
+            k.seq,
+            utc(k.created_unix),
+            if k.current { "seals" } else { "opens" },
+            k.created_by
+        );
+    }
+    o
+}
+
+/// What `hyperstorctl sealing-key rotate` prints.
+pub fn sealing_rotated_text(keys: &[pb::SealingKey]) -> String {
+    match keys {
+        [] => "no sealing key\n".to_string(),
+        [new] => format!("sealing key {} made: the cluster's first\n", new.id),
+        [.., old, new] => format!(
+            "sealing key {} made: it seals from now; key {} still opens what it sealed, until the next rotation\n",
+            new.id, old.id
+        ),
+    }
 }
 
 /// `hyperstorctl cert list`.

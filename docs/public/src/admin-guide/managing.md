@@ -663,6 +663,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_discarded_bytes_total`, `hyperstor_discard_queued_bytes` | Freed space the device discarded (a deallocate on a drive, holes in a file), and freed space waiting for one: until the next checkpoint, then in batches. Right after a start, a device discards all its free space once. A device whose drive takes no discards logs `takes no discards` and stops; `hyperstord --no-discard` turns them off |
 | `hyperstor_checkpoint_damage_total` | Damaged checkpoint pages and directories the device's checkpoint scrub found and rewrote (see [Troubleshooting](troubleshooting.md)). Any rise means the device's media is failing somewhere |
 | `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
+| `hyperstor_sealing_keys` | Sealing keys the node holds (one per node, without a `device` label): 1, or 2 after a rotation. 0 means the cluster API hasn't answered the node since it started; absent on a node started without `--api` |
 
 Gauges are updated once a second. `GET /health` answers `ok` while the
 process runs. The port has no authentication: it only reads, but keep

@@ -258,3 +258,181 @@ fn failed_logins_are_paced_per_client_address() {
     // Another address: a right password still logs in.
     c.login("bob", None).unwrap();
 }
+
+/// The sealing keys' bytes as `dir`'s identity gets them from the API.
+fn sealing_keys_as(
+    c: &Cluster,
+    dir: &std::path::Path,
+) -> Result<Vec<(u8, u64, Vec<u8>)>, connectrpc::ConnectError> {
+    let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+    let tls =
+        hyperstor_pki::client_config(&read("admin.crt"), &read("admin.key"), &read("root.crt"))
+            .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let client = connectrpc::client::HttpClient::with_tls(std::sync::Arc::new(tls));
+        let config =
+            connectrpc::client::ClientConfig::new(format!("https://{}", c.api).parse().unwrap());
+        let r = hyperstor_api::CaServiceClient::new(client, config)
+            .get_sealing_keys(hyperstor_api::GetSealingKeysRequest::default())
+            .await?
+            .into_owned();
+        Ok(r.keys
+            .into_iter()
+            .map(|k| (k.id as u8, k.seq, k.key))
+            .collect())
+    })
+}
+
+/// Sealing keys (D133, D363, D370): the first is made when a storage node
+/// asks, which an installed node does at start; a rotation makes the next
+/// and keeps the one before, so what the old key sealed still opens until
+/// the rotation after; nodes hold what the cluster has; only storage
+/// nodes and members read a key's bytes; and the audit names each
+/// rotation, never a key.
+#[test]
+fn sealing_keys_rotate_and_reach_only_storage_nodes() {
+    use hyperstor_pki::seal::{Access, Capability, CapabilityError, SealingKey, SealingKeys};
+    let c = Cluster::all_in_one("sealkeys", 1);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    // How many keys node 0 says it holds.
+    let held = |c: &Cluster| {
+        c.metrics(0)
+            .lines()
+            .find_map(|l| l.strip_prefix("hyperstor_sealing_keys{node=\"0\"} "))
+            .and_then(|v| v.parse::<usize>().ok())
+    };
+    // The node asked at start, as the member it shares a host with, and
+    // that made the first key.
+    wait_for("node 0 to hold the first sealing key", 30, || {
+        (held(&c) == Some(1)).then_some(())
+    });
+    let one = c.ctl(&["sealing-key", "list"]).ok();
+    assert!(
+        one.has("/meta/") && !one.has("no sealing key yet"),
+        "{}",
+        one.out
+    );
+
+    // An administrator lists and rotates, but never reads a key.
+    let e = sealing_keys_as(&c, &c.pki()).expect_err("an administrator may not read them");
+    assert!(
+        e.message
+            .as_deref()
+            .unwrap_or("")
+            .contains("may not read the sealing keys"),
+        "{e:?}"
+    );
+
+    // A storage node with a certificate of its own reads the same key,
+    // and asking makes no other.
+    let node = c.identity(Role::Node, "node7", false);
+    let first = sealing_keys_as(&c, &node).unwrap();
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!((first[0].0, first[0].1, first[0].2.len()), (1, 1, 32));
+    assert_eq!(sealing_keys_as(&c, &node).unwrap(), first);
+    // A node may not rotate.
+    c.ctl_via(Via::Tls(&node), &["sealing-key", "rotate"])
+        .expect(4);
+
+    let holder = |keys: &[(u8, u64, Vec<u8>)]| {
+        SealingKeys::new(
+            keys.iter()
+                .map(|(id, _, k)| SealingKey::new(*id, k.as_slice().try_into().unwrap()))
+                .collect(),
+        )
+    };
+    let cap = Capability {
+        tenant: 3,
+        lineage: 0xabc,
+        branch: 0,
+        access: Access::ReadWrite,
+        instance: 99,
+        host: "h1".into(),
+        expires_unix: u64::MAX,
+    };
+    let sealed_by_1 = holder(&first).seal(&cap).unwrap();
+
+    let r = c.ctl(&["sealing-key", "rotate"]).ok();
+    assert!(
+        r.has("sealing key 2 made") && r.has("key 1 still opens"),
+        "{}",
+        r.out
+    );
+    let second = sealing_keys_as(&c, &node).unwrap();
+    assert_eq!(
+        second.iter().map(|k| (k.0, k.1)).collect::<Vec<_>>(),
+        vec![(1, 1), (2, 2)]
+    );
+    // The node holds both by its next fetch.
+    wait_for("node 0 to hold the second sealing key", 60, || {
+        (held(&c) == Some(2)).then_some(())
+    });
+    // Key 1 is the key it was, and still opens what it sealed.
+    assert_eq!(second[0], first[0]);
+    assert_ne!(second[1].2, first[0].2);
+    assert_eq!(
+        holder(&second).open(&sealed_by_1, 0, 99, "h1"),
+        Ok(cap.clone())
+    );
+    let sealed_by_2 = holder(&second).seal(&cap).unwrap();
+
+    let l = c.ctl(&["sealing-key", "list"]).ok();
+    let row = |id: &str| {
+        l.out
+            .lines()
+            .find(|x| x.starts_with(&format!("{id} ")))
+            .unwrap_or_else(|| panic!("no key {id}: {}", l.out))
+            .to_string()
+    };
+    assert!(
+        row("1").contains("opens") && row("2").contains("seals"),
+        "{}",
+        l.out
+    );
+    assert!(
+        row("1").contains("/meta/") && row("2").contains("/admin/"),
+        "{}",
+        l.out
+    );
+    // Listed as JSON, without any key's bytes.
+    let j = c.ctl(&["sealing-key", "list", "--json"]).ok();
+    assert!(j.has("\"current\":true") && !j.has("\"key\""), "{}", j.out);
+
+    // The rotation after drops key 1: what it sealed no longer opens.
+    c.ctl(&["sealing-key", "rotate"]).ok();
+    let third = sealing_keys_as(&c, &node).unwrap();
+    assert_eq!(third.iter().map(|k| k.0).collect::<Vec<_>>(), vec![2, 3]);
+    assert_eq!(
+        holder(&third).open(&sealed_by_1, 0, 99, "h1"),
+        Err(CapabilityError::UnknownKey(1))
+    );
+    assert_eq!(holder(&third).open(&sealed_by_2, 0, 99, "h1"), Ok(cap));
+
+    // Each key's making is audited, by id; no key's bytes are.
+    let audit = c.audit();
+    let made = |who: &str, what: &str| {
+        audit.iter().any(|l| {
+            l.contains("\"op\":\"RotateSealingKey\"")
+                && l.contains(who)
+                && l.contains(what)
+                && l.contains("\"result\":\"ok")
+        })
+    };
+    assert!(made("/meta/", "sealing key 1"), "{audit:#?}");
+    assert!(made("/admin/", "sealing key 2"), "{audit:#?}");
+    assert!(made("/admin/", "sealing key 3"), "{audit:#?}");
+    assert!(
+        audit
+            .iter()
+            .any(|l| l.contains("GetSealingKeys") && l.contains("\"result\":\"refused: ")),
+        "{audit:#?}"
+    );
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    for (_, _, k) in first.iter().chain(&third) {
+        assert!(!audit.iter().any(|l| l.contains(&hex(k))));
+    }
+}
