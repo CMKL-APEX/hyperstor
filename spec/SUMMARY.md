@@ -22,6 +22,7 @@
 - [Networks](26-networks.md)
 - [Load and drives](27-performance.md)
 - [Scrub settings and reports](28-scrub.md)
+- [Datasets and hsfs](29-hsfs.md)
 - [Key–value ranges](25-kv-ranges.md)
 - [S3 gateway](14-s3.md)
 - [Management, deployment and security](15-operations.md)
