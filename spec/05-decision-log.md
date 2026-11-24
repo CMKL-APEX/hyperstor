@@ -1859,3 +1859,23 @@ that reads as zeros, or something decides where dropping is safe.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 321 | How to zero without allocating: the chunk's primary decides per block, with no format change (recommended), or a zero marker in the engine's block maps (never allocates; log, checkpoint and wire formats change); what a discard does to a block an older version holds: drop it so theirs shows (recommended), leave it, or write zeros; and whether the expand notice and ublk come in the same work | Per block now, the marker later with #299's format change; drop it; both, yes | D357, D358 |
+
+## Datasets and hsfs (2026-11-24)
+
+The owner asked for a ZFS-like interface for clients, with distributed
+and concurrent reads and writes, and whether it beats pNFS for many
+users and tenants (29-hsfs.md §32). Seven points, with a recommendation
+each; answered "use the recommendation". Then two questions: whether
+the command should be `hsfs`, and whether it stripes across clusters.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 323 | One noun, the dataset, over volumes, filesystems and buckets, with inherited properties (recommended); or three surfaces as now | The dataset | D360 |
+| 324 | Name file chunks by lineage so filesystems can be cloned (recommended, before anything is stored); or by filesystem and inode as F4 | By lineage | D362, amends F4 and D130 |
+| 325 | Sealed dataset capabilities for native clients, sharing D133's key (recommended); or trust any host certificate | Capabilities | D363 |
+| 326 | The object layer public but minimal (recommended); or internal to the POSIX core | Public, minimal | D364 |
+| 327 | Concurrent writes without byte-range leases (recommended); or leases for strict coherence | No leases | D365 |
+| 328 | `send` and `receive` as the interface to `hyperstor-sync`, files included (recommended) | Yes, after snapshots | D366 |
+| 329 | Part of HS14, capabilities first (recommended) | Yes | D368 |
+| 330 | The command's name: `hsfs` (the owner's suggestion; recommended over `zfs`, which OpenZFS owns on the same hosts), with `hyperstorctl dataset` as the same API | `hsfs` | D361 |
+| 331 | Striping across clusters: never one file over two clusters; stripes at the home, snapshot replicas elsewhere (recommended); or PGs across clusters, against D63 | Never across clusters | D367 |

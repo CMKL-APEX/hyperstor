@@ -24,7 +24,7 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS11b | `hyperstor-kv`'s transactions across ranges (D35): the timestamp oracle, Percolator locks, old versions' collection. Tested against a model of snapshot isolation (Jepsen-style histories) under faults. | HS11 |
 | HS12 | The S3 gateway over HTTP (14-s3.md §14.1, 14-s3.md §14.2) on replicated pools (D191–D199), with access keys from mgmt or glidex and Cedar. EC data pools once HS7 lands. | HS11 |
 | HS13 | S3 over RDMA, with DC queue pairs (14-s3.md §14.3), tested against cuObject and hipObject clients. | HS6, HS12 |
-| HS14+ | The distributed filesystem, per 00-filesystem.md. | HS11b, HS13 |
+| HS14+ | The distributed filesystem, per 00-filesystem.md. Built as hsfs in stages H0–H4 (29-hsfs.md §32.10, D368). | HS11b, HS13 |
 | HS15 | Tenancy (20-tenants.md §24): tenant ids on lineages, buckets, filesystems and ranges; projects under tenants, named per volume and bucket, and moved between tenants (§24.9, D299–D304); per-`(pool, project)` counters and quotas with caps per tenant; two-level fair share in the reactors (D62); the glidex mapping of directories, tenants and projects. | HS4, HS10b, AD3 |
 | HS16 | Sites and replication (21-federation.md §25.2, §25.3): `site` as a failure domain with the preflight limit (G19); `hyperstor-sync` for snapshots and S3 objects, with policies, lag health and cross-cluster trust. | HS4, HS12, AD3 |
 | HS17 | The global namespace (21-federation.md §25.4–§25.6): range homes, read-through replicas, forwarded writes, the partition queue with its allowlist (D66), cache-pool sources (D67), the federated view in `hyperstor-mgmt` and glidex (D68); G20. | HS11, HS16 |
