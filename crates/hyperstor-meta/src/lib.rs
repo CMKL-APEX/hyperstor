@@ -22,6 +22,7 @@ pub mod realms;
 pub mod replica;
 pub mod s3keys;
 pub mod scrubs;
+pub mod sealkeys;
 pub mod settings;
 pub mod space;
 pub mod store;

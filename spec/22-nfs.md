@@ -455,7 +455,7 @@ those are what the MDS seals:
 - **The sealing key** is a cluster secret: the map service holds it
   encrypted under its cluster key (D162), as it holds S3 access keys
   (D231). `hyperstord` and the MDS fetch it over mutual TLS with the map
-  and keep it only in memory. `hyperstorctl nfs key rotate` issues a new
+  and keep it only in memory. `hyperstorctl sealing-key rotate` issues a new
   key under the next key id, audited; both are valid until every MDS
   instance has re-issued its stateids, then the old one is dropped.
 

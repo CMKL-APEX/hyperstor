@@ -303,12 +303,23 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
     o
 }
 
+/// How many sealing keys the node holds, in Prometheus text format.
+pub fn render_sealing(node: u32, keys: usize) -> String {
+    format!(
+        "# HELP hyperstor_sealing_keys Sealing keys the node holds for checking capabilities; 0 until the cluster API answers.\n# TYPE hyperstor_sealing_keys gauge\nhyperstor_sealing_keys{{node=\"{node}\"}} {keys}\n"
+    )
+}
+
 /// Serves `GET /metrics` and `GET /health` on `listener` from a new
 /// thread, one connection at a time: scrapers are few and answers small.
+///
+/// With `sealing` (a node that fetches the sealing keys, D370), also how
+/// many it holds: 0 until the cluster API first answers.
 pub fn serve(
     listener: std::net::TcpListener,
     node: u32,
     shards: Vec<(u32, Arc<ShardMetrics>)>,
+    sealing: Option<Arc<crate::sealing::Sealing>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("hyperstord-admin".into())
@@ -322,7 +333,13 @@ pub fn serve(
                 }
                 let path = line.split_whitespace().nth(1).unwrap_or("");
                 let (status, ctype, body) = match path {
-                    "/metrics" => ("200 OK", "text/plain; version=0.0.4", render(node, &shards)),
+                    "/metrics" => {
+                        let mut body = render(node, &shards);
+                        if let Some(s) = &sealing {
+                            body.push_str(&render_sealing(node, s.keys().ids().len()));
+                        }
+                        ("200 OK", "text/plain; version=0.0.4", body)
+                    }
                     "/health" => ("200 OK", "text/plain", "ok\n".to_string()),
                     _ => ("404 Not Found", "text/plain", "not found\n".to_string()),
                 };
@@ -339,6 +356,13 @@ pub fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sealing_keys_held_are_counted() {
+        let t = render_sealing(4, 2);
+        assert!(t.contains("# TYPE hyperstor_sealing_keys gauge\n"), "{t}");
+        assert!(t.ends_with("hyperstor_sealing_keys{node=\"4\"} 2\n"), "{t}");
+    }
 
     #[test]
     fn render_labels_every_shard_and_kind() {

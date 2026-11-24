@@ -333,6 +333,12 @@ namespace Hyperstor {
   action "CaService.RevokeCertificate" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "CaService.ListSealingKeys" in [Action::"secure"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "CaService.RotateSealingKey" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "MapService.GetMapBackup" in [Action::"secure", Action::"step-up"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

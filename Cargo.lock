@@ -1511,8 +1511,11 @@ dependencies = [
 name = "hyperstor-daemon"
 version = "0.1.0"
 dependencies = [
+ "connectrpc",
  "crc32c",
  "glidex-topology",
+ "http",
+ "hyperstor-api",
  "hyperstor-client",
  "hyperstor-engine",
  "hyperstor-fabric",
@@ -1528,6 +1531,7 @@ dependencies = [
  "rand 0.10.3",
  "socket2",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

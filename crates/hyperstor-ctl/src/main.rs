@@ -177,6 +177,9 @@
 //!   `--mgmt URL --token-file F`: a person of a trusted directory signs in
 //!   by its device grant; the file keeps the access token and the refresh
 //!   token that renews it, and `--mgmt` reads it (D307);
+//! - `sealing-key list`, `sealing-key rotate`: the keys that seal NFS
+//!   stateids and dataset capabilities (D133, D363); a rotation makes a
+//!   new one and keeps the one before it valid;
 //! - `cert list`, `cert revoke --serial S`: certificates the API issued
 //!   and the revocation list (D56); `cert show --file F` prints a
 //!   certificate file's identity, serial and expiry, without the API;
@@ -235,7 +238,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -856,7 +859,7 @@ fn main() {
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
             | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network" | "tenant"
-            | "project" | "admission" | "cluster" | "auth" | "pg"
+            | "project" | "admission" | "cluster" | "auth" | "pg" | "sealing-key"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -864,6 +867,7 @@ fn main() {
                     "token" => matches!(sub, Some("create" | "list" | "revoke")),
                     "cert" => matches!(sub, Some("list" | "revoke" | "show" | "renew")),
                     "map" => matches!(sub, Some("backup")),
+                    "sealing-key" => matches!(sub, Some("list" | "rotate")),
                     "pg" => matches!(sub, Some("promote")),
                     "member" => matches!(sub, Some("list" | "add" | "remove")),
                     "snapshot" => matches!(
@@ -1663,6 +1667,8 @@ const LEADER_ONLY: &[&str] = &[
     // refused call wrote nothing, so asking again makes one key, not two.
     "s3 key create",
     "s3 key revoke",
+    // And the sealing keys (D133): a refused rotation made no key.
+    "sealing-key rotate",
     "s3 placement set",
     "s3 placement delete",
     // So are realms (D248).
@@ -1963,6 +1969,9 @@ where
             };
         }
         "cert" => return certs(CaServiceClient::new(transport, config), cmd, a).await,
+        "sealing-key" => {
+            return sealing_keys(CaServiceClient::new(transport, config), cmd, a).await;
+        }
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
         "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume"
@@ -4530,6 +4539,32 @@ where
         r.epoch,
         r.backup.len()
     );
+    Ok(Next::Exit(0))
+}
+
+/// `sealing-key list|rotate` (D133, D363).
+async fn sealing_keys<T>(
+    client: CaServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    if cmd == "sealing-key list" {
+        let r = client
+            .list_sealing_keys(pb::ListSealingKeysRequest::default())
+            .await?
+            .into_owned();
+        show(a, &r, || sealing_keys_text(&r.keys));
+        return Ok(Next::Exit(0));
+    }
+    let r = client
+        .rotate_sealing_key(pb::RotateSealingKeyRequest::default())
+        .await?
+        .into_owned();
+    show(a, &r, || sealing_rotated_text(&r.keys));
     Ok(Next::Exit(0))
 }
 

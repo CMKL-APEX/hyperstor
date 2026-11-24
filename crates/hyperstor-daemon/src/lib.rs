@@ -31,6 +31,7 @@ pub mod heat;
 mod kv;
 pub mod metrics;
 mod ports;
+pub mod sealing;
 mod shard_cell;
 pub mod space;
 use shard_cell::ReadKind;
