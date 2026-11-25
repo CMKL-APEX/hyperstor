@@ -1587,7 +1587,7 @@ title = "Data-path mutual TLS"
 
 [[milestone.item]]
 what = "T0: certificates on every host: `node` certificates on member hosts, `host` tokens and `--role vhost --join`"
-spec = ["30-data-path-tls.md §33.6", "D375", "D378", "I443"]
+spec = ["30-data-path-tls.md §33.6", "D375", "D378", "I444"]
 status = "done"
 tests = [
     "install::a_vm_host_joins_with_a_host_token",

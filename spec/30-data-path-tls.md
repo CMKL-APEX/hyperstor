@@ -7,7 +7,7 @@ the same section everywhere (see [README.md](README.md)).
 
 Status: **design.** D372–D380 are settled with the owner
 (05-decision-log.md points 335–343, 2026-11-25). Host checks G67–G69 are
-to run. Stage T0 is built (01-implementation-notes.md I443); no connection
+to run. Stage T0 is built (01-implementation-notes.md I444); no connection
 is authenticated yet. It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
