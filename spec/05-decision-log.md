@@ -1881,3 +1881,12 @@ the command should be `hsfs`, and whether it stripes across clusters.
 | 331 | Striping across clusters: never one file over two clusters; stripes at the home, snapshot replicas elsewhere (recommended); or PGs across clusters, against D63 | Never across clusters | D367 || 332 | How a bare-metal client mounts: FUSE over io_uring as the general mount, a preloaded library as an opt-in fast path for data-heavy jobs, pNFS where our daemon can't run (recommended); or a kernel module; or virtio-fs through VDUSE | FUSE, with interception beside it | D369 |
 | 333 | How storage nodes get the sealing keys: a cluster API client in `hyperstord` on a thread of its own (recommended); or pushed to each host by the installer | The API client | D370 |
 | 334 | Which requests need a capability: a per-pool flag, off by default (recommended); or every native client at once | The per-pool flag | D371 |
+| 335 | Data-path mutual TLS, first stage: authentication first, encryption on untrusted networks after (recommended); or both together | Authentication first | D372 |
+| 336 | How TLS starts on a connection: after `Hello` on the same ports, with modes off, allow, require (recommended); or TLS from the first byte on new ports | After `Hello`, with modes | D373 |
+| 337 | Trusted networks after the handshake: plaintext as D25 says (recommended); or a MAC on each frame header | Plaintext | D374 |
+| 338 | Certificates for VM hosts: join with a token like storage hosts (recommended); or issued through glidex | Join with a token | D375 |
+| 339 | Where the handshake runs: on the socket in rustls, then `close_notify` back to plaintext (recommended); or handshake bytes inside protocol frames | On the socket | D376 |
+| 340 | Authorization: by role with node ids and host names bound to certificates (recommended); or peers apart from clients only | By role, ids and names bound | D377 |
+| 341 | Storage nodes on member hosts: their own `node` certificate with the member's as fallback (recommended); keep the member's; or their own with no fallback | Their own, member's as fallback | D378 |
+| 342 | UDP pings: authenticate later (recommended) or now in stage T2; and keyed by the sealing key (recommended) or a key per pair's TLS session | Now, in T2, with the sealing key | D379 |
+| 343 | Starting mode: `off` after an upgrade and `allow` on a new install (recommended); always `off`; or `require` on a new install | `off` after an upgrade, `allow` when new | D380 |

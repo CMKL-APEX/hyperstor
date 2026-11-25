@@ -33,6 +33,7 @@ covered by tests that run on every change.
 | HS17: Global namespace and federation | Planned |
 | HS18: Pools and devices at run time | In progress |
 | HS19: Networks | In progress |
+| HS20: Data-path mutual TLS | Planned |
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
@@ -247,6 +248,15 @@ covered by tests that run on every change.
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex) | Done |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
 | Networks set on a running cluster (also on the web UI's Networks page), nodes serving the endpoints the map has for their devices, and a host's clients (VM disks, S3, hyperstorctl's volume commands) on its storage's networks | Done |
+
+## HS20: Data-path mutual TLS
+
+| Feature | Status |
+|---|---|
+| T0: certificates on every host: `node` certificates on member hosts, `host` tokens and `--role vhost --join`, `--identity` on every data-path binary | Planned |
+| T1: the TLS 1.3 handshake after `Hello` (`StartTls`, protocol version 8) in rustls on the reactor, the turn back to plaintext, modes `off` and `allow`, identities kept with connections, unauthenticated connections counted | Planned |
+| T2: `require`, refused while a node has no identity; authorization by certificate role; a node's id and a client's host name from the certificate; UDP pings keyed with the sealing key | Planned |
+| T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
 
 ## AD0: Administration API, identities and CLI
 

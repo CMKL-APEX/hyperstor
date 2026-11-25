@@ -1,0 +1,180 @@
+# Data-path mutual TLS
+
+Every connection on the storage network proves who it is to the other
+end, with certificates of the cluster CA. Part of the hyperstor design;
+sections keep their numbers across documents, so `§N` in one document is
+the same section everywhere (see [README.md](README.md)).
+
+Status: **design.** D372–D380 are settled with the owner
+(05-decision-log.md points 335–343, 2026-11-25). Host checks G67–G69 are
+to run. Nothing
+is built. It delivers D25, which stays the rule.
+
+## 33. Data-path mutual TLS
+
+### 33.1 Why now
+
+- **The data path tells no one apart** (01-implementation-notes.md I440).
+  A storage node serves replication messages (`Repl`, pushes, fetches) on
+  any connection, and a client names its own host (D261). A pool that
+  requires capabilities (D371) therefore stops mistakes and honest
+  clients, not a host that speaks a node's messages.
+- **Realm bindings wait on it** (D259): a host's binding is checked on
+  the name it gives.
+- **hsfs H2 puts tenants with root on the storage network.** That is the
+  agreed order: H0, then this, then H1 and H2 (29-hsfs.md).
+
+### 33.2 What it is
+
+- **A TLS 1.3 handshake with certificates on both sides**, against the
+  cluster CA (19-administration.md §23.8), on every TCP connection of
+  the wire protocol (13-protocol.md §13): client to node, node to node,
+  nodes and clients to the map service, and the map service to nodes.
+- **After the handshake, frames as today** on every network in the first
+  stage (D372), and for good on networks marked `trusted` (D374, D25):
+  plaintext, each frame and block under CRC32C.
+- **Encryption on networks not marked trusted** is the last stage
+  (§33.9): the session stays TLS there.
+- **The cluster API is unchanged**: it has had mutual TLS since AD0.
+
+### 33.3 Starting TLS on a connection (D373, D376)
+
+Same ports, so a cluster upgrades node by node.
+
+1. `Hello` and `HelloOk` in plaintext, as now. They agree a protocol
+   version.
+2. If both speak version 8 and the caller has an identity, it sends
+   `StartTls`. The peer answers `StartTlsOk`, or `Error` if it has no
+   identity or the mode is `off`.
+3. From the next byte the stream is TLS. Both sides run the handshake;
+   each checks the other's chain against the cluster's root and its
+   revocation list (§23.8), and keeps the other's identity (role and id)
+   with the connection.
+4. On a connection that carries plaintext afterwards, the caller sends
+   `close_notify`; the peer answers with its own and sends nothing more
+   until the caller's next frame. The caller sends frames once it has
+   read the peer's `close_notify`. Frames then go on as before.
+
+- **Why after `Hello`:** an older peer answers a version below 8 and is
+  never sent `StartTls`, which it could not decode. A second port per
+  reactor would need new addresses in the map and new firewall rules.
+- **Why the handshake on the socket, then plaintext:** it is the standard
+  shape (FTP's `CCC` does the same), and the encrypted stage keeps the same
+  handshake and simply doesn't close the session. G67 checks the turn
+  back to plaintext loses or swallows no byte.
+- **Who runs it:** rustls, which does no I/O of its own, fed from the
+  reactor's sockets (D376). No tokio on the data path (D3) and no second
+  TLS library: the cluster API already uses rustls.
+
+### 33.4 Modes (D373)
+
+A cluster setting in the map, set with `hyperstorctl data-tls set`:
+
+| Mode | A caller with an identity | A node or the map service |
+|---|---|---|
+| `off` | doesn't ask | refuses `StartTls`; serves as today |
+| `allow` | asks whenever the peer speaks version 8 | authenticates who asks; still serves who doesn't |
+| `require` | asks, and drops a peer that refuses or speaks less | serves only `Hello`, `Ping` and `StartTls` before the handshake |
+
+- An upgraded cluster starts `off`; a new install starts `allow`.
+- **Before `require`**, the map service refuses the change while a node
+  that is up hasn't reported that it holds an identity and speaks
+  version 8. Clients can't be asked, so each node counts the
+  connections it serves unauthenticated, by peer address
+  (`hyperstor_unauthenticated_connections`), and `hyperstorctl data-tls
+  status` lists them: who would be cut off.
+- `require` to `allow` is always possible: the way back if a host was
+  missed.
+- **Why three:** `allow` lets every host get its certificate and prove
+  the handshake works before anything is refused.
+
+### 33.5 Who may do what (D377)
+
+Once a connection is authenticated, and for every connection in
+`require`:
+
+| Identity | May send |
+|---|---|
+| `node` N | node-to-node messages (replication, pushes, fetches, digests, peering) and reports to the map service, as node N: the id in `Hello` and in each report must be N |
+| `meta` | what the map service sends nodes (`MapPush`, `Fence`, scrub requests) and members send each other |
+| `host`, `s3`, `admin` | clients' messages only: object reads and writes, leases, snapshots, map requests |
+
+- A client's message on a `node` connection is served: primaries act as
+  clients of other PGs (copies, flattens).
+- **The host a client names (`Host`, D261) must be its certificate's.**
+  Realm bindings (D259) and a capability's host (D363) are then checked
+  against a name the client can't choose.
+- In `allow`, an unauthenticated connection is served as today, and its
+  node-to-node messages too: `allow` is a migration state, not a
+  boundary.
+- **Why by role:** it is the one fact the storage path lacks today
+  (I440), and the roles exist (§23.8).
+
+### 33.6 Certificates on every host (D375, D378)
+
+| Host | Identity | How it gets it |
+|---|---|---|
+| Storage host joined with a token | `node` N | has it (AD1) |
+| Map service member that runs a storage node | `node` N beside its `meta` | the installer asks the cluster API for one at its next run; until then its node shows the member's (D370) and is served as `meta` |
+| VM host (`--role vhost`), `hyperstor-ublk` host | `host` NAME, the name it gives as `--host` | `hyperstor-install --role vhost --join API --token-file F`, with a `host` token (D375) |
+| S3 gateway | `s3` | has it (D233) |
+| `hyperstorctl`'s data commands | the administrator's | has it |
+
+- Renewed by the daily timer, as node certificates are (D56).
+- `hyperstord`, `hyperstor-vhost`, `hyperstor-ublk` and `hyperstor-s3`
+  take `--identity DIR` (`hyperstord` has it since D370).
+- **glidex's driver** installs VM hosts: its flow gains the token step.
+  That is a glidex change, to file when this stage is built.
+- **Why a token for VM hosts:** the same path storage hosts use, with no
+  dependency on glidex for a standalone host.
+
+### 33.7 Pings (D379)
+
+Nodes ping each other over UDP to find dead peers (D40). A forged
+answer could make a dead node look alive.
+
+- From stage T2, each ping and each answer carries a counter and a short
+  MAC over its contents, under the cluster's sealing key (D133), which
+  every node holds (D370). Either valid key opens it, so a rotation
+  breaks nothing.
+- In `require`, a ping or answer without a valid MAC is ignored. In
+  `allow` it is accepted, so nodes from before it keep their peers.
+- A node that hasn't fetched the keys yet answers no keyed ping, and
+  looks down until it has: seconds after its start.
+- **Why the sealing key and not a key per pair:** a key from two nodes'
+  TLS session would make pings depend on the TCP connection they exist
+  to notice the loss of. The sealing key needs no state per peer.
+
+### 33.8 What it doesn't cover
+
+- **RDMA queue pairs** are set up only over an authenticated TCP session
+  (D25), when RDMA is built (13-protocol.md §13.2).
+- **A trusted network's wire.** After the handshake a trusted network
+  carries plaintext (D374): someone who can inject packets there can
+  still take over an authenticated connection. Mark a network trusted
+  only if that can't happen.
+
+### 33.9 Stages (D372)
+
+| Stage | What | Needs |
+|---|---|---|
+| T0 | Certificates everywhere: `node` certificates on member hosts, `host` tokens and `--role vhost --join`, `--identity` on every data-path binary | — |
+| T1 | The handshake, modes `off` and `allow`, identities kept with connections, the unauthenticated-connection count | T0, G67 |
+| T2 | `require`, authorization by role (§33.5), the host name from the certificate, keyed pings (§33.7) | T1 |
+| T3 | Encryption on networks not marked trusted: TLS records from rustls first, kernel TLS where G68 allows | T2, G68, G69 |
+
+Milestone HS20 (17-milestones.md §21).
+
+### 33.10 Host checks
+
+- **G67. The turn back to plaintext** (D373). With rustls 0.23 on both
+  ends: after each side's `close_notify`, the next bytes read from the
+  socket are the first plaintext frame, whole, with none consumed into
+  the TLS reader's buffer, at 1 and at 64 concurrent connections.
+- **G68. Kernel TLS from a rustls handshake** (T3). On the hosts' kernel
+  (6.17): the session's secrets extracted from rustls set up `TCP_ULP
+  tls` for TLS 1.3 with AES-GCM in both directions, and io_uring sends
+  and receives then work unchanged, zero-copy sends included.
+- **G69. The cost of encryption on a reactor** (T3). 4 KiB and 1 MiB
+  reads and writes on an untrusted network, userspace records against
+  kernel TLS against plaintext, on the pilot's hosts.
