@@ -2647,3 +2647,66 @@ v55.0.0, QEMU 8.2.2).
    connect with `EACCES` and nothing reached the listener. With 0711,
    `nobody` got `EACCES` on `connect`, and glidex's user got `EACCES` on
    `ls` of the directory.
+
+## 2026-11-25: Map commits that compare without encoding every PG (#317, I443)
+
+`store::save` used to encode every PG of the map into a keyed row and
+compare them all against the store on each commit. It now walks the
+stored PG rows and the map's PGs side by side, both in `(pool, pg)`
+order, and encodes each PG into one reused buffer, so only changed rows
+are built. Same suite as 2026-11-10 (I341), with `main` (`1664dd89`) and
+the change built from the same base and run back to back, twice:
+
+```sh
+hyperstor-bench mapcommit <scratch dir on the disk> 500
+```
+
+**prism2** (AMD EPYC 7742, kernel 6.17; ext4 on md RAID1 of two
+Samsung PM983): p50 ms, run 1 / run 2.
+
+| Checkpointed applies | Map | Change | main p50 | new p50 | main per s | new per s |
+|---|---|---|---|---|---|---|
+| off | 4 nodes, 3x128 PGs | epoch | 2.01 / 2.08 | 1.78 / 1.74 | 464 / 447 | 520 / 523 |
+| off | 4 nodes, 3x128 PGs | device out/in | 4.42 / 5.16 | 4.38 / 4.37 | 212 / 184 | 214 / 214 |
+| on | 4 nodes, 3x128 PGs | epoch | 1.87 / 2.06 | 1.54 / 1.67 | 497 / 453 | 590 / 549 |
+| on | 4 nodes, 3x128 PGs | device out/in | 4.23 / 4.91 | 4.09 / 4.30 | 221 / 190 | 228 / 217 |
+| off | 32 nodes, 3x2048 PGs | epoch | 8.36 / 9.84 | 5.63 / 6.25 | 116 / 100 | 174 / 157 |
+| off | 32 nodes, 3x2048 PGs | device out/in | 11.39 / 12.88 | 8.59 / 8.88 | 43 / 41 | 50 / 49 |
+| on | 32 nodes, 3x2048 PGs | epoch | 8.33 / 8.35 | 5.46 / 5.47 | 113 / 118 | 181 / 175 |
+| on | 32 nodes, 3x2048 PGs | device out/in | 10.90 / 11.03 | 7.32 / 6.73 | 42 / 45 | 54 / 54 |
+
+Where the time went on the large map, measured in process (a test
+timing each part 200 times, the store on the same disk):
+
+| Part | Before | After |
+|---|---|---|
+| Building the write set without Raft (`save` against a local store, its flush included) | 4.26 ms | 1.47 ms |
+| Encoding every PG into a keyed row | 2.70 ms | not done |
+| Reading every PG row in a read transaction | 0.39 ms | 0.39 ms |
+| `store::load` (each member reloads the map after each entry) | 2.6–3.2 ms | unchanged |
+
+And inside the leader's commit (experiment builds, timing `save` in the
+committer; p50 over the run):
+
+| Map | Building the write set | The whole `save` (with Raft) |
+|---|---|---|
+| 4 nodes, 3x128 PGs | 0.37–0.45 ms | 3.3–4.0 ms |
+| 32 nodes, 3x2048 PGs | 1.6–1.7 ms | 5.1–5.2 ms |
+
+A run with each member's reload after an entry skipped gave a large-map
+epoch commit of 5.0–5.5 ms against 5.5–5.7 ms with it.
+
+### Findings
+
+1. **A commit on the large map takes a third less** (8.3–9.8 → 5.5–6.3 ms
+   at p50 for the epoch, 10.9–12.9 → 6.7–8.9 ms for a device out or in),
+   and commits per second rise by about half for the epoch. The small
+   map gains 0.2–0.4 ms on the epoch and is within the runs' spread
+   otherwise.
+2. **Raft's part no longer depends on the map's size**: 3.0 ms on the
+   small map, 3.5 ms on the large one. What still does is reading and
+   comparing the stored PG rows inside the write (about 1.3 ms more on the
+   large map) and the 13 KB head rewritten whole.
+3. **Each member's reload of the whole map after an entry is CPU, not
+   latency**: skipping it changes p50 by at most 0.5 ms. It costs about
+   3 ms of CPU per entry per member on this map.

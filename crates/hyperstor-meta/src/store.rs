@@ -147,8 +147,24 @@ fn parse_pg_key(k: &str) -> Option<(u32, u32)> {
     Some((pool.parse().ok()?, pg.parse().ok()?))
 }
 
+/// Whether `k` is spelled as [`pg_key`] spells it: `pg/`, ten digits, `/`,
+/// ten digits. Such keys sort as their numbers do.
+fn is_pg_key(k: &str) -> bool {
+    let b = k.as_bytes();
+    b.len() == 24
+        && b.starts_with(PG_FIRST.as_bytes())
+        && b[13] == b'/'
+        && b[3..13].iter().chain(&b[14..]).all(u8::is_ascii_digit)
+}
+
 fn encode_pg(i: &PgInfo) -> Vec<u8> {
-    let mut e = Enc::new();
+    encode_pg_into(i, Vec::new())
+}
+
+/// `i`'s row, encoded into `buf` (cleared first) and returned.
+fn encode_pg_into(i: &PgInfo, mut buf: Vec<u8>) -> Vec<u8> {
+    buf.clear();
+    let mut e = Enc::from_vec(buf);
     e.u64(i.epoch)
         .seq(&i.acting, |e, d| {
             e.u32(*d);
@@ -258,34 +274,49 @@ pub fn map_from_rows(rows: &[(String, Vec<u8>)]) -> Result<Option<ClusterMap>, S
 /// once it is committed and applied here): the head, the PG rows whose
 /// contents differ from what the store holds, and deletes for PGs `map`
 /// no longer has. Compared inside the write, against what it applies to.
+///
+/// The stored PG rows and `map`'s PGs are both in `(pool, pg)` order (the
+/// keys' numbers are zero-padded), so they are walked side by side: each
+/// PG is encoded into one reused buffer to compare, and only the rows that
+/// differ are built (#317).
 pub fn save(db: &Db, map: &ClusterMap) -> Result<(), StoreError> {
-    let mut want: BTreeMap<String, Vec<u8>> = map
-        .pgs
-        .iter()
-        .map(|((pool, pg), i)| (pg_key(*pool, *pg), encode_pg(i)))
-        .collect();
     let head = head(map);
     db.write(Origin::Leader, |tx| -> Result<(), StoreError> {
         let mut t = tx.open_table(definition::<MapSchema>(Table::Map))?;
         if t.get(HEAD)?.is_none_or(|v| v.value() != head.as_slice()) {
             t.insert(HEAD, &head)?;
         }
+        let mut put: Vec<(&(u32, u32), &PgInfo)> = Vec::new();
         let mut gone = Vec::new();
+        let mut want = map.pgs.iter().peekable();
+        let mut buf = Vec::new();
         for row in t.range(PG_FIRST..PG_END)? {
             let (k, v) = row?;
-            match want.get(k.value()) {
-                Some(w) if w.as_slice() == v.value() => {
-                    want.remove(k.value());
+            let k = k.value();
+            // A row whose key isn't one this writes is removed.
+            let Some(key) = parse_pg_key(k).filter(|_| is_pg_key(k)) else {
+                gone.push(k.to_string());
+                continue;
+            };
+            while let Some(w) = want.next_if(|(wk, _)| **wk < key) {
+                put.push(w);
+            }
+            match want.next_if(|(wk, _)| **wk == key) {
+                Some((wk, i)) => {
+                    buf = encode_pg_into(i, buf);
+                    if buf.as_slice() != v.value() {
+                        put.push((wk, i));
+                    }
                 }
-                Some(_) => {}
-                None => gone.push(k.value().to_string()),
+                None => gone.push(k.to_string()),
             }
         }
+        put.extend(want);
         for k in gone {
             t.remove(&k)?;
         }
-        for (k, v) in &want {
-            t.insert(k, v)?;
+        for ((pool, pg), i) in put {
+            t.insert(&pg_key(*pool, *pg), &encode_pg(i))?;
         }
         let mut hosts: BTreeMap<String, &[u8]> = map
             .host_names
@@ -359,6 +390,134 @@ mod tests {
         let back = load(&db).unwrap().unwrap();
         assert_eq!(back.host_names, [(1, "storage-c".to_string())].into());
         assert_eq!(back.pgs, m.pgs);
+    }
+
+    /// #317: against a model (a full compare of every encoded row), random
+    /// changes write exactly the rows that differ, delete the rows the map
+    /// no longer has (and rows spelled otherwise), and load back as the map.
+    #[test]
+    fn saves_write_exactly_the_rows_that_differ() {
+        use rand::rngs::SmallRng;
+        use rand::{RngExt, SeedableRng};
+        for seed in 0..20u64 {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let dir = tempfile::tempdir().unwrap();
+            let db = Db::create(dir.path().join("map.db")).unwrap();
+            let mut m = crate::parse_cluster(
+                "cluster 7\nnode 0 rack 0 127.0.0.1:7000\nnode 1 rack 0 127.0.0.1:7001\nnode 2 rack 0 127.0.0.1:7002\npool 1 vol replicated size 2 min 1 pgs 32\n",
+            )
+            .unwrap();
+            m.recompute();
+            save(&db, &m).unwrap();
+            let mut rx = db.subscribe();
+            for _ in 0..40 {
+                m.epoch += 1;
+                for _ in 0..rng.random_range(0..6) {
+                    match rng.random_range(0..5) {
+                        // A PG's epoch or members change.
+                        0 | 1 => {
+                            if let Some(pg) = m
+                                .pgs
+                                .keys()
+                                .nth(rng.random_range(0..m.pgs.len().max(1)))
+                                .copied()
+                            {
+                                let i = m.pgs.get_mut(&pg).unwrap();
+                                i.epoch = m.epoch;
+                                i.acting.rotate_left(1);
+                                if rng.random_bool(0.5) {
+                                    i.up.push(rng.random_range(0..9));
+                                }
+                            }
+                        }
+                        // PGs of a pool (or a pool of its own) come.
+                        2 => {
+                            let pool = rng.random_range(1..5u32);
+                            for _ in 0..rng.random_range(1..8) {
+                                m.pgs.insert(
+                                    (pool, rng.random_range(0..64u32)),
+                                    PgInfo {
+                                        epoch: m.epoch,
+                                        acting: vec![0, 1],
+                                        up: vec![0, 1],
+                                    },
+                                );
+                            }
+                        }
+                        // PGs go.
+                        3 => {
+                            let n = rng.random_range(0..4);
+                            let keys: Vec<_> = m
+                                .pgs
+                                .keys()
+                                .copied()
+                                .filter(|_| rng.random_bool(0.2))
+                                .take(n)
+                                .collect();
+                            for k in keys {
+                                m.pgs.remove(&k);
+                            }
+                        }
+                        // A row this never writes: removed at the next save.
+                        _ => {
+                            db.write(Origin::Leader, |tx| -> Result<(), StoreError> {
+                                let mut t = tx.open_table(definition::<MapSchema>(Table::Map))?;
+                                t.insert("pg/1/3", b"stray")?;
+                                Ok(())
+                            })
+                            .unwrap();
+                            while rx.try_recv().is_ok() {}
+                        }
+                    }
+                }
+                let stored: BTreeMap<String, Vec<u8>> = {
+                    let txn = db.begin_read().unwrap();
+                    let t = txn.open_table(definition::<MapSchema>(Table::Map)).unwrap();
+                    t.range(PG_FIRST..PG_END)
+                        .unwrap()
+                        .map(|r| {
+                            let (k, v) = r.unwrap();
+                            (k.value().to_string(), v.value().to_vec())
+                        })
+                        .collect()
+                };
+                // The model: every row encoded and compared.
+                let want: BTreeMap<String, Vec<u8>> = m
+                    .pgs
+                    .iter()
+                    .map(|((p, g), i)| (pg_key(*p, *g), encode_pg(i)))
+                    .collect();
+                let mut model: Vec<(String, bool)> = want
+                    .iter()
+                    .filter(|(k, v)| stored.get(*k) != Some(*v))
+                    .map(|(k, _)| (k.clone(), true))
+                    .chain(
+                        stored
+                            .keys()
+                            .filter(|k| !want.contains_key(*k))
+                            .map(|k| (k.clone(), false)),
+                    )
+                    .collect();
+                model.sort();
+                save(&db, &m).unwrap();
+                let mut wrote: Vec<(String, bool)> = match rx.try_recv() {
+                    Ok(a) => {
+                        a.ws.ops
+                            .iter()
+                            .filter(|op| op.key().starts_with(PG_FIRST.as_bytes()))
+                            .map(|op| {
+                                let k = String::from_utf8(op.key().to_vec()).unwrap();
+                                (k, matches!(op, rs::Op::Put { .. }))
+                            })
+                            .collect()
+                    }
+                    Err(_) => Vec::new(),
+                };
+                wrote.sort();
+                assert_eq!(wrote, model, "seed {seed}");
+                assert_eq!(load(&db).unwrap().unwrap().pgs, m.pgs, "seed {seed}");
+            }
+        }
     }
 
     /// Applies what it is given, as a group of one would: proposals go
