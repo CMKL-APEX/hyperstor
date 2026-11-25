@@ -20,6 +20,7 @@
 - [GPU-direct storage](12-gpu.md)
 - [Internal protocol and transports](13-protocol.md)
 - [Networks](26-networks.md)
+- [Data-path mutual TLS](30-data-path-tls.md)
 - [Load and drives](27-performance.md)
 - [Scrub settings and reports](28-scrub.md)
 - [Datasets and hsfs](29-hsfs.md)
