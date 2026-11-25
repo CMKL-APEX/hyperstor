@@ -2332,6 +2332,10 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         join_gateway(root, real, s, token);
         return None;
     }
+    if s.role == "vhost" {
+        join_host(root, real, s, token);
+        return None;
+    }
     let dir = under(root, "/etc/hyperstor/pki");
     let (cert_name, key_group) = match s.role.as_str() {
         "storage" => ("node", "hyperstor"),
@@ -2339,7 +2343,7 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         // as the member; its node, like the first member's, has no
         // certificate of its own (the storage network uses none yet).
         "meta" | "both" => ("api", "hyperstor"),
-        _ => fail("--join takes --role storage, meta, both or s3"),
+        _ => fail("--join takes --role storage, meta, both, s3 or vhost"),
     };
     if s.role == "both" && s.node.is_none() {
         fail("--node N is needed for a storage role: which node of the cluster file");
@@ -3093,6 +3097,82 @@ fn renew_leaf(root: &Path, real: bool, s: &Settings, name: &str) -> bool {
             false
         }
     }
+}
+
+/// The name a client host gives storage nodes (`--host`, D261): its host
+/// name, cut as the client library cuts it.
+fn client_host_name() -> String {
+    let h = fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let mut h = h.trim().to_string();
+    let mut end = h.len().min(64);
+    while !h.is_char_boundary(end) {
+        end -= 1;
+    }
+    h.truncate(end);
+    h
+}
+
+/// A client host's identity (D375; 30-data-path-tls.md §33.6): a VM host
+/// joined with a `host` token named as the host names itself to storage
+/// nodes, the first time; renewed by later runs. What `hyperstor-vhost`
+/// shows on the data path once the cluster asks (D373).
+fn join_host(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) {
+    let dir = under(root, "/etc/hyperstor/pki");
+    if dir.join("host.crt").exists() {
+        renew_leaf(root, real, s, "host");
+        return;
+    }
+    let name = client_host_name();
+    let token = token.unwrap_or_else(|| {
+        fail(&format!(
+            "joining a VM host needs a host token: --token-file F (from hyperstorctl token create --role host --name {name})"
+        ))
+    });
+    let (pin, _) = hyperstor_meta::api::parse_token(token)
+        .unwrap_or_else(|| fail("the token isn't a hyperstor join token (hsj1-…)"));
+    let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
+    let req = hyperstor_api::JoinRequest {
+        token: token.trim().to_string(),
+        csr,
+        ..Default::default()
+    };
+    let tls = hyperstor_pki::pinned_client_config(pin).unwrap_or_else(|e| fail(&e));
+    let r = api_call(&s.join, tls, |c| async move {
+        hyperstor_api::TokenServiceClient::new(c.0, c.1)
+            .join(req)
+            .await
+            .map(|r| r.into_owned())
+    })
+    .unwrap_or_else(|e| fail(&format!("join through {}: {e}", s.join)));
+    match hyperstor_pki::identity_in(&r.certificate) {
+        Some(i) if i.role == hyperstor_pki::Role::Host && i.id == name => {}
+        Some(i) if i.role == hyperstor_pki::Role::Host => fail(&format!(
+            "the token is for host {:?}, and this host names itself {name:?}: make one with hyperstorctl token create --role host --name {name}",
+            i.id
+        )),
+        _ => fail(&format!(
+            "the token isn't a host token: make one with hyperstorctl token create --role host --name {name}"
+        )),
+    }
+    if real {
+        service_user(s);
+    }
+    let write = |name: &str, content: &str, mode: u32| {
+        converge(&dir.join(name), content.as_bytes(), mode);
+    };
+    write("root.crt", &r.root, 0o644);
+    write("host.key", &key, 0o640);
+    write("host.crt", &r.certificate, 0o644);
+    if real && !run("chgrp", &["hyperstor", "/etc/hyperstor/pki/host.key"]) {
+        fail("chgrp hyperstor /etc/hyperstor/pki/host.key failed");
+    }
+    if s.map.is_empty() {
+        s.map = r.map_addresses.clone();
+    }
+    println!(
+        "Joined cluster {} through {} as host {}.",
+        r.cluster_id, s.join, r.identity
+    );
 }
 
 /// An S3 gateway's identity (D233), on a host without the map service:
@@ -4447,6 +4527,7 @@ fn install(
             web.as_ref(),
             s3_names.as_ref(),
             &peers,
+            &p.nodes.iter().map(|n| n.n).collect::<Vec<u32>>(),
             &mut changed,
         ));
         p.cluster_key = under(root, "/etc/hyperstor/pki/cluster.key").exists();
@@ -4895,6 +4976,7 @@ fn pki(
     web: Option<&glidex_tls::LocalNames>,
     s3: Option<&glidex_tls::LocalNames>,
     peers: &[String],
+    nodes: &[u32],
     changed: &mut Vec<String>,
 ) -> Vec<String> {
     use hyperstor_pki::*;
@@ -4980,6 +5062,12 @@ fn pki(
     // Services read their certificates at start: restart those whose
     // certificate is new.
     let mut restart = Vec::new();
+    // Each storage node on this host gets a certificate of its own
+    // (D378; 30-data-path-tls.md §33.6): `node-N.crt`, as node N.
+    let node_leaves: Vec<(String, String)> = nodes
+        .iter()
+        .map(|n| (format!("node-{n}"), n.to_string()))
+        .collect();
     let mut leaves = vec![
         ("api", Role::Meta, member, true, "hyperstor"),
         ("admin", Role::Admin, "local", false, "hyperstor-admin"),
@@ -4996,6 +5084,9 @@ fn pki(
         // HTTPS with it too unless the site brings a certificate, so it
         // names this host's names and addresses.
         leaves.push(("s3", Role::S3, member, true, "hyperstor"));
+    }
+    for (name, id) in &node_leaves {
+        leaves.push((name, Role::Node, id, false, "hyperstor"));
     }
     for (name, role, id, server, group) in leaves {
         // A server certificate names where it is reached: loopback, and
@@ -6546,6 +6637,56 @@ mod tests {
 
     /// The map service's certificate names its member addresses, and is
     /// issued again when they change, not only when it is due.
+    /// D378: each storage node on a member's host gets a certificate of
+    /// its own, as that node, kept by later runs.
+    #[test]
+    fn each_storage_node_on_a_members_host_gets_its_own_certificate() {
+        let root = tempfile::tempdir().unwrap();
+        let run = |nodes: &[u32]| {
+            let mut changed = Vec::new();
+            pki(
+                root.path(),
+                false,
+                "9",
+                "0",
+                &["10.0.0.12".parse().unwrap()],
+                None,
+                None,
+                &[],
+                nodes,
+                &mut changed,
+            );
+            changed
+        };
+        let changed = run(&[4, 5]);
+        let cert = |n: u32| {
+            fs::read_to_string(root.path().join(format!("etc/hyperstor/pki/node-{n}.crt"))).unwrap()
+        };
+        for n in [4, 5] {
+            let who = hyperstor_pki::identity_in(&cert(n)).unwrap();
+            assert_eq!(
+                (who.role, who.id, who.cluster.as_str()),
+                (hyperstor_pki::Role::Node, n.to_string(), "9")
+            );
+            assert!(
+                changed
+                    .iter()
+                    .any(|c| c.ends_with(&format!("node-{n}.crt")))
+            );
+            assert!(
+                root.path()
+                    .join(format!("etc/hyperstor/pki/node-{n}.key"))
+                    .exists()
+            );
+        }
+        // Kept while fresh; a node added later gets its own.
+        let (four, five) = (cert(4), cert(5));
+        let changed = run(&[4, 5, 6]);
+        assert_eq!((cert(4), cert(5)), (four, five));
+        assert!(changed.iter().any(|c| c.ends_with("node-6.crt")));
+        assert!(!changed.iter().any(|c| c.ends_with("node-4.crt")));
+    }
+
     #[test]
     fn the_map_service_certificate_follows_its_addresses() {
         let root = tempfile::tempdir().unwrap();
@@ -6564,6 +6705,7 @@ mod tests {
             None,
             None,
             &[],
+            &[],
             &mut changed,
         );
         let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
@@ -6581,6 +6723,7 @@ mod tests {
             None,
             None,
             &[],
+            &[],
             &mut changed,
         );
         assert_eq!(cert(root.path()), first, "same addresses: kept");
@@ -6592,6 +6735,7 @@ mod tests {
             &ips(&["10.0.0.13"]),
             None,
             None,
+            &[],
             &[],
             &mut changed,
         );
@@ -6621,6 +6765,7 @@ mod tests {
             Some(&a),
             None,
             &[],
+            &[],
             &mut changed,
         );
         let first = web(root.path());
@@ -6642,6 +6787,7 @@ mod tests {
             Some(&a),
             None,
             &[],
+            &[],
             &mut changed,
         );
         assert_eq!(web(root.path()), first, "same names: kept");
@@ -6654,6 +6800,7 @@ mod tests {
             &[],
             Some(&b),
             None,
+            &[],
             &[],
             &mut changed,
         );

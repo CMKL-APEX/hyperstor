@@ -34,8 +34,9 @@
 //! drives that handle a discard slowly, or `all`.
 //! `--api ADDR[,ADDR...] --identity DIR`: the node fetches the cluster's
 //! sealing keys from the cluster API at those addresses, tried in turn, as
-//! the identity in DIR (`node.crt` and `node.key`, or a map service
-//! member's `api.crt` and `api.key`, with `root.crt`), at start and every
+//! the identity in DIR (the node's own `node-N.crt` and `node-N.key`, else
+//! `node.crt` and `node.key`, else a map service member's `api.crt` and
+//! `api.key`; with `root.crt`), at start and every
 //! 30 s (04-decisions.md D370). Without them it holds no key and opens no
 //! sealed capability.
 
@@ -185,7 +186,7 @@ fn main() {
     let sealing = match (get("--api"), get("--identity")) {
         (None, None) => None,
         (Some(api), Some(dir)) => {
-            let tls = sealing::identity(std::path::Path::new(&dir)).unwrap_or_else(|e| {
+            let tls = sealing::identity(std::path::Path::new(&dir), node).unwrap_or_else(|e| {
                 eprintln!("hyperstord: --identity: {e}");
                 std::process::exit(2)
             });

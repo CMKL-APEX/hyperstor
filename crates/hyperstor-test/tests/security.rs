@@ -305,14 +305,14 @@ fn sealing_keys_rotate_and_reach_only_storage_nodes() {
             .find_map(|l| l.strip_prefix("hyperstor_sealing_keys{node=\"0\"} "))
             .and_then(|v| v.parse::<usize>().ok())
     };
-    // The node asked at start, as the member it shares a host with, and
-    // that made the first key.
+    // The node asked at start, with its own certificate (D378), and that
+    // made the first key.
     wait_for("node 0 to hold the first sealing key", 30, || {
         (held(&c) == Some(1)).then_some(())
     });
     let one = c.ctl(&["sealing-key", "list"]).ok();
     assert!(
-        one.has("/meta/") && !one.has("no sealing key yet"),
+        one.has("/node/0") && !one.has("no sealing key yet"),
         "{}",
         one.out
     );
@@ -394,7 +394,7 @@ fn sealing_keys_rotate_and_reach_only_storage_nodes() {
         l.out
     );
     assert!(
-        row("1").contains("/meta/") && row("2").contains("/admin/"),
+        row("1").contains("/node/0") && row("2").contains("/admin/"),
         "{}",
         l.out
     );
@@ -422,7 +422,7 @@ fn sealing_keys_rotate_and_reach_only_storage_nodes() {
                 && l.contains("\"result\":\"ok")
         })
     };
-    assert!(made("/meta/", "sealing key 1"), "{audit:#?}");
+    assert!(made("/node/0", "sealing key 1"), "{audit:#?}");
     assert!(made("/admin/", "sealing key 2"), "{audit:#?}");
     assert!(made("/admin/", "sealing key 3"), "{audit:#?}");
     assert!(
