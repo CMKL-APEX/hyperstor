@@ -664,6 +664,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_checkpoint_damage_total` | Damaged checkpoint pages and directories the device's checkpoint scrub found and rewrote (see [Troubleshooting](troubleshooting.md)). Any rise means the device's media is failing somewhere |
 | `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
 | `hyperstor_sealing_keys` | Sealing keys the node holds (one per node, without a `device` label): 1, or 2 after a rotation. 0 means the cluster API hasn't answered the node since it started; absent on a node started without `--api` |
+| `hyperstor_unauthenticated_connections_total` | Connections the device's reactor served a request on without a TLS handshake. While the cluster's mode is `allow` (`hyperstorctl data-tls status`), a rise names a client or node without a certificate: who would be cut off if connections had to authenticate |
 
 Gauges are updated once a second. `GET /health` answers `ok` while the
 process runs. The port has no authentication: it only reads, but keep

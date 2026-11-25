@@ -6,7 +6,7 @@ root, with the `ublk_drv` module loaded (`modprobe ublk_drv`; Linux 6.0
 or later, tested on 6.8).
 
 ```text
-usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] | delete --dev N
+usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] [--identity DIR] | delete --dev N
 ```
 
 | Command | Does |
@@ -22,6 +22,7 @@ usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--pree
 | `--preempt` | off | Take the volume from a holder that is still running: blocklist it first, so its writes are refused |
 | `--depth N` | 64 | Requests the device takes at once (1–4096) |
 | `--host NAME` | its hostname | The name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
+| `--identity DIR` | none | The host's identity on the storage network: `host.crt` and `host.key` in `DIR` (a host joined with `hyperstor-install --role vhost --join`), else `node.crt` or `api.crt` (a storage or map service host), with `root.crt`. With it, each connection to a storage node or the map service starts TLS where the cluster's mode allows. `hyperstor-install` sets it where the host has an identity |
 | `--dev N` | | `delete`: the device's number, as in `/dev/ublkbN` |
 
 Without `--take-over` or `--preempt`, `attach` is refused while another

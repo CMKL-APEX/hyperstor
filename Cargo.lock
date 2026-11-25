@@ -1707,8 +1707,10 @@ name = "hyperstor-rpc"
 version = "0.1.0"
 dependencies = [
  "hyperstor-codec",
+ "hyperstor-pki",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "rustls",
  "thiserror 2.0.21",
 ]
 

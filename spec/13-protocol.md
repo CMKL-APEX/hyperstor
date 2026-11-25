@@ -37,6 +37,11 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   agreed; a peer refuses a frame whose header version it doesn't read.
   A new message is negotiated through `Hello` and sent only to peers
   that answered a version that has it (`Host`, version 3, D261).
+- **TLS on a connection** (version 8, D373, D376, I445). `StartTls`, right
+  after `Hello`, answered `StartTlsOk`: the next bytes both ways are a
+  TLS 1.3 handshake, after which each side sends `close_notify` and
+  frames go on in plaintext (30-data-path-tls.md §33.3). A peer without
+  an identity, or in a cluster whose mode is `off`, answers `Error`.
 - **Capabilities** (version 7, D363, D371, I442). `Capability { sealed }`,
   after `Hello` and `Host`: a sealed capability the connection keeps,
   answered `Noted`, or `Error` with `Denied` (code 14) and why it doesn't

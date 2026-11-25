@@ -266,6 +266,9 @@ pub struct Client {
     /// The host it runs on, as it names itself (`--host`, D261), told to
     /// each peer that knows [`Msg::Host`]; empty: none.
     host: RefCell<String>,
+    /// Its identity on the data path (D25, D373); None: it never asks
+    /// for TLS.
+    identity: RefCell<Option<rpc::TlsIdentity>>,
     /// The sealed capabilities it shows each storage node it connects to
     /// (D363), by lineage and branch.
     capabilities: RefCell<HashMap<(u128, u32), Vec<u8>>>,
@@ -275,6 +278,37 @@ pub struct Client {
     networks: RefCell<Vec<String>>,
     /// For choosing among a device's endpoints.
     rng: RefCell<rand::rngs::SmallRng>,
+}
+
+/// The identity every client made in this process starts with
+/// ([`set_process_identity`]).
+static PROCESS_IDENTITY: std::sync::OnceLock<rpc::TlsIdentity> = std::sync::OnceLock::new();
+
+/// Gives this process its identity on the data path (D25, D373): every
+/// [`Client`] made afterwards starts TLS with it where the peer does,
+/// from its first connection. Set once, at start, by a service that was
+/// given one (`--identity DIR`); a second call changes nothing.
+pub fn set_process_identity(identity: rpc::TlsIdentity) {
+    let _ = PROCESS_IDENTITY.set(identity);
+}
+
+/// Loads this process's identity from `dir` (the first of `names` there,
+/// `hyperstor_pki::identity_files`) and sets it ([`set_process_identity`]).
+/// Returns who it is.
+pub fn load_process_identity(
+    dir: &std::path::Path,
+    names: &[&str],
+) -> Result<rpc::Identity, String> {
+    let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    let identity = rpc::TlsIdentity::load(dir, &names)?;
+    let who = identity.who.clone();
+    set_process_identity(identity);
+    Ok(who)
+}
+
+/// The identity [`set_process_identity`] gave this process, if any.
+pub fn process_identity() -> Option<rpc::TlsIdentity> {
+    PROCESS_IDENTITY.get().cloned()
 }
 
 /// `label` cut to [`hyperstor_proto::LABEL_MAX`] bytes, at a character
@@ -337,6 +371,7 @@ impl Client {
             lease_label: RefCell::new(String::new()),
             host: RefCell::new(String::new()),
             capabilities: RefCell::new(HashMap::new()),
+            identity: RefCell::new(PROCESS_IDENTITY.get().cloned()),
             networks: RefCell::new(Vec::new()),
             rng: RefCell::new(rand::SeedableRng::seed_from_u64(random_u64())),
         });
@@ -398,6 +433,19 @@ impl Client {
     /// bytes. Connections already open keep the name they gave.
     pub fn set_host(&self, host: &str) {
         *self.host.borrow_mut() = cut_label(host);
+    }
+
+    /// Gives the client its identity on the data path (D25, D373;
+    /// 30-data-path-tls.md §33.3): each connection made from now on
+    /// starts TLS with it where the peer does. The connections open now,
+    /// made without it (the one the map came over, at least), are closed,
+    /// so the next request on each makes a new one: call it before any
+    /// I/O is under way.
+    pub fn set_identity(&self, identity: rpc::TlsIdentity) {
+        *self.identity.borrow_mut() = Some(identity);
+        for c in self.conns.conns() {
+            c.kill();
+        }
     }
 
     /// Shows `sealed`, a capability for `branch` of `lineage` (D363;
@@ -625,14 +673,18 @@ impl Client {
         };
         let host = self.host.borrow().clone();
         let caps: Vec<Vec<u8>> = self.capabilities.borrow().values().cloned().collect();
+        // Asked of every peer that speaks it, whatever the mode: a peer
+        // in mode `off` says no, and the first connection, to the map
+        // service, is made before any map says the mode. Required once a
+        // map does.
+        let required = self.map.borrow().data_tls == hyperstor_map::DataTls::Require;
+        let tls = self.identity.borrow().as_ref().map(|t| t.calling(required));
         let c = self
             .conns
             .get_with(addr, |addr| async move {
-                let c = Conn::connect_within(addr, connect_limit).await?;
-                let (ok, _) = c.call_within(&hello, &[], rpc::CALL_TIMEOUT).await?;
-                if let Msg::HelloOk { version, .. } = ok {
-                    c.set_version(version);
-                }
+                // `Hello`, then TLS where this client has an identity and
+                // the peer starts it (D373).
+                let (c, _) = Conn::open(addr, connect_limit, &hello, tls.as_ref()).await?;
                 // Only a peer that knows it: older ones refuse what they
                 // can't decode (D261).
                 if c.version() >= 3 && !host.is_empty() {

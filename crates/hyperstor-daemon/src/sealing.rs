@@ -67,23 +67,17 @@ pub fn identity(
     dir: &std::path::Path,
     node: u32,
 ) -> Result<Arc<hyperstor_pki::ClientConfig>, String> {
-    let read = |f: &str| {
-        std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
-    };
-    let name = [
+    let (chain, key, root) = hyperstor_pki::identity_files(dir, &identity_names(node))?;
+    hyperstor_pki::client_config(&chain, &key, &root).map(Arc::new)
+}
+
+/// The certificates node `node` may hold, its own first (D378).
+pub fn identity_names(node: u32) -> Vec<String> {
+    vec![
         format!("node-{node}"),
         "node".to_string(),
         "api".to_string(),
     ]
-    .into_iter()
-    .find(|n| dir.join(format!("{n}.key")).exists())
-    .ok_or_else(|| format!("{}: no node-{node}.key, node.key or api.key", dir.display()))?;
-    hyperstor_pki::client_config(
-        &read(&format!("{name}.crt"))?,
-        &read(&format!("{name}.key"))?,
-        &read("root.crt")?,
-    )
-    .map(Arc::new)
 }
 
 fn client(
@@ -248,7 +242,7 @@ mod tests {
     fn the_identity_is_the_nodes_or_the_members() {
         let dir = tempfile::tempdir().unwrap();
         let e = identity(dir.path(), 3).err().unwrap();
-        assert!(e.contains("no node-3.key, node.key or api.key"), "{e}");
+        assert!(e.contains("no node-3.key, node.key, api.key"), "{e}");
         // A key without its certificate says which file is missing.
         std::fs::write(dir.path().join("api.key"), "x").unwrap();
         let e = identity(dir.path(), 3).err().unwrap();

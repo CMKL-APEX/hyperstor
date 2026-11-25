@@ -116,6 +116,10 @@ service ClusterService {
   // with `node` and `name` for one port; without `lending`, the default
   // again (the cluster's: `idle`, D238). Write.
   rpc SetLending(SetLendingRequest) returns (SetLendingResponse);
+  // Sets whether connections on the storage network authenticate with
+  // the cluster's certificates (04-decisions.md D373): "off" or "allow".
+  // Connections already open stay as they are. Write.
+  rpc SetDataTls(SetDataTlsRequest) returns (SetDataTlsResponse);
 
   // An orchestrator claims a port for `ttl_secs` (26-networks.md §29.9,
   // D205, D239): exclusive, storage leaves it; shared, storage may stay;
@@ -392,6 +396,8 @@ message GetStatusResponse {
   string map_address = 7 [json_name = "map_address"];
   // The fullness thresholds devices are held to (04-decisions.md D27, D182).
   FullRatios full_ratios = 8 [json_name = "full_ratios"];
+  // The data path's TLS mode (D373): "off", "allow" or "require".
+  string data_tls = 10 [json_name = "data_tls"];
   // The cluster's networks (26-networks.md §29.3).
   repeated Network networks = 9;
 }
@@ -1016,6 +1022,19 @@ message SetPortRoleRequest {
   string name = 2;
   // One of Port.role's; absent: the default again.
   optional string role = 3;
+}
+
+message SetDataTlsRequest {
+  // "off", "allow" or "require" (not offered yet: it comes with
+  // authorization by certificate role).
+  string mode = 1;
+}
+
+message SetDataTlsResponse {
+  // The working map's epoch after the change.
+  uint64 map_epoch = 1 [json_name = "map_epoch"];
+  // The mode before.
+  string was = 2;
 }
 
 message SetLendingRequest {

@@ -21,6 +21,19 @@ cluster ID
 
 The cluster's number. Optional; `0` if absent.
 
+## `data-tls`
+
+```
+data-tls allow
+```
+
+The mode a new cluster's storage network starts in: `off` (connections
+don't authenticate; the default without the line) or `allow` (they
+authenticate with the cluster's certificates where both ends can, and
+others are still served). `hyperstor-install --all-in-one` writes
+`allow`. The line is read when the cluster's first map is made; a
+running cluster changes its mode with `hyperstorctl data-tls set`.
+
 ## `node`
 
 ```text

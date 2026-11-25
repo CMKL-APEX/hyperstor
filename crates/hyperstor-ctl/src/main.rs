@@ -177,6 +177,10 @@
 //!   `--mgmt URL --token-file F`: a person of a trusted directory signs in
 //!   by its device grant; the file keeps the access token and the refresh
 //!   token that renews it, and `--mgmt` reads it (D307);
+//! - `data-tls status`, `data-tls set --mode off|allow`: whether
+//!   connections on the storage network authenticate with the cluster's
+//!   certificates (D373; 30-data-path-tls.md §33.4); `require` comes with
+//!   authorization by role.
 //! - `sealing-key list`, `sealing-key rotate`: the keys that seal NFS
 //!   stateids and dataset capabilities (D133, D363); a rotation makes a
 //!   new one and keeps the one before it valid;
@@ -238,7 +242,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -352,6 +356,8 @@ struct Args {
     all: bool,
     /// `port lending`: off, idle, always or default (D209).
     lending: Option<String>,
+    /// `data-tls set`: off, allow or require (D373).
+    mode: Option<String>,
     /// `network set`: `subnet IP/LEN` or `ib PREFIX` (D284).
     matches: Option<String>,
     /// `network set`: plaintext after the handshake (D25).
@@ -562,6 +568,7 @@ fn main() {
         exclusive: false,
         all: false,
         lending: None,
+        mode: None,
         matches: None,
         trusted: false,
         epoch: None,
@@ -794,6 +801,10 @@ fn main() {
             "--exclusive" => a.exclusive = true,
             "--all" => a.all = true,
             "--lending" => a.lending = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--mode" => match it.next().map(String::as_str) {
+                Some(m @ ("off" | "allow" | "require")) => a.mode = Some(m.to_string()),
+                _ => usage(),
+            },
             "--match" => a.matches = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--trusted" => a.trusted = true,
             "--epoch" => {
@@ -867,7 +878,7 @@ fn main() {
             // Two words: the group, then what to do.
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
             | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network" | "tenant"
-            | "project" | "admission" | "cluster" | "auth" | "pg" | "sealing-key"
+            | "project" | "admission" | "cluster" | "auth" | "pg" | "sealing-key" | "data-tls"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -876,6 +887,7 @@ fn main() {
                     "cert" => matches!(sub, Some("list" | "revoke" | "show" | "renew")),
                     "map" => matches!(sub, Some("backup")),
                     "sealing-key" => matches!(sub, Some("list" | "rotate")),
+                    "data-tls" => matches!(sub, Some("status" | "set")),
                     "pg" => matches!(sub, Some("promote")),
                     "member" => matches!(sub, Some("list" | "add" | "remove")),
                     "snapshot" => matches!(
@@ -1082,6 +1094,7 @@ fn main() {
         || (port && a.device.is_some())
         || (cmd == "port list" && !a.name.is_empty())
         || (cmd == "port lending") != a.lending.is_some()
+        || (cmd == "data-tls set") != a.mode.is_some()
         || (cmd == "port lending" && a.node.is_some() == a.name.is_empty())
         || (claim_one
             && (a.node.is_none()
@@ -1426,6 +1439,12 @@ fn main() {
         };
         std::process::exit(renew(&api, &dir, a.force));
     }
+    // The administrator's identity on the data path too (D373), for the
+    // commands that move data. A directory without one (a local socket's
+    // user) leaves them unauthenticated.
+    if let Some(dir) = &tls_dir {
+        let _ = hyperstor_client::load_process_identity(std::path::Path::new(dir), &["admin"]);
+    }
     let tls = tls_dir
         .as_deref()
         .filter(|_| socket.is_none())
@@ -1679,6 +1698,7 @@ const LEADER_ONLY: &[&str] = &[
     "s3 key revoke",
     // And the sealing keys (D133): a refused rotation made no key.
     "sealing-key rotate",
+    "data-tls set",
     "s3 placement set",
     "s3 placement delete",
     // So are realms (D248).
@@ -2633,6 +2653,30 @@ where
                 .into_owned();
             show(a, &r, || ports_text(&r));
             Next::Exit(0)
+        }
+        "data-tls status" => {
+            let s = client
+                .get_status(pb::GetStatusRequest::default())
+                .await?
+                .into_owned();
+            show(a, &s, || data_tls_text(&s.data_tls));
+            Next::Exit(0)
+        }
+        "data-tls set" => {
+            let mode = a.mode.clone().expect("checked with the arguments");
+            let r = client
+                .set_data_tls(pb::SetDataTlsRequest {
+                    mode: mode.clone(),
+                    ..Default::default()
+                })
+                .await;
+            refused_or(r, |r| {
+                let r = r.into_owned();
+                println!(
+                    "data path TLS: {mode}, was {} (map epoch {}); connections open now stay as they are",
+                    r.was, r.map_epoch
+                )
+            })?
         }
         "port lending" => {
             let lending = a.lending.clone().expect("checked with the arguments");

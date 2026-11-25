@@ -1162,6 +1162,7 @@ pub fn status(
             .collect(),
         map_address: map_address.to_string(),
         full_ratios: full_ratios(&map.full_ratios).into(),
+        data_tls: map.data_tls.as_str().into(),
         networks: map
             .networks
             .iter()
@@ -2093,6 +2094,50 @@ impl ClusterService for Api {
             ..Default::default()
         }
         .into())
+    }
+
+    async fn set_data_tls(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetDataTlsRequest>,
+    ) -> ServiceResult<pb::SetDataTlsResponse> {
+        let target = format!("data path TLS mode={}", req.mode);
+        let who = self.authorize(&ctx, "SetDataTls", &target, true)?;
+        let mode = hyperstor_map::DataTls::parse(req.mode).ok_or_else(|| {
+            admin::invalid(
+                format!("{}: the mode is off, allow or require", req.mode),
+                "invalid_argument",
+            )
+        })?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SetDataTls { mode, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        let r = rx.recv().await;
+        audit(
+            &who,
+            "SetDataTls",
+            &target,
+            &match &r {
+                Some(Ok((epoch, was))) => format!("ok, was {}, map epoch {epoch}", was.as_str()),
+                Some(Err(e)) => format!("failed: {e}"),
+                None => "failed: map service stopped".into(),
+            },
+        );
+        match r {
+            Some(Ok((map_epoch, was))) => Ok(pb::SetDataTlsResponse {
+                map_epoch,
+                was: was.as_str().into(),
+                ..Default::default()
+            }
+            .into()),
+            Some(Err(e)) => Err(meta_error(
+                e,
+                ConnectError::failed_precondition,
+                "not_built",
+            )),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
     }
 
     async fn set_lending(

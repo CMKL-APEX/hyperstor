@@ -26,8 +26,10 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// [`WireOp::WriteCrcs`] in operation lists (D279). 5:
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
 /// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
-/// (D363, D371).
-pub const VERSION: u16 = 7;
+/// (D363, D371). 8: [`Msg::StartTls`] (D25, D373).
+pub const VERSION: u16 = 8;
+/// The first version that decodes [`Msg::StartTls`] (D373).
+pub const TLS_VERSION: u16 = 8;
 /// The first version that decodes [`Msg::Capability`] (D363).
 pub const CAPABILITY_VERSION: u16 = 7;
 /// The first version whose primaries take [`WireOp::ZeroRange`] (D357).
@@ -389,6 +391,16 @@ pub enum Msg {
     Host {
         name: String,
     },
+    /// Caller to a storage node or the map service, right after `Hello`,
+    /// when `HelloOk` answered [`TLS_VERSION`] or more and the caller has
+    /// an identity: start TLS on this connection (D373;
+    /// 30-data-path-tls.md §33.3). Answered `StartTlsOk`, after which the
+    /// next bytes both ways are the handshake, or `Error` with
+    /// [`Code::Invalid`] where the peer has no identity or the cluster's
+    /// mode is `off`, after which frames go on unauthenticated. The
+    /// caller sends nothing else until it has the answer.
+    StartTls,
+    StartTlsOk,
     /// Client to storage node, after `Hello` and `Host`, when the node's
     /// `HelloOk` answered [`CAPABILITY_VERSION`] or more: a sealed
     /// capability (`hyperstor_pki::seal`; 29-hsfs.md §32.6, D363) for the
@@ -936,6 +948,8 @@ mod kind {
     pub const NODE_HOST: u16 = 100;
     pub const LEASE_PROMOTE: u16 = 101;
     pub const CAPABILITY: u16 = 102;
+    pub const START_TLS: u16 = 103;
+    pub const START_TLS_OK: u16 = 104;
 }
 
 impl Msg {
@@ -1035,6 +1049,8 @@ impl Msg {
             Msg::PortReport { .. } => PORT_REPORT,
             Msg::Host { .. } => HOST,
             Msg::Capability { .. } => CAPABILITY,
+            Msg::StartTls => START_TLS,
+            Msg::StartTlsOk => START_TLS_OK,
             Msg::NodeHost { .. } => NODE_HOST,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
@@ -1119,6 +1135,7 @@ impl Msg {
                 | Msg::LeaseRenewOk { .. }
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
+                | Msg::StartTlsOk
                 | Msg::PgUsageOk { .. }
                 | Msg::PgSpaceOk { .. }
                 | Msg::LeaderStateOk { .. }
@@ -1218,6 +1235,7 @@ impl Msg {
             Msg::Capability { sealed } => {
                 e.bytes(sealed);
             }
+            Msg::StartTls | Msg::StartTlsOk => {}
             Msg::NodeHost { node, name } => {
                 e.u32(*node).str(name);
             }
@@ -1714,6 +1732,8 @@ impl Msg {
                 reporter: d.u32()?,
                 addr: d.str()?.parse().map_err(|_| DecodeError::Utf8)?,
             },
+            START_TLS => Msg::StartTls,
+            START_TLS_OK => Msg::StartTlsOk,
             CAPABILITY => Msg::Capability {
                 sealed: d.bytes()?.to_vec(),
             },
@@ -2652,6 +2672,8 @@ mod tests {
             Msg::Capability {
                 sealed: vec![1, 2, 3],
             },
+            Msg::StartTls,
+            Msg::StartTlsOk,
             Msg::NodeHost {
                 node: 2,
                 name: "storage-2".into(),

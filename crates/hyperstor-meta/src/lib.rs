@@ -431,6 +431,12 @@ pub enum Admin {
         role: Option<hyperstor_map::PortRole>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Sets the data path's TLS mode (D373). Replies with the working
+    /// map's epoch and the mode before.
+    SetDataTls {
+        mode: DataTls,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, DataTls), String>>,
+    },
     /// Sets the lending of a port, or with `port` `None` of the cluster
     /// (D209). Replies with the working map's epoch.
     SetLending {
@@ -985,6 +991,10 @@ pub struct Meta {
     /// a device that reports one has a node of v0.0.8 or later, and a map
     /// that carried them would be a format older nodes can't read.
     formats: RefCell<BTreeMap<u32, u8>>,
+    /// This member's identity on the data path (D25, D373): what it
+    /// answers `StartTls` with and calls storage nodes with. None: it
+    /// refuses `StartTls` and never asks.
+    tls: RefCell<Option<hyperstor_rpc::TlsIdentity>>,
     /// Members' reports of marked PGs split (D187): the PG epoch they name
     /// and who reported.
     split_reports: RefCell<SplitReports>,
@@ -1253,6 +1263,7 @@ impl Meta {
             fullness: RefCell::new(BTreeMap::new()),
             kind_reports: RefCell::new(BTreeMap::new()),
             formats: RefCell::new(BTreeMap::new()),
+            tls: RefCell::new(hyperstor_client::process_identity()),
             split_reports: RefCell::new(HashMap::new()),
             leader_view: RefCell::new(None),
             granted: RefCell::new(HashMap::new()),
@@ -3556,6 +3567,9 @@ impl Meta {
                 Admin::SetNetwork { name, def, reply } => {
                     self.reply_published(reply, self.set_network(&name, def), |e| e);
                 }
+                Admin::SetDataTls { mode, reply } => {
+                    self.reply_published(reply, self.set_data_tls(mode), |e| e);
+                }
                 Admin::SetLending {
                     port,
                     lending,
@@ -4355,9 +4369,70 @@ impl Meta {
         {
             return Ok(c.clone());
         }
-        let c = hyperstor_rpc::Conn::connect(addr).await?;
+        // With an identity, and unless the cluster's mode is `off`: a
+        // `Hello`, then TLS where the node has it (D373).
+        let mode = self.map.borrow().data_tls;
+        let tls = self
+            .tls
+            .borrow()
+            .as_ref()
+            .filter(|_| mode != DataTls::Off)
+            .map(|t| t.calling(mode == DataTls::Require));
+        let c = match tls {
+            None => hyperstor_rpc::Conn::connect(addr).await?,
+            Some(tls) => {
+                let hello = hyperstor_proto::Msg::Hello {
+                    min_version: hyperstor_proto::OLDEST_VERSION,
+                    max_version: hyperstor_proto::VERSION,
+                    id: 0,
+                    instance: 0,
+                };
+                hyperstor_rpc::Conn::open(addr, hyperstor_rpc::CONNECT_TIMEOUT, &hello, Some(&tls))
+                    .await?
+                    .0
+            }
+        };
         self.conns.borrow_mut().insert(addr, c.clone());
         Ok(c)
+    }
+
+    /// Gives this member its identity on the data path (D373).
+    pub fn set_tls(&self, tls: hyperstor_rpc::TlsIdentity) {
+        *self.tls.borrow_mut() = Some(tls);
+    }
+
+    /// What this member answers `StartTls` with: nothing without an
+    /// identity or in mode `off`.
+    pub fn answering_tls(&self) -> hyperstor_rpc::AnswererTls {
+        self.tls
+            .borrow()
+            .as_ref()
+            .filter(|_| self.map.borrow().data_tls != DataTls::Off)
+            .map(|t| t.answerer.clone())
+    }
+
+    /// Sets the data path's TLS mode (D373; 30-data-path-tls.md §33.4):
+    /// the working map's epoch, and the mode before. Connections already
+    /// open stay as they are; each new one follows the mode.
+    pub fn set_data_tls(&self, mode: DataTls) -> Result<(u64, DataTls), String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        if mode == DataTls::Require {
+            // T2 (D377): nothing is refused by role yet, so `require`
+            // would promise a boundary that isn't there.
+            return Err(
+                "require isn't built yet: authorization by certificate role comes with it (30-data-path-tls.md §33.9, stage T2)"
+                    .into(),
+            );
+        }
+        let mut map = self.map.borrow_mut();
+        let was = map.data_tls;
+        if was != mode {
+            map.data_tls = mode;
+            map.epoch += 1;
+        }
+        Ok((map.epoch, was))
     }
 
     /// Returns once `dev` can no longer serve `pgs` under an older map.
@@ -4843,6 +4918,24 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                     return;
                 }
                 let msg = Msg::decode(h.kind, &body[..h.body_len as usize]);
+                // TLS on this connection (D373): the handshake runs here,
+                // before the next frame is read.
+                if let Ok(Msg::StartTls) = msg {
+                    let no = Msg::Error {
+                        code: hyperstor_proto::Code::Invalid,
+                        map_epoch: meta.map.borrow().epoch,
+                        detail: "the map service doesn't start TLS: it has no identity, or the cluster's mode is off".into(),
+                    };
+                    let tls = meta.answering_tls();
+                    if hyperstor_rpc::answer_start_tls(&s, &tx, h.req, &tls, no)
+                        .await
+                        .is_err()
+                    {
+                        let _ = s.shutdown();
+                        return;
+                    }
+                    continue;
+                }
                 // Answered later, from a task of its own: it waits for the
                 // map to reach every node.
                 if let Ok(Msg::Blocklist { ids }) = msg {

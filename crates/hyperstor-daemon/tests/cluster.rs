@@ -69,6 +69,11 @@ enum MetaCmd {
     /// Forgets the primaries' space reports, as a new leader would.
     ForgetSpace,
     /// Splits a pool to the PG count given (D187).
+    /// Sets the data path's TLS mode (D373).
+    DataTls(
+        hyperstor_meta::DataTls,
+        std::sync::mpsc::Sender<Result<(u64, hyperstor_meta::DataTls), String>>,
+    ),
     /// Turns a pool's capability requirement on or off (D371).
     Capabilities(
         u32,
@@ -192,6 +197,9 @@ struct Cluster {
     /// The sealing keys every node holds (D370): none until a test sets
     /// some.
     sealing: Arc<hyperstor_daemon::sealing::Sealing>,
+    /// The cluster's test CA: every node and the map service hold an
+    /// identity of it (D373), unused while the map's mode is `off`.
+    pki: Arc<TestPki>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
     /// Read timeout given to restarted nodes (D190); zero: the default.
@@ -204,6 +212,34 @@ struct Cluster {
     perf_every: std::time::Duration,
     /// How often primaries walk their PGs for space (D155, D335).
     usage_every: std::time::Duration,
+}
+
+/// A test cluster's CA (19-administration.md §23.8): a root, the
+/// intermediate that signs, and identities of it.
+struct TestPki {
+    root: hyperstor_pki::Pem,
+    ca: hyperstor_pki::Pem,
+}
+
+impl TestPki {
+    const CLUSTER: &str = "9";
+
+    fn new() -> TestPki {
+        let root = hyperstor_pki::new_root(Self::CLUSTER).unwrap();
+        let ca = hyperstor_pki::new_intermediate(&root, Self::CLUSTER).unwrap();
+        TestPki { root, ca }
+    }
+
+    fn identity(&self, role: hyperstor_pki::Role, id: &str) -> hyperstor_client::rpc::TlsIdentity {
+        let who = hyperstor_pki::Identity {
+            cluster: Self::CLUSTER.into(),
+            role,
+            id: id.into(),
+        };
+        let leaf = hyperstor_pki::issue(&self.ca, &who, &[], &[], 30).unwrap();
+        hyperstor_client::rpc::TlsIdentity::from_pem(&leaf.cert, &leaf.key, &self.root.cert)
+            .unwrap()
+    }
 }
 
 impl Cluster {
@@ -423,9 +459,12 @@ impl Cluster {
         map.recompute();
         let (meta_tx, mut meta_rx) = channel::<MetaCmd>();
         let space = SPACE_EVERY.with(|s| s.get());
+        let pki = Arc::new(TestPki::new());
+        let meta_tls = pki.identity(hyperstor_pki::Role::Meta, "1");
         let meta_thread = std::thread::spawn(move || {
             block_on(async move {
                 let meta = hyperstor_meta::Meta::with_lease(map, lease);
+                meta.set_tls(meta_tls);
                 meta.set_down_out(down_out);
                 spawn(hyperstor_meta::serve(
                     hyperstor_reactor::net::TcpListener::from_std(meta_l),
@@ -492,6 +531,9 @@ impl Cluster {
                             };
                             let _ = tx.send(r);
                         }
+                        MetaCmd::DataTls(mode, tx) => {
+                            let _ = tx.send(meta.set_data_tls(mode));
+                        }
                         MetaCmd::Capabilities(pool, on, tx) => {
                             let change = hyperstor_meta::PoolChange {
                                 capabilities: Some(on),
@@ -537,6 +579,7 @@ impl Cluster {
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
                     sealing: Some(sealing.clone()),
+                    tls: Some(pki.identity(hyperstor_pki::Role::Node, &n.to_string())),
                     kv,
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
@@ -596,6 +639,7 @@ impl Cluster {
             pings,
             older,
             sealing,
+            pki,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
@@ -647,6 +691,7 @@ impl Cluster {
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
             sealing: Some(self.sealing.clone()),
+            tls: Some(self.pki.identity(hyperstor_pki::Role::Node, &n.to_string())),
             kv: self.kv,
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
@@ -732,6 +777,16 @@ impl Cluster {
                 .send(MetaCmd::Promote(pool, device, dry, tx))
                 .is_ok()
         );
+        rx.recv().unwrap()
+    }
+
+    /// Sets the data path's TLS mode (D373); the map service's answer.
+    fn data_tls(
+        &self,
+        mode: hyperstor_meta::DataTls,
+    ) -> Result<(u64, hyperstor_meta::DataTls), String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::DataTls(mode, tx)).is_ok());
         rx.recv().unwrap()
     }
 
@@ -10115,5 +10170,165 @@ fn a_pool_that_requires_capabilities_serves_only_what_a_client_shows() {
         &map,
         devs,
         &(0..8u64).map(|i| (1u128, i)).collect::<Vec<_>>(),
+    );
+}
+
+/// The data path's mutual TLS, modes `off` and `allow` (D373;
+/// 30-data-path-tls.md §33.3, §33.4). In `off` no connection
+/// authenticates and nodes say no when asked. In `allow`, nodes
+/// authenticate each other and the map service, a client with an identity
+/// is authenticated and one without is still served, and each node counts
+/// the connections it serves unauthenticated. I/O, replication, a node's
+/// restart and the turn back to `off` go on throughout. `require` waits
+/// for authorization by role.
+#[test]
+fn connections_authenticate_when_the_cluster_allows_it() {
+    use hyperstor_meta::DataTls;
+    let mut c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let host = c.pki.identity(hyperstor_pki::Role::Host, "hv-1");
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<&'static str>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            // Whether a new connection to node 0 authenticates, as this
+            // caller.
+            let hello = hyperstor_proto::Msg::Hello {
+                min_version: hyperstor_proto::OLDEST_VERSION,
+                max_version: hyperstor_proto::VERSION,
+                id: 7,
+                instance: 8,
+            };
+            let probe = async |addr: SocketAddr, tls: &hyperstor_client::rpc::TlsIdentity| {
+                let (conn, _) = hyperstor_rpc::Conn::open(
+                    addr,
+                    std::time::Duration::from_secs(5),
+                    &hello,
+                    Some(&tls.calling(false)),
+                )
+                .await
+                .unwrap();
+                let peer = conn.peer();
+                conn.kill();
+                peer
+            };
+            let plain = Client::connect(meta, 98).await.unwrap();
+            let named = Client::connect(meta, 99).await.unwrap();
+            named.set_identity(host.clone());
+            let node0 = plain.map().device_addr(0).unwrap();
+            let io = async |cl: &std::rc::Rc<Client>, lineage: u128, seed: u64| {
+                for i in 0..6u64 {
+                    cl.write(POOL, lineage, i * CHUNK as u64, pattern(seed + i, 4096))
+                        .await
+                        .unwrap();
+                }
+                for i in 0..6u64 {
+                    assert!(
+                        cl.read(POOL, lineage, i * CHUNK as u64, 4096)
+                            .await
+                            .unwrap()
+                            == pattern(seed + i, 4096)
+                    );
+                }
+            };
+
+            // `off`: both clients are served, and nobody starts TLS.
+            io(&plain, 1, 10).await;
+            io(&named, 2, 20).await;
+            assert!(probe(node0, &host).await.is_none());
+            assert!(probe(meta, &host).await.is_none());
+
+            step_tx.send("allow").unwrap();
+            go_rx.recv().unwrap();
+            // The nodes take the map within moments; then a caller with
+            // an identity learns who it reached: node 0, and the member.
+            let t0 = std::time::Instant::now();
+            let who = loop {
+                if let Some(w) = probe(node0, &host).await {
+                    break w;
+                }
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            };
+            assert_eq!(
+                (who.role, who.id.as_str()),
+                (hyperstor_pki::Role::Node, "0")
+            );
+            let who = probe(meta, &host).await.unwrap();
+            assert_eq!(who.role, hyperstor_pki::Role::Meta);
+            // Both clients go on: the one with an identity over new,
+            // authenticated connections, the other as before.
+            named.set_identity(host.clone());
+            io(&named, 2, 30).await;
+            io(&plain, 1, 40).await;
+            // A client that connects now without an identity is served
+            // too, and counted.
+            let late = Client::connect(meta, 97).await.unwrap();
+            io(&late, 1, 40).await;
+
+            // A node restarts and comes back among authenticated peers.
+            step_tx.send("restart").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&plain).await;
+            io(&named, 2, 50).await;
+            io(&plain, 1, 60).await;
+
+            // Back to `off`: connections made from now on don't ask.
+            step_tx.send("off").unwrap();
+            go_rx.recv().unwrap();
+            let t0 = std::time::Instant::now();
+            while probe(node0, &host).await.is_some() {
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            io(&named, 2, 70).await;
+            io(&plain, 1, 80).await;
+            step_tx.send("done").unwrap();
+        })
+    });
+    let unauthenticated = |c: &Cluster| -> u64 {
+        c.nodes
+            .iter()
+            .flatten()
+            .flat_map(|n| n.metrics.iter())
+            .map(|(_, m)| m.unauthenticated.load(std::sync::atomic::Ordering::Relaxed))
+            .sum()
+    };
+    let mut in_allow = 0;
+    loop {
+        match step_rx.recv().unwrap() {
+            "allow" => {
+                // `require` isn't offered before authorization by role.
+                let e = c.data_tls(DataTls::Require).unwrap_err();
+                assert!(e.contains("isn't built yet"), "{e}");
+                let (epoch, was) = c.data_tls(DataTls::Allow).unwrap();
+                assert_eq!(was, DataTls::Off);
+                // Asked again: no new map.
+                assert_eq!(c.data_tls(DataTls::Allow).unwrap(), (epoch, DataTls::Allow));
+                in_allow = unauthenticated(&c);
+            }
+            "restart" => {
+                // In `allow`, the client that came without an identity
+                // was served, and counted by the nodes it reached.
+                assert!(unauthenticated(&c) > in_allow, "{in_allow}");
+                c.kill(1);
+                c.restart(1);
+            }
+            "off" => {
+                c.data_tls(DataTls::Off).unwrap();
+            }
+            _ => break,
+        }
+        go_tx.send(()).unwrap();
+    }
+    t.join().unwrap();
+    let (map, devs) = c.stop();
+    assert_eq!(map.data_tls, DataTls::Off);
+    copies_agree(
+        &map,
+        devs,
+        &(0..6u64)
+            .flat_map(|i| [(1u128, i), (2u128, i)])
+            .collect::<Vec<_>>(),
     );
 }

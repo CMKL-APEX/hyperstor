@@ -260,6 +260,10 @@ pub struct NodeConfig {
     /// clients' capabilities with (D363). None: it opens none, and a pool
     /// that requires capabilities (D371) serves no client here.
     pub sealing: Option<Arc<sealing::Sealing>>,
+    /// The node's identity on the data path (D25, D373): what its
+    /// reactors answer `StartTls` with and call peers with. None: it
+    /// refuses `StartTls` and never asks.
+    pub tls: Option<hyperstor_client::rpc::TlsIdentity>,
     /// Jobs on the key–value ranges this node is primary of.
     pub kv: KvJobs,
 }
@@ -484,6 +488,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         let ping_faults = cfg.pings.clone();
         let older = cfg.older.clone();
         let sealing = cfg.sealing.clone();
+        let tls = cfg.tls.clone();
         let io_timeout = match cfg.io_timeout {
             Duration::ZERO => IO_TIMEOUT,
             t => t,
@@ -549,6 +554,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.older.borrow_mut() = older.map(|o| (node, o));
                         *st.sealing.borrow_mut() = sealing;
+                        *st.tls.borrow_mut() = tls;
                         *st.commit_delays.borrow_mut() = commit_delays;
                         let no_udp = ping_faults.as_ref().is_some_and(|f| f.no_udp(node));
                         *st.ping_faults.borrow_mut() = ping_faults;
@@ -786,6 +792,8 @@ struct ShardState {
     older: RefCell<Option<(u32, Arc<faults::Older>)>>,
     /// The node's sealing keys (`NodeConfig::sealing`).
     sealing: RefCell<Option<Arc<sealing::Sealing>>>,
+    /// The node's data-path identity (`NodeConfig::tls`).
+    tls: RefCell<Option<hyperstor_client::rpc::TlsIdentity>>,
     /// Objects the last scrub of each PG left unresolved, as reported.
     inconsistent: RefCell<HashMap<(u32, u32), u32>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
@@ -1505,6 +1513,7 @@ impl ShardState {
             partitions: RefCell::new(None),
             older: RefCell::new(None),
             sealing: RefCell::new(None),
+            tls: RefCell::new(None),
             watches: RefCell::new(HashMap::new()),
             quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
@@ -2136,19 +2145,43 @@ impl ShardState {
             id: self.me as u64,
             instance: 0,
         };
+        // And TLS right after it, where the peer has it and the cluster
+        // isn't `off` (D373).
+        let tls = self.calling_tls();
         Ok(self
             .peers
             .get_with(addr, |addr| async move {
-                let c = Conn::connect(addr).await?;
-                if let (Msg::HelloOk { version, .. }, _) = c
-                    .call_within(&hello, &[], hyperstor_client::rpc::CALL_TIMEOUT)
-                    .await?
-                {
-                    c.set_version(version);
-                }
+                let (c, _) = Conn::open(
+                    addr,
+                    hyperstor_client::rpc::CONNECT_TIMEOUT,
+                    &hello,
+                    tls.as_ref(),
+                )
+                .await?;
                 Ok(c)
             })
             .await?)
+    }
+
+    /// What this node calls peers with (D373): its identity unless the
+    /// cluster's mode is `off`, required when it is `require`.
+    fn calling_tls(&self) -> Option<hyperstor_client::rpc::CallerTls> {
+        let mode = self.map().data_tls;
+        self.tls
+            .borrow()
+            .as_ref()
+            .filter(|_| mode != hyperstor_meta::DataTls::Off)
+            .map(|t| t.calling(mode == hyperstor_meta::DataTls::Require))
+    }
+
+    /// What this node answers `StartTls` with: nothing without an
+    /// identity or in mode `off`.
+    fn answering_tls(&self) -> hyperstor_client::rpc::AnswererTls {
+        self.tls
+            .borrow()
+            .as_ref()
+            .filter(|_| self.map().data_tls != hyperstor_meta::DataTls::Off)
+            .map(|t| t.answerer.clone())
     }
 
     /// Bytes of backfill pushes on the wire to `target`.
@@ -2258,6 +2291,10 @@ impl ShardState {
         let mut host = String::new();
         // The capabilities the client has shown on this connection (D363).
         let mut caps: Vec<Capability> = Vec::new();
+        // Who the caller proved to be (D373); None: it didn't authenticate.
+        let mut peer: Option<hyperstor_pki::Identity> = None;
+        // Counted once it asks for something unauthenticated.
+        let mut counted = false;
         let counter = counter_of(&s);
         loop {
             let Ok((h, msg, payload)) = read_request(&s, counter.as_deref()).await else {
@@ -2303,7 +2340,43 @@ impl ShardState {
                 reply(&err(Code::Denied, &self.map(), why), &[]);
                 continue;
             }
+            if peer.is_none()
+                && !counted
+                && !matches!(msg, Msg::Hello { .. } | Msg::Ping | Msg::StartTls)
+            {
+                counted = true;
+                metrics::ShardMetrics::add(&self.metrics.unauthenticated, 1);
+            }
             match msg {
+                Msg::StartTls => {
+                    let no = err(
+                        Code::Invalid,
+                        &self.map(),
+                        "this node doesn't start TLS: it has no identity, or the cluster's mode is off",
+                    );
+                    match hyperstor_client::rpc::answer_start_tls(
+                        &s,
+                        &tx,
+                        h.req,
+                        &self.answering_tls(),
+                        no,
+                    )
+                    .await
+                    {
+                        Ok(who) => peer = who,
+                        // The stream is mid-handshake: nothing more can
+                        // be read from it as frames.
+                        Err(e) => {
+                            eprintln!(
+                                "hyperstord: node {}: TLS with {}: {e}",
+                                self.me,
+                                s.peer_addr().map_or("?".into(), |a| a.to_string())
+                            );
+                            let _ = s.shutdown();
+                            return;
+                        }
+                    }
+                }
                 Msg::Capability { sealed } => {
                     let keys = self.sealing.borrow().as_ref().map(|s| s.keys());
                     let opened = match keys {

@@ -502,3 +502,66 @@ fn a_pool_requires_capabilities_when_told() {
         );
     }
 }
+
+/// The data path's mutual TLS on an installed cluster (D373, D380;
+/// 30-data-path-tls.md §33.4). A new cluster starts in `allow`: its
+/// nodes, its map service and `hyperstorctl` each hold a certificate, so
+/// every connection authenticates and no node serves one that didn't.
+/// Turned `off`, connections made from then on don't, and are counted.
+/// `require` isn't offered before authorization by role; each change is
+/// audited.
+#[test]
+fn a_new_clusters_connections_authenticate() {
+    let c = Cluster::all_in_one("datatls", 3);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    let unauthenticated =
+        |c: &Cluster| c.metric_sum("hyperstor_unauthenticated_connections_total", "");
+    let s = c.ctl(&["data-tls", "status"]).ok();
+    assert!(s.has("data path TLS: allow"), "{}", s.out);
+    assert!(
+        c.ctl(&["data-tls", "status", "--json"])
+            .ok()
+            .has("\"data_tls\":\"allow\"")
+    );
+    // Writes through three nodes, replicated among them, read back: all
+    // of it over authenticated connections.
+    c.ctl(&["io-test", "--mib", "4"]).ok();
+    assert_eq!(unauthenticated(&c), 0, "{}", c.metrics(0));
+
+    // `require` waits for authorization by role (stage T2).
+    let r = c.ctl(&["data-tls", "set", "--mode", "require"]);
+    assert!(r.code != 0 && r.has("isn't built yet"), "{}", r.out);
+    c.ctl(&["data-tls", "set", "--mode", "on"]).expect(2);
+    c.ctl(&["data-tls", "set"]).expect(2);
+
+    let off = c.ctl(&["data-tls", "set", "--mode", "off"]).ok();
+    assert!(off.has("data path TLS: off, was allow"), "{}", off.out);
+    assert!(
+        c.ctl(&["data-tls", "status"])
+            .ok()
+            .has("data path TLS: off")
+    );
+    // Connections made from now on don't authenticate: the tool's next
+    // ones are served, and counted.
+    wait_for("an unauthenticated connection to be counted", 30, || {
+        c.ctl(&["io-test", "--mib", "1"]).ok();
+        (unauthenticated(&c) > 0).then_some(())
+    });
+    let on = c.ctl(&["data-tls", "set", "--mode", "allow"]).ok();
+    assert!(on.has("data path TLS: allow, was off"), "{}", on.out);
+    c.ctl(&["io-test", "--mib", "1"]).ok();
+
+    let audit = c.audit();
+    for (what, result) in [
+        ("mode=require", "\"result\":\"failed: "),
+        ("mode=off", "\"result\":\"ok, was allow"),
+        ("mode=allow", "\"result\":\"ok, was off"),
+    ] {
+        assert!(
+            audit.iter().any(|l| l.contains("\"op\":\"SetDataTls\"")
+                && l.contains(what)
+                && l.contains(result)),
+            "{what}: {audit:#?}"
+        );
+    }
+}

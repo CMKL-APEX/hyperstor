@@ -10,6 +10,11 @@
 //! as broken: it is shut down, its other calls fail, and the next caller
 //! connects afresh (01-implementation-notes.md I184).
 
+pub mod tls;
+
+/// A data-path peer's identity, from its certificate.
+pub use hyperstor_pki::Identity;
+
 use hyperstor_codec::{AlignedBuf, IoBuf};
 use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame, encode_head};
 use hyperstor_reactor::chan::{OneSender, Receiver, Sender, channel, oneshot};
@@ -55,15 +60,30 @@ pub type Reply = (Msg, Vec<u8>);
 /// A frame queued for [`writer`]: its bytes, and perhaps a payload sent
 /// after them without being copied in: all or part of a buffer, owned or
 /// shared with the frames to other replicas.
-#[derive(Debug)]
 pub struct Frame {
     head: Vec<u8>,
     tail: Option<IoBuf>,
+    /// A barrier ([`Frame::barrier`]): told once everything queued before
+    /// it is on the socket.
+    flushed: Option<OneSender<()>>,
+}
+
+impl std::fmt::Debug for Frame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Frame")
+            .field("len", &self.len())
+            .field("barrier", &self.flushed.is_some())
+            .finish()
+    }
 }
 
 impl From<Vec<u8>> for Frame {
     fn from(head: Vec<u8>) -> Self {
-        Frame { head, tail: None }
+        Frame {
+            head,
+            tail: None,
+            flushed: None,
+        }
     }
 }
 
@@ -96,6 +116,18 @@ impl Frame {
         Frame {
             head: encode_head(req, msg, range.len(), 0),
             tail: Some(buf.slice(range)),
+            flushed: None,
+        }
+    }
+
+    /// No bytes: [`writer`] tells `flushed` once every frame queued
+    /// before this one is on the socket. For whoever must then write the
+    /// socket itself (the TLS handshake, D376).
+    pub fn barrier(flushed: OneSender<()>) -> Frame {
+        Frame {
+            head: Vec::new(),
+            tail: None,
+            flushed: Some(flushed),
         }
     }
 
@@ -123,6 +155,95 @@ struct Inner {
     dead: Cell<bool>,
     /// The protocol version the peer's `HelloOk` answered; 0 before one.
     version: Cell<u16>,
+    /// Who the peer proved to be in the TLS handshake ([`Conn::open`]);
+    /// None on a connection that didn't authenticate.
+    peer: RefCell<Option<hyperstor_pki::Identity>>,
+}
+
+/// What a caller with an identity does about TLS on a new connection
+/// (D373; 30-data-path-tls.md §33.3, §33.4).
+#[derive(Clone)]
+pub struct CallerTls {
+    /// `hyperstor_pki::data_client_config`.
+    pub config: std::sync::Arc<rustls::ClientConfig>,
+    /// The cluster's mode is `require`: a peer that speaks no TLS, or
+    /// refuses it, is dropped.
+    pub required: bool,
+}
+
+/// A process's identity on the data path (D25): what it calls with and
+/// what it answers with, from one certificate.
+#[derive(Clone)]
+pub struct TlsIdentity {
+    pub caller: std::sync::Arc<rustls::ClientConfig>,
+    pub answerer: std::sync::Arc<rustls::ServerConfig>,
+    /// Who the certificate says this process is.
+    pub who: hyperstor_pki::Identity,
+}
+
+impl TlsIdentity {
+    /// From a certificate chain, its key and the cluster's root, as PEM.
+    pub fn from_pem(chain: &str, key: &str, root: &str) -> Result<TlsIdentity, String> {
+        Ok(TlsIdentity {
+            caller: std::sync::Arc::new(hyperstor_pki::data_client_config(chain, key, root)?),
+            answerer: std::sync::Arc::new(hyperstor_pki::data_server_config(chain, key, root)?),
+            who: hyperstor_pki::identity_in(chain)
+                .ok_or("the certificate carries no hyperstor identity")?,
+        })
+    }
+
+    /// From `dir`: the first of `names` there (`hyperstor_pki::identity_files`).
+    pub fn load(dir: &std::path::Path, names: &[String]) -> Result<TlsIdentity, String> {
+        let (chain, key, root) = hyperstor_pki::identity_files(dir, names)?;
+        Self::from_pem(&chain, &key, &root)
+    }
+
+    /// What a caller does with it: `required` in a cluster whose mode is
+    /// `require`.
+    pub fn calling(&self, required: bool) -> CallerTls {
+        CallerTls {
+            config: self.caller.clone(),
+            required,
+        }
+    }
+}
+
+/// What a served connection answers `StartTls` with: the handshake's
+/// configuration (`hyperstor_pki::data_server_config`), or None where
+/// this end has no identity or the cluster's mode is `off`.
+pub type AnswererTls = Option<std::sync::Arc<rustls::ServerConfig>>;
+
+/// Answers a `StartTls` (request `req`) on a served connection whose
+/// replies go through `tx` to [`writer`]. With `tls`: `StartTlsOk`, then,
+/// once it is on the socket, the handshake on `s`; who the caller is, or
+/// an error after which the connection must be closed. Without: `refusal`
+/// and None, and frames go on unauthenticated.
+///
+/// The caller sends nothing after `StartTls` until it has the answer, so
+/// the next bytes read from `s` are the handshake's; whoever calls this
+/// reads no frame meanwhile.
+pub async fn answer_start_tls(
+    s: &TcpStream,
+    tx: &Sender<Frame>,
+    req: u64,
+    tls: &AnswererTls,
+    refusal: Msg,
+) -> Result<Option<hyperstor_pki::Identity>, RpcError> {
+    let Some(config) = tls else {
+        let _ = tx.send(Frame::new(req, &refusal, &[]));
+        return Ok(None);
+    };
+    let (flushed, wait) = oneshot();
+    if tx.send(Frame::new(req, &Msg::StartTlsOk, &[])).is_err()
+        || tx.send(Frame::barrier(flushed)).is_err()
+        || wait.recv().await.is_none()
+    {
+        return Err(RpcError::Closed);
+    }
+    tls::answerer(s, config.clone())
+        .await
+        .map(Some)
+        .map_err(|e| RpcError::Protocol(e.to_string()))
 }
 
 /// A client connection. Cheap to clone; all clones share the socket.
@@ -299,13 +420,13 @@ pub const BATCH_BYTES: usize = 256 << 10;
 /// one buffer copied hundreds of MB and held the reactor 100–125 ms
 /// (I283). A frame with a payload of its own is never joined.
 fn next_send(first: Frame, rx: &mut Receiver<Frame>, next: &mut Option<Frame>) -> Frame {
-    if first.tail.is_some() {
+    if first.tail.is_some() || first.flushed.is_some() {
         return first;
     }
     let mut buf = first.head;
     while buf.len() < BATCH_BYTES {
         let Some(more) = rx.try_recv() else { break };
-        if more.tail.is_some() || buf.len() + more.len() > BATCH_BYTES {
+        if more.tail.is_some() || more.flushed.is_some() || buf.len() + more.len() > BATCH_BYTES {
             *next = Some(more);
             break;
         }
@@ -328,6 +449,11 @@ pub async fn writer(s: Rc<TcpStream>, mut rx: Receiver<Frame>) {
             },
         };
         let f = next_send(first, &mut rx, &mut next);
+        if let Some(flushed) = f.flushed {
+            // Every write before it was awaited: it is all on the socket.
+            let _ = flushed.send(());
+            continue;
+        }
         if let Some(c) = &counter {
             c.sent(f.len());
         }
@@ -355,6 +481,95 @@ impl Conn {
             Ok(r) => r.map_err(|e| RpcError::Io(e.to_string()))?,
             Err(_) => return Err(RpcError::Timeout),
         };
+        Ok(Self::run_on(s, addr))
+    }
+
+    /// Connects to `addr`, says `hello`, and, with `tls`, starts TLS when
+    /// the peer's `HelloOk` answers a version that has it (D373): the
+    /// handshake runs before the connection carries anything else.
+    /// Returns the connection, its version and peer set, and the answer
+    /// to `hello` (`HelloOk`, or an `Error` such as a blocklisted
+    /// client's).
+    ///
+    /// A peer that speaks no TLS, has no identity, or runs in mode `off`
+    /// is used unauthenticated, unless `tls.required`: then it is an
+    /// error.
+    pub async fn open(
+        addr: SocketAddr,
+        limit: Duration,
+        hello: &Msg,
+        tls: Option<&CallerTls>,
+    ) -> Result<(Conn, Msg), RpcError> {
+        let s = match hyperstor_reactor::time::timeout(limit, TcpStream::connect(addr)).await {
+            Ok(r) => r.map_err(|e| RpcError::Io(e.to_string()))?,
+            Err(_) => return Err(RpcError::Timeout),
+        };
+        let counter = counter_of(&s);
+        let preamble = async {
+            let ask = |m: &Msg| {
+                let f = encode_frame(0, m, &[]);
+                if let Some(c) = &counter {
+                    c.sent(f.len());
+                }
+                s.write_all(f)
+            };
+            ask(hello)
+                .await
+                .0
+                .map_err(|e| RpcError::Io(e.to_string()))?;
+            let (_, answer, _) = read_frame_counted(&s, counter.as_deref()).await?;
+            let version = match &answer {
+                Msg::HelloOk { version, .. } => *version,
+                _ => 0,
+            };
+            let mut peer = None;
+            if let Some(tls) = tls {
+                let refused = |why: &str| {
+                    RpcError::Protocol(format!(
+                        "{addr} {why}, and the cluster requires authenticated connections"
+                    ))
+                };
+                if version >= hyperstor_proto::TLS_VERSION {
+                    ask(&Msg::StartTls)
+                        .await
+                        .0
+                        .map_err(|e| RpcError::Io(e.to_string()))?;
+                    match read_frame_counted(&s, counter.as_deref()).await?.1 {
+                        Msg::StartTlsOk => {
+                            peer = Some(
+                                tls::caller(&s, tls.config.clone())
+                                    .await
+                                    .map_err(|e| RpcError::Protocol(format!("{addr}: {e}")))?,
+                            );
+                        }
+                        _ if tls.required => return Err(refused("refused TLS")),
+                        _ => {}
+                    }
+                } else if tls.required && matches!(answer, Msg::HelloOk { .. }) {
+                    return Err(refused("speaks a protocol from before TLS"));
+                }
+            }
+            Ok((version, peer, answer))
+        };
+        let (version, peer, answer) =
+            match hyperstor_reactor::time::timeout(CALL_TIMEOUT, preamble).await {
+                Ok(r) => r?,
+                Err(_) => return Err(RpcError::Timeout),
+            };
+        let c = Self::run_on(s, addr);
+        c.set_version(version);
+        *c.inner.peer.borrow_mut() = peer;
+        Ok((c, answer))
+    }
+
+    /// Who the peer proved to be, on a connection [`Conn::open`]
+    /// authenticated.
+    pub fn peer(&self) -> Option<hyperstor_pki::Identity> {
+        self.inner.peer.borrow().clone()
+    }
+
+    /// Starts the connection's tasks on a connected socket.
+    fn run_on(s: TcpStream, addr: SocketAddr) -> Conn {
         let s = Rc::new(s);
         let (tx, rx) = channel();
         let inner = Rc::new(Inner {
@@ -364,6 +579,7 @@ impl Conn {
             next: Cell::new(1),
             dead: Cell::new(false),
             version: Cell::new(0),
+            peer: RefCell::new(None),
         });
         spawn(writer(s.clone(), rx));
         let rd = inner.clone();
@@ -385,7 +601,7 @@ impl Conn {
                 let _ = tx.send(Err(err.clone()));
             }
         });
-        Ok(Conn { inner, addr })
+        Conn { inner, addr }
     }
 
     pub fn is_dead(&self) -> bool {
@@ -952,6 +1168,7 @@ mod pool_tests {
                     Frame {
                         head: f[..100].to_vec(),
                         tail: Some(IoBuf::from(f.clone()).slice(100..f.len())),
+                        flushed: None,
                     }
                 } else {
                     f.into()

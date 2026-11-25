@@ -84,6 +84,10 @@ fn main() {
             let tls =
                 hyperstor_pki::client_config(&read("s3.crt"), &read("s3.key"), &read("root.crt"))
                     .unwrap_or_else(|e| fail(format!("{}: {e}", dir.display())));
+            // The gateway's identity on the data path too (D373).
+            if let Err(e) = hyperstor_client::load_process_identity(&dir, &["s3"]) {
+                fail(format!("{}: {e}", dir.display()));
+            }
             Source::Api {
                 addrs: api.split(',').map(str::to_string).collect(),
                 tls: std::sync::Arc::new(tls),

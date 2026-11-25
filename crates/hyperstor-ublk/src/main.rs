@@ -1,4 +1,4 @@
-//! `hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME]`
+//! `hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] [--identity DIR]`
 //! `hyperstor-ublk delete --dev N`
 //!
 //! `attach` takes volume ID's `rw` lease (refused while another client
@@ -11,7 +11,7 @@
 use hyperstor_ublk::{Options, Take, ctrl::Control, parse_id, serve};
 use std::io::Write;
 
-const USAGE: &str = "usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] | delete --dev N";
+const USAGE: &str = "usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--preempt] [--depth N] [--host NAME] [--identity DIR] | delete --dev N";
 
 fn usage() -> ! {
     eprintln!("{USAGE}");
@@ -52,6 +52,17 @@ fn main() {
                     .unwrap_or_else(|| usage()),
             };
             let stop = stop_on_signal();
+            // The host's identity on the data path (D373, D375): its own
+            // `host` certificate, else its storage node's or member's.
+            if let Some(dir) = get("--identity")
+                && let Err(e) = hyperstor_client::load_process_identity(
+                    std::path::Path::new(&dir),
+                    &["host", "node", "api"],
+                )
+            {
+                eprintln!("hyperstor-ublk: --identity: {e}");
+                std::process::exit(2)
+            }
             let r = serve(
                 Options {
                     meta,

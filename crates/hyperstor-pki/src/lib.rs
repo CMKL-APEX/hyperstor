@@ -539,6 +539,151 @@ impl rustls::client::danger::ServerCertVerifier for Pinned {
     }
 }
 
+/// A certificate, its key and the cluster's root, as PEM, from `dir`: the
+/// first of `names` whose key is there (`NAME.crt`, `NAME.key`), with
+/// `root.crt`. How a service finds the identity its host has: a storage
+/// node's own before the host's (D378), a VM host's `host` (D375).
+pub fn identity_files(
+    dir: &std::path::Path,
+    names: &[String],
+) -> Result<(String, String, String), String> {
+    let read = |f: &str| {
+        std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
+    };
+    let name = names
+        .iter()
+        .find(|n| dir.join(format!("{n}.key")).exists())
+        .ok_or_else(|| {
+            let keys: Vec<String> = names.iter().map(|n| format!("{n}.key")).collect();
+            format!("{}: no {}", dir.display(), keys.join(", "))
+        })?;
+    Ok((
+        read(&format!("{name}.crt"))?,
+        read(&format!("{name}.key"))?,
+        read("root.crt")?,
+    ))
+}
+
+/// Verifies a data-path peer (D25; 30-data-path-tls.md §33.3): its chain
+/// must lead to the cluster's root, and nothing is asked of the name the
+/// caller dialled. Storage nodes' certificates name no address, and who a
+/// peer is comes from the identity in its certificate (D377), which the
+/// caller reads after the handshake.
+#[derive(Debug)]
+struct ClusterPeer {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for ClusterPeer {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        // The chain, its signatures and its dates are checked before the
+        // name: a name that doesn't match is the one failure let through.
+        match self
+            .inner
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp, now)
+        {
+            Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. },
+            )) => Ok(rustls::client::danger::ServerCertVerified::assertion()),
+            r => r,
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// The caller's side of a data-path handshake (D25, D373): presents
+/// `chain`, and accepts any peer whose chain leads to `root`, whatever
+/// address it was reached at. TLS 1.3 only.
+pub fn data_client_config(
+    chain: &str,
+    key_pem: &str,
+    root: &str,
+) -> Result<rustls::ClientConfig, String> {
+    let inner =
+        rustls::client::WebPkiServerVerifier::builder_with_provider(roots(root)?, provider())
+            .build()
+            .map_err(err)?;
+    let mut c = rustls::ClientConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(err)?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(ClusterPeer {
+            inner,
+            provider: provider(),
+        }))
+        .with_client_auth_cert(certs(chain)?, key(key_pem)?)
+        .map_err(err)?;
+    // One handshake per connection, which then lives for hours: nothing
+    // to resume.
+    c.resumption = rustls::client::Resumption::disabled();
+    Ok(c)
+}
+
+/// The answering side of a data-path handshake (D25, D373): presents
+/// `chain` and requires a certificate that chains to `root`. TLS 1.3
+/// only, and no session tickets: after the handshake the only records
+/// are each side's `close_notify` (D376).
+pub fn data_server_config(
+    chain: &str,
+    key_pem: &str,
+    root: &str,
+) -> Result<rustls::ServerConfig, String> {
+    let verifier =
+        rustls::server::WebPkiClientVerifier::builder_with_provider(roots(root)?, provider())
+            .build()
+            .map_err(err)?;
+    let mut c = rustls::ServerConfig::builder_with_provider(provider())
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(err)?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs(chain)?, key(key_pem)?)
+        .map_err(err)?;
+    c.send_tls13_tickets = 0;
+    Ok(c)
+}
+
 /// A client of `hyperstor-mgmt`'s web side (no certificate of its own):
 /// it trusts the host's CAs, and `extra_ca`'s certificates too when given
 /// (an operator's own CA, or the cluster's), so any of D107's web
