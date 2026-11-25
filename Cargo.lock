@@ -1528,6 +1528,7 @@ dependencies = [
  "rand 0.10.3",
  "socket2",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

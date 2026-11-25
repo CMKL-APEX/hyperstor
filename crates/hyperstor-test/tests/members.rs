@@ -231,16 +231,33 @@ impl Group {
     /// elected before its first map is applied, and until then the member
     /// makes no tokens and can't be forced alone (on a slow host, seconds
     /// later; CI). A map backup reads the member's store, and fails until
-    /// then.
+    /// then. A timeout says what the last backup answered and what the
+    /// member lists (#430): a member stuck without the map, or a slow host.
     fn formed(&self, i: usize) {
+        let t = std::time::Instant::now();
         let mut n = 0;
-        wait_for("the map in the member's store", 40, || {
+        loop {
             n += 1;
             let out = self.s.path(&format!("formed-{i}-{n}"));
             let r = self.ctl(i, &["map", "backup", "--out", out.to_str().unwrap()]);
             let _ = std::fs::remove_file(&out);
-            (r.code == 0).then_some(())
-        });
+            if r.code == 0 {
+                return;
+            }
+            if t.elapsed() >= std::time::Duration::from_secs(40) {
+                let list = self.ctl(i, &["member", "list"]);
+                panic!(
+                    "timed out waiting for the map in member {}'s store after {n} tries; \
+                     the last backup answered {}: {}\nits member list ({}):\n{}",
+                    i + 1,
+                    r.code,
+                    r.out.trim(),
+                    list.code,
+                    list.out.trim()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 }
 
