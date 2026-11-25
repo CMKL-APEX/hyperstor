@@ -328,11 +328,12 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279", "I292", "I436"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279", "I292", "I436", "I441"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
     "meta_group::a_group_restarted_whole_keeps_its_map",
+    "meta_group::a_refused_first_map_is_committed_again",
     "hyperstor_meta::tests::members_redirect_and_a_new_leader_waits_out_old_leases",
     "hyperstor_meta::tests::map_changes_are_answered_once_published",
     "hyperstor_meta::tests::a_fence_past_the_map_raises_its_epoch",

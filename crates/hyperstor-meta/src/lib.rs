@@ -1907,10 +1907,23 @@ impl Meta {
                     let published = self.published.borrow().clone();
                     *self.map.borrow_mut() = published.clone();
                     if !self.persisted.get() {
-                        // A new group: the cluster file's map is the first.
+                        // A new group: the cluster file's map is the first,
+                        // tried until it is committed, while this member
+                        // leads in this term (I441). The publisher only
+                        // publishes a working map newer than the published
+                        // one, so a first commit refused or timed out (a
+                        // loaded host, #430) would otherwise stay
+                        // uncommitted until something changes the map:
+                        // never, in a group without storage nodes.
                         let me = self.clone();
+                        let term = self.lead_gen.get();
                         hyperstor_reactor::spawn(async move {
-                            me.commit(&published).await;
+                            while !me.persisted.get() && me.leads() && me.lead_gen.get() == term {
+                                if me.commit(&published).await {
+                                    break;
+                                }
+                                sleep(Duration::from_millis(500)).await;
+                            }
                         });
                     } else if let Some(seed) = &self.seed {
                         // Hosts added to the cluster file since: published
