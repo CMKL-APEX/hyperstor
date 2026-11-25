@@ -328,11 +328,12 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279", "I292", "I436"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279", "I292", "I436", "I441"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
     "meta_group::a_group_restarted_whole_keeps_its_map",
+    "meta_group::a_refused_first_map_is_committed_again",
     "hyperstor_meta::tests::members_redirect_and_a_new_leader_waits_out_old_leases",
     "hyperstor_meta::tests::map_changes_are_answered_once_published",
     "hyperstor_meta::tests::a_fence_past_the_map_raises_its_epoch",
@@ -1165,6 +1166,17 @@ tests = [
     "hyperstor_daemon::sealing::tests::a_node_holds_nothing_until_set_and_then_the_newest",
     "hyperstor_daemon::sealing::tests::the_identity_is_the_nodes_or_the_members",
     "hyperstor_daemon::metrics::tests::the_sealing_keys_held_are_counted",
+]
+
+[[milestone.item]]
+what = "hsfs H0: a pool flag requires capabilities (D371); clients show sealed capabilities on each connection and reactors serve a flagged pool's chunks only as granted, read-only where so; nothing issues capabilities yet"
+spec = ["29-hsfs.md §32.6", "13-protocol.md §13.2", "D363", "D371", "I442"]
+status = "partial"
+tests = [
+    "cluster::a_pool_that_requires_capabilities_serves_only_what_a_client_shows",
+    "security::a_pool_requires_capabilities_when_told",
+    "hyperstor_map::port_tests::pools_that_require_capabilities_travel_only_while_one_does",
+    "hyperstor_meta::tests::a_pool_is_made_to_require_capabilities_and_not",
 ]
 
 [[milestone]]

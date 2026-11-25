@@ -266,6 +266,9 @@ pub struct Client {
     /// The host it runs on, as it names itself (`--host`, D261), told to
     /// each peer that knows [`Msg::Host`]; empty: none.
     host: RefCell<String>,
+    /// The sealed capabilities it shows each storage node it connects to
+    /// (D363), by lineage and branch.
+    capabilities: RefCell<HashMap<(u128, u32), Vec<u8>>>,
     /// The data networks this client is on, in order (26-networks.md
     /// §29.5, D207): a device is reached at its endpoint on the first it
     /// has one on, else at its address.
@@ -333,6 +336,7 @@ impl Client {
             instance,
             lease_label: RefCell::new(String::new()),
             host: RefCell::new(String::new()),
+            capabilities: RefCell::new(HashMap::new()),
             networks: RefCell::new(Vec::new()),
             rng: RefCell::new(rand::SeedableRng::seed_from_u64(random_u64())),
         });
@@ -394,6 +398,32 @@ impl Client {
     /// bytes. Connections already open keep the name they gave.
     pub fn set_host(&self, host: &str) {
         *self.host.borrow_mut() = cut_label(host);
+    }
+
+    /// Shows `sealed`, a capability for `branch` of `lineage` (D363;
+    /// 29-hsfs.md §32.6), on every connection open now and every one made
+    /// later, in place of the one shown before for that branch: how a
+    /// renewed capability reaches the nodes. Pools that require
+    /// capabilities (D371) serve the client that branch's chunks from
+    /// then on. A node that refuses it (it holds no key yet, or the
+    /// capability names another client or host) refuses the requests too,
+    /// and says why there.
+    pub async fn show_capability(&self, lineage: u128, branch: u32, sealed: Vec<u8>) {
+        self.capabilities
+            .borrow_mut()
+            .insert((lineage, branch), sealed.clone());
+        let msg = Msg::Capability { sealed };
+        for c in self.conns.conns() {
+            if c.version() >= hyperstor_proto::CAPABILITY_VERSION {
+                let _ = c.call_within(&msg, &[], rpc::CALL_TIMEOUT).await;
+            }
+        }
+    }
+
+    /// Stops showing a capability for `branch` of `lineage` on new
+    /// connections. Open ones keep it until they close or it expires.
+    pub fn forget_capability(&self, lineage: u128, branch: u32) {
+        self.capabilities.borrow_mut().remove(&(lineage, branch));
     }
 
     /// Installs `m` if it is newer than the map held (a pushed map).
@@ -594,6 +624,7 @@ impl Client {
             instance: self.instance,
         };
         let host = self.host.borrow().clone();
+        let caps: Vec<Vec<u8>> = self.capabilities.borrow().values().cloned().collect();
         let c = self
             .conns
             .get_with(addr, |addr| async move {
@@ -607,6 +638,13 @@ impl Client {
                 if c.version() >= 3 && !host.is_empty() {
                     let name = Msg::Host { name: host };
                     c.call_within(&name, &[], rpc::CALL_TIMEOUT).await?;
+                }
+                // After the host, which a capability is bound to (D363).
+                if c.version() >= hyperstor_proto::CAPABILITY_VERSION {
+                    for sealed in caps {
+                        c.call_within(&Msg::Capability { sealed }, &[], rpc::CALL_TIMEOUT)
+                            .await?;
+                    }
                 }
                 Ok(c)
             })

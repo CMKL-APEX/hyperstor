@@ -516,6 +516,9 @@ message Pool {
   // How scrub checks the pool's copies (D224); cache pools keep the
   // defaults unused.
   ScrubSettings scrub = 23;
+  // Whether the pool's storage nodes serve a client only what it has
+  // shown a sealed capability for (04-decisions.md D371).
+  bool capabilities = 24;
 }
 
 // A pool's scrub settings (28-scrub.md §31.2, 04-decisions.md D224).
@@ -725,6 +728,10 @@ message SetPoolRequest {
   // Cache pools: seconds a PG waits for a down member, up to 3600; 0
   // moves at once (D189).
   optional uint32 cache_grace = 9 [json_name = "cache_grace"];
+  // Whether clients need a sealed capability for what they ask of the
+  // pool (D371). Set only once every storage node and client runs a
+  // build that reads map format 22.
+  optional bool capabilities = 10;
 }
 
 message GetScrubStatusRequest {

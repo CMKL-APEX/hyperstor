@@ -30,6 +30,8 @@ http = "1"
 tokio = { version = "1", features = ["rt", "net", "time"] }
 
 [dev-dependencies]
+# The map service's commit channel, in the group tests.
+tokio = { version = "1", features = ["sync"] }
 rand.workspace = true
 hyperstor-rpc = { path = "../hyperstor-rpc" }
 hyperstor-s3 = { path = "../hyperstor-s3" }

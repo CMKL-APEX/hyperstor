@@ -83,6 +83,9 @@ pub struct PoolInfo {
     pub cache_grace: u32,
     /// How scrub checks the pool's copies (D224).
     pub scrub: ScrubSettings,
+    /// Whether the pool's reactors serve a client only what it has shown
+    /// a sealed capability for (D371; 29-hsfs.md §32.6). Off: as before.
+    pub capabilities: bool,
 }
 
 /// A pool's scrub settings (D224; 28-scrub.md §31.2). Every pool has
@@ -1961,8 +1964,10 @@ impl ClusterMap {
         // tenants' realms (D259); 20: devices to convert to v0.0.8's shard
         // format (D274), asked only once every node reads it; 21: moved
         // projects' tenants (D303), only while a host is bound and a
-        // project has moved.
-        let format = if !self.project_tenants.is_empty() {
+        // project has moved; 22: pools that require capabilities (D371).
+        let format = if self.pools.values().any(|p| p.capabilities) {
+            22
+        } else if !self.project_tenants.is_empty() {
             21
         } else if !self.upgrades.is_empty() {
             20
@@ -2265,13 +2270,18 @@ impl ClusterMap {
                 e.u32(**p).u32(**t);
             });
         }
+        if format >= 22 {
+            for p in self.pools.values() {
+                e.bool(p.capabilities);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=21).contains(&v) {
+        if !(1..=22).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2350,6 +2360,7 @@ impl ClusterMap {
                     autoscale: true,
                     cache_grace: CACHE_GRACE_SECS,
                     scrub: ScrubSettings::default(),
+                    capabilities: false,
                 },
             );
         }
@@ -2589,6 +2600,11 @@ impl ClusterMap {
                 .into_iter()
                 .collect();
         }
+        if v >= 22 {
+            for p in m.pools.values_mut() {
+                p.capabilities = d.bool()?;
+            }
+        }
         d.finish()?;
         Ok(m)
     }
@@ -2617,6 +2633,7 @@ pub fn replicated_pool(id: u32, name: &str, size: u8, pg_count: u32) -> PoolInfo
         autoscale: true,
         cache_grace: CACHE_GRACE_SECS,
         scrub: ScrubSettings::default(),
+        capabilities: false,
     }
 }
 
@@ -3102,6 +3119,7 @@ mod tests {
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
             scrub: ScrubSettings::default(),
+            capabilities: false,
         });
         m.recompute();
         m
@@ -3995,6 +4013,7 @@ mod tests {
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
             scrub: ScrubSettings::default(),
+            capabilities: false,
         });
         m.recompute();
         let before = m.clone();
@@ -4165,6 +4184,30 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(ClusterMap::decode(&b).unwrap(), m);
         assert_eq!(m.volume_tenant(5, 9), 6);
         assert!(!m.host_may_attach("h1", m.volume_tenant(5, 9)));
+    }
+
+    /// D371: a pool that requires capabilities travels in format 22, and
+    /// only while one does, so nodes from before it read every other map.
+    #[test]
+    fn pools_that_require_capabilities_travel_only_while_one_does() {
+        let mut m = parse_cluster(FILE).unwrap();
+        let before = m.encode();
+        let format = |b: &[u8]| u32::from_le_bytes(b[..4].try_into().unwrap());
+        assert!(format(&before) < 22);
+        let pool = *m.pools.keys().next().unwrap();
+        m.pools.get_mut(&pool).unwrap().capabilities = true;
+        let b = m.encode();
+        assert_eq!(format(&b), 22);
+        let back = ClusterMap::decode(&b).unwrap();
+        assert_eq!(back, m);
+        assert!(back.pools.values().filter(|p| p.capabilities).count() == 1);
+        // Off again: the format it had.
+        m.pools.get_mut(&pool).unwrap().capabilities = false;
+        assert_eq!(m.encode(), before);
+        // A build from before it refuses the map rather than misread it.
+        let mut newer = b.clone();
+        newer[..4].copy_from_slice(&23u32.to_le_bytes());
+        assert!(ClusterMap::decode(&newer).is_err());
     }
 
     /// D274: devices to convert travel in format 20, only while one is

@@ -197,6 +197,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | hsfs H0: sealing keys in the map service (made on a storage node's first ask, rotated with the one before still valid, bytes for storage nodes and members only, audited), the sealed capability's format, and storage nodes fetching the keys from the cluster API (D370); no reactor checks a capability yet | In progress |
+| hsfs H0: a pool flag requires capabilities (D371); clients show sealed capabilities on each connection and reactors serve a flagged pool's chunks only as granted, read-only where so; nothing issues capabilities yet | In progress |
 
 ## HS15: Tenancy: quotas and fair share between tenants
 
