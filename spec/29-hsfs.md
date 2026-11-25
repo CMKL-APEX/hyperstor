@@ -7,7 +7,7 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **design; H0 built** (01-implementation-notes.md I439–I441: the
+Status: **design; H0 built** (01-implementation-notes.md I439, I440, I442: the
 sealing keys, the capability's format, storage nodes holding the keys, and
 reactors checking capabilities in pools that require them; nothing issues
 a capability yet, which comes with datasets in H1, and peers aren't told

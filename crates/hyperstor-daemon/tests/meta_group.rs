@@ -40,11 +40,17 @@ struct MetaMember {
     dir: PathBuf,
     stop: Option<Sender<()>>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Map commits refused before any goes through (#430): a store that
+    /// says no, as one whose leader's first write fails on a loaded host.
+    refuse: u32,
+    /// The member's store, while it runs.
+    db: Option<Arc<hyperstor_meta::store::Db>>,
 }
 
 impl MetaMember {
     fn start(&mut self, all: &[Member], seed: &ClusterMap) {
         let (me, all, seed, dir) = (self.member, all.to_vec(), seed.clone(), self.dir.clone());
+        let refuse = std::mem::take(&mut self.refuse);
         let (stop, mut stop_rx) = channel::<()>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         self.thread = Some(std::thread::spawn(move || {
@@ -65,9 +71,27 @@ impl MetaMember {
                 to_reactor,
             )
             .unwrap();
-            let commits = r.commits.clone();
             let db = r.db.clone();
+            ready_tx.send(db.clone()).unwrap();
+            let real = r.commits.clone();
             block_on(async move {
+                let commits = if refuse == 0 {
+                    real
+                } else {
+                    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<replica::Commit>();
+                    spawn(async move {
+                        let mut left = refuse;
+                        while let Some(c) = rx.recv().await {
+                            if left > 0 {
+                                left -= 1;
+                                let _ = c.reply.send(Err("refused for the test".into()));
+                            } else if real.send(c).is_err() {
+                                return;
+                            }
+                        }
+                    });
+                    tx
+                };
                 let meta = Meta::replicated(seed, LEASE, commits);
                 meta.keep_scrubs(db);
                 spawn(meta.clone().scrub_writer(Duration::from_millis(200)));
@@ -78,16 +102,17 @@ impl MetaMember {
                     hyperstor_reactor::net::TcpListener::from_std(map_l),
                     meta,
                 ));
-                ready_tx.send(()).unwrap();
                 stop_rx.recv().await;
             });
             r.stop();
         }));
-        ready_rx.recv().unwrap();
+        self.db = Some(ready_rx.recv().unwrap());
         self.stop = Some(stop);
     }
 
     fn kill(&mut self) {
+        // The store closes with its last handle: a restart opens it again.
+        self.db = None;
         if let Some(s) = self.stop.take() {
             let _ = s.send(());
         }
@@ -108,6 +133,12 @@ struct Group {
 
 impl Group {
     fn start(storage_nodes: u32) -> Group {
+        Self::start_refusing(storage_nodes, 0)
+    }
+
+    /// [`Group::start`] with each member refusing its first `refuse` map
+    /// commits.
+    fn start_refusing(storage_nodes: u32, refuse: u32) -> Group {
         let root = tempfile::tempdir().unwrap();
         let mut seed = ClusterMap::new(1);
         let node_addrs: Vec<SocketAddr> = (0..storage_nodes).map(|_| free_addr()).collect();
@@ -134,6 +165,8 @@ impl Group {
                 dir: root.path().join(format!("m{}", m.id)),
                 stop: None,
                 thread: None,
+                refuse,
+                db: None,
             })
             .collect();
         for m in &mut members {
@@ -318,6 +351,30 @@ fn pattern(seed: u64, len: usize) -> Vec<u8> {
 /// lease, I/O resumes, the new leader handles a storage node's failure and
 /// return (after waiting out the old leader's leases, D73), and the old
 /// leader comes back as a follower with the current map.
+/// A new group's first map is committed even when its leader's first try
+/// is refused (#430, I441): it was tried once, and a group with nothing
+/// else to change (no storage nodes) never had its map, so a member's
+/// store stayed without one.
+#[test]
+fn a_refused_first_map_is_committed_again() {
+    let g = Group::start_refusing(0, 1);
+    let held = |g: &Group| {
+        g.members.iter().all(|m| {
+            m.db.as_ref()
+                .is_some_and(|db| hyperstor_meta::store::has_map(db).unwrap_or(false))
+        })
+    };
+    let t = Instant::now();
+    while !held(&g) {
+        assert!(
+            t.elapsed() < Duration::from_secs(20),
+            "a member's store has no map after 20 s"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    g.stop();
+}
+
 #[test]
 fn the_map_service_survives_its_leader() {
     let mut g = Group::start(4);
