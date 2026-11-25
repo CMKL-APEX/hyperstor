@@ -952,3 +952,105 @@ fn hyperstor_vhost_is_installed_for_its_users() {
     .expect(1);
     assert!(r.has("no such user"), "{}", r.out);
 }
+
+/// A VM host joins with a `host` token (D375; 30-data-path-tls.md §33.6):
+/// its certificate names it as it names itself to storage nodes, the map
+/// service's addresses come with the join, and later runs need no token.
+/// A token for another name or role is refused, with the command that
+/// makes the right one. On the cluster's own host, each storage node has
+/// a certificate of its own (D378).
+#[test]
+fn a_vm_host_joins_with_a_host_token() {
+    let c = Cluster::all_in_one("hostjoin", 2);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap()
+        .trim()
+        .to_string();
+    let token = |role: &str, name: &str| {
+        let r = c
+            .ctl(&["token", "create", "--role", role, "--name", name])
+            .ok();
+        let f = c.scratch.path(&format!("{role}-{name}.token"));
+        std::fs::write(&f, r.out.lines().next().unwrap()).unwrap();
+        f
+    };
+    let join = |root: &std::path::Path, f: Option<&std::path::Path>| {
+        link_binaries(root);
+        let mut a = vec!["--role", "vhost", "--join", c.api.as_str()];
+        if let Some(f) = f {
+            a.extend(["--token-file", f.to_str().unwrap()]);
+        }
+        install_cmd(root, "install", &a)
+    };
+    // A host token names a host; a name that is none is refused.
+    c.ctl(&["token", "create", "--role", "host"]).expect(1);
+    c.ctl(&["token", "create", "--role", "host", "--name", "a/b"])
+        .expect(1);
+
+    // No token, a token for another host, a token of another role.
+    let r = join(&c.scratch.path("none"), None).expect(1);
+    assert!(
+        r.has(&format!("token create --role host --name {name}")),
+        "{}",
+        r.out
+    );
+    let r = join(
+        &c.scratch.path("other"),
+        Some(&token("host", "some-other-host")),
+    )
+    .expect(1);
+    assert!(
+        r.has("is for host \"some-other-host\"") && r.has(&format!("--name {name}")),
+        "{}",
+        r.out
+    );
+    let r = join(&c.scratch.path("role"), Some(&token("mgmt", "not-a-host"))).expect(1);
+    assert!(r.has("isn't a host token"), "{}", r.out);
+
+    // Its own.
+    let host = c.scratch.path("vm-host");
+    let r = join(&host, Some(&token("host", &name))).ok();
+    assert!(r.has("as host hyperstor://"), "{}", r.out);
+    let pki = host.join("etc/hyperstor/pki");
+    let cert = std::fs::read_to_string(pki.join("host.crt")).unwrap();
+    let who = hyperstor_pki::identity_in(&cert).unwrap();
+    assert_eq!(
+        (who.role, who.id.as_str(), who.cluster.as_str()),
+        (
+            hyperstor_pki::Role::Host,
+            name.as_str(),
+            c.cluster_id.as_str()
+        )
+    );
+    assert!(pki.join("host.key").exists() && pki.join("root.crt").exists());
+    // The map service's addresses came with the join; nothing of the
+    // cluster's own runs there.
+    let env = std::fs::read_to_string(host.join("etc/hyperstor/vhost.env")).unwrap();
+    assert!(env.contains(&format!("--meta {}", c.map)), "{env}");
+    assert!(!host.join("etc/hyperstor/meta.env").exists());
+    assert!(!host.join("etc/hyperstor/node-0.env").exists());
+    // Later runs need no token, and keep the certificate.
+    let r = join(&host, None).ok();
+    assert!(r.has("Nothing to change"), "{}", r.out);
+    assert_eq!(std::fs::read_to_string(pki.join("host.crt")).unwrap(), cert);
+    // The audit names the join.
+    assert!(
+        c.audit()
+            .iter()
+            .any(|l| l.contains("\"op\":\"Join\"") && l.contains(&format!("host {name}"))),
+        "{:#?}",
+        c.audit()
+    );
+
+    // Each storage node of the cluster's host has its own certificate.
+    for n in 0..2 {
+        let cert = std::fs::read_to_string(c.root.join(format!("etc/hyperstor/pki/node-{n}.crt")))
+            .unwrap();
+        let who = hyperstor_pki::identity_in(&cert).unwrap();
+        assert_eq!(
+            (who.role, who.id),
+            (hyperstor_pki::Role::Node, n.to_string())
+        );
+    }
+}

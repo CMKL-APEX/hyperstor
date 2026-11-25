@@ -266,6 +266,19 @@ sudo hyperstor-install install --vhost --vhost-user glidex          # with what 
 sudo hyperstor-install install --role vhost --map 192.0.2.10:8849 --vhost-user glidex
 ```
 
+A host that only runs VMs can join with a token instead of `--map`. It
+then holds a certificate of its own, which the storage network will ask
+for once the cluster requires authenticated connections:
+
+```bash
+hyperstorctl token create --role host --name "$(hostname)" > host.token   # on a map service host
+sudo hyperstor-install install --role vhost --join 192.0.2.10:8850 --token-file host.token --vhost-user glidex
+```
+
+The token names the host as it names itself (its host name); a token
+for another name is refused. Later runs need no token and renew the
+certificate.
+
 `--vhost-user glidex` lets glidex's control plane attach volumes and its
 hypervisors open their sockets. Name every user your hypervisors run as:
 each volume's socket is for the user who attached it, and anyone else is

@@ -368,11 +368,11 @@ impl TokenService for Api {
         let (_, root) = self.signing()?;
         if !matches!(
             req.role,
-            "node" | "meta" | "mgmt" | "s3" | "metrics" | "orchestrator"
+            "node" | "meta" | "mgmt" | "s3" | "metrics" | "orchestrator" | "host"
         ) {
             return Err(invalid(
                 format!(
-                    "{}: a token is for role node, meta, mgmt, s3, metrics or orchestrator",
+                    "{}: a token is for role node, meta, mgmt, s3, metrics, orchestrator or host",
                     req.role
                 ),
                 "invalid_argument",
@@ -404,9 +404,27 @@ impl TokenService for Api {
                     "invalid_argument",
                 ));
             }
+        } else if req.role == "host" {
+            // A client host's token names the host (D375): the name it
+            // gives storage nodes (`--host`, D261), which its certificate
+            // then carries (D377). Host names, as they are.
+            let ok = (1..=hyperstor_pki::seal::HOST_MAX).contains(&name.len())
+                && !name.starts_with(['-', '.'])
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+            if !ok {
+                return Err(invalid(
+                    format!(
+                        "{name:?}: a host token names the host: 1-{} of letters, digits, -, . and _",
+                        hyperstor_pki::seal::HOST_MAX
+                    ),
+                    "invalid_argument",
+                ));
+            }
         } else if !name.is_empty() {
             return Err(invalid(
-                "only a mgmt, s3 or metrics token takes a name",
+                "only a mgmt, s3, metrics, orchestrator or host token takes a name",
                 "invalid_argument",
             ));
         }
@@ -586,7 +604,7 @@ impl TokenService for Api {
                         },
                     ))
                 }
-                role @ ("mgmt" | "metrics" | "orchestrator") => {
+                role @ ("mgmt" | "metrics" | "orchestrator" | "host") => {
                     // A management client (D122), a scraper of the map
                     // service's metrics (D234), or an orchestrator (D205):
                     // a client certificate
@@ -597,6 +615,10 @@ impl TokenService for Api {
                         role: match role {
                             "mgmt" => Role::Mgmt,
                             "metrics" => Role::Metrics,
+                            // A client host (D375): what it shows storage
+                            // nodes on the data path (30-data-path-tls.md
+                            // §33.6).
+                            "host" => Role::Host,
                             _ => Role::Orchestrator,
                         },
                         id: token.name.clone(),

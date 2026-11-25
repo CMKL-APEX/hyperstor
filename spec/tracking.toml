@@ -1164,7 +1164,6 @@ tests = [
     "hyperstor_pki::seal::tests::two_keys_are_valid_through_a_rotation",
     "hyperstor_pki::seal::tests::nothing_seals_without_a_key_or_with_a_name_too_long",
     "hyperstor_daemon::sealing::tests::a_node_holds_nothing_until_set_and_then_the_newest",
-    "hyperstor_daemon::sealing::tests::the_identity_is_the_nodes_or_the_members",
     "hyperstor_daemon::metrics::tests::the_sealing_keys_held_are_counted",
 ]
 
@@ -1587,12 +1586,17 @@ id = "HS20"
 title = "Data-path mutual TLS"
 
 [[milestone.item]]
-what = "T0: certificates on every host: `node` certificates on member hosts, `host` tokens and `--role vhost --join`, `--identity` on every data-path binary"
-spec = ["30-data-path-tls.md §33.6", "D375", "D378"]
-status = "planned"
+what = "T0: certificates on every host: `node` certificates on member hosts, `host` tokens and `--role vhost --join`"
+spec = ["30-data-path-tls.md §33.6", "D375", "D378", "I444"]
+status = "done"
+tests = [
+    "install::a_vm_host_joins_with_a_host_token",
+    "hyperstor_install::tests::each_storage_node_on_a_members_host_gets_its_own_certificate",
+    "hyperstor_daemon::sealing::tests::the_identity_is_the_nodes_or_the_members",
+]
 
 [[milestone.item]]
-what = "T1: the TLS 1.3 handshake after `Hello` (`StartTls`, protocol version 8) in rustls on the reactor, the turn back to plaintext, modes `off` and `allow`, identities kept with connections, unauthenticated connections counted"
+what = "T1: `--identity` on every data-path binary; the TLS 1.3 handshake after `Hello` (`StartTls`, protocol version 8) in rustls on the reactor, the turn back to plaintext, modes `off` and `allow`, identities kept with connections, unauthenticated connections counted"
 spec = ["30-data-path-tls.md §33.3", "30-data-path-tls.md §33.4", "D25", "D373", "D376", "D380", "G67"]
 status = "planned"
 

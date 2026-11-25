@@ -7,8 +7,8 @@ the same section everywhere (see [README.md](README.md)).
 
 Status: **design.** D372–D380 are settled with the owner
 (05-decision-log.md points 335–343, 2026-11-25). Host checks G67–G69 are
-to run. Nothing
-is built. It delivers D25, which stays the rule.
+to run. Stage T0 is built (01-implementation-notes.md I444); no connection
+is authenticated yet. It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -115,7 +115,7 @@ Once a connection is authenticated, and for every connection in
 | Host | Identity | How it gets it |
 |---|---|---|
 | Storage host joined with a token | `node` N | has it (AD1) |
-| Map service member that runs a storage node | `node` N beside its `meta` | the installer asks the cluster API for one at its next run; until then its node shows the member's (D370) and is served as `meta` |
+| Map service member that runs a storage node | `node` N beside its `meta`, in `node-N.crt` | the installer issues one at its next run, from the member's CA; until then its node shows the member's (D370) and is served as `meta` |
 | VM host (`--role vhost`), `hyperstor-ublk` host | `host` NAME, the name it gives as `--host` | `hyperstor-install --role vhost --join API --token-file F`, with a `host` token (D375) |
 | S3 gateway | `s3` | has it (D233) |
 | `hyperstorctl`'s data commands | the administrator's | has it |
@@ -158,8 +158,8 @@ answer could make a dead node look alive.
 
 | Stage | What | Needs |
 |---|---|---|
-| T0 | Certificates everywhere: `node` certificates on member hosts, `host` tokens and `--role vhost --join`, `--identity` on every data-path binary | — |
-| T1 | The handshake, modes `off` and `allow`, identities kept with connections, the unauthenticated-connection count | T0, G67 |
+| T0 | Certificates everywhere: `node` certificates on member hosts, `host` tokens and `--role vhost --join` | — |
+| T1 | `--identity` on every data-path binary, the handshake, modes `off` and `allow`, identities kept with connections, the unauthenticated-connection count | T0, G67 |
 | T2 | `require`, authorization by role (§33.5), the host name from the certificate, keyed pings (§33.7) | T1 |
 | T3 | Encryption on networks not marked trusted: TLS records from rustls first, kernel TLS where G68 allows | T2, G68, G69 |
 

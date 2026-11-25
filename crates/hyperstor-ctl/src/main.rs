@@ -105,7 +105,7 @@
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares, and says which networks it used;
-//! - `token create --role node|meta|mgmt|s3|metrics [--name N] [--ttl
+//! - `token create --role node|meta|mgmt|s3|metrics|host [--name N] [--ttl
 //!   SECS]`, `token list`, `token revoke --id ID`: join tokens (§23.4.2);
 //!   a `mgmt` token enrolls a management client named N, such as glidex
 //!   (D122), an `s3` token an S3 gateway named N (D233), and a `metrics`

@@ -59,17 +59,25 @@ pub struct Source {
     pub retry: Duration,
 }
 
-/// The node's identity for the cluster API, from `dir`: `node.crt` on a
-/// host that joined as a storage host; on a map service member, whose
-/// node has no certificate of its own, the member's `api.crt` (D370).
-pub fn identity(dir: &std::path::Path) -> Result<Arc<hyperstor_pki::ClientConfig>, String> {
+/// Node `node`'s identity for the cluster API, from `dir`: its own
+/// `node-N.crt` on a map service member's host (D378); `node.crt` on a
+/// host that joined as a storage host; else the member's `api.crt`, on a
+/// member host installed before nodes had their own (D370).
+pub fn identity(
+    dir: &std::path::Path,
+    node: u32,
+) -> Result<Arc<hyperstor_pki::ClientConfig>, String> {
     let read = |f: &str| {
         std::fs::read_to_string(dir.join(f)).map_err(|e| format!("{}: {e}", dir.join(f).display()))
     };
-    let name = ["node", "api"]
-        .into_iter()
-        .find(|n| dir.join(format!("{n}.key")).exists())
-        .ok_or_else(|| format!("{}: neither node.key nor api.key", dir.display()))?;
+    let name = [
+        format!("node-{node}"),
+        "node".to_string(),
+        "api".to_string(),
+    ]
+    .into_iter()
+    .find(|n| dir.join(format!("{n}.key")).exists())
+    .ok_or_else(|| format!("{}: no node-{node}.key, node.key or api.key", dir.display()))?;
     hyperstor_pki::client_config(
         &read(&format!("{name}.crt"))?,
         &read(&format!("{name}.key"))?,
@@ -239,14 +247,21 @@ mod tests {
     #[test]
     fn the_identity_is_the_nodes_or_the_members() {
         let dir = tempfile::tempdir().unwrap();
-        let e = identity(dir.path()).err().unwrap();
-        assert!(e.contains("neither node.key nor api.key"), "{e}");
+        let e = identity(dir.path(), 3).err().unwrap();
+        assert!(e.contains("no node-3.key, node.key or api.key"), "{e}");
         // A key without its certificate says which file is missing.
         std::fs::write(dir.path().join("api.key"), "x").unwrap();
-        let e = identity(dir.path()).err().unwrap();
+        let e = identity(dir.path(), 3).err().unwrap();
         assert!(e.contains("api.crt"), "{e}");
         std::fs::write(dir.path().join("node.key"), "x").unwrap();
-        let e = identity(dir.path()).err().unwrap();
+        let e = identity(dir.path(), 3).err().unwrap();
         assert!(e.contains("node.crt"), "{e}");
+        // The node's own before the host's, and not another node's.
+        std::fs::write(dir.path().join("node-4.key"), "x").unwrap();
+        let e = identity(dir.path(), 3).err().unwrap();
+        assert!(e.contains("node.crt"), "{e}");
+        std::fs::write(dir.path().join("node-3.key"), "x").unwrap();
+        let e = identity(dir.path(), 3).err().unwrap();
+        assert!(e.contains("node-3.crt"), "{e}");
     }
 }
