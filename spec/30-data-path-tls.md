@@ -7,8 +7,9 @@ the same section everywhere (see [README.md](README.md)).
 
 Status: **design.** D372–D380 are settled with the owner
 (05-decision-log.md points 335–343, 2026-11-25). Host checks G67–G69 are
-to run. Stage T0 is built (01-implementation-notes.md I444); no connection
-is authenticated yet. It delivers D25, which stays the rule.
+to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
+built (01-implementation-notes.md I444, I445): connections authenticate
+in mode `allow`, and nothing is refused yet (`require` is T2). It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -76,7 +77,12 @@ A cluster setting in the map, set with `hyperstorctl data-tls set`:
 | `allow` | asks whenever the peer speaks version 8 | authenticates who asks; still serves who doesn't |
 | `require` | asks, and drops a peer that refuses or speaks less | serves only `Hello`, `Ping` and `StartTls` before the handshake |
 
-- An upgraded cluster starts `off`; a new install starts `allow`.
+`require` is refused by the map service until T2: without authorization
+by role it would promise a boundary that isn't there.
+
+- An upgraded cluster starts `off`; a new install starts `allow`: the
+  cluster file's `data-tls allow` line, which `hyperstor-install
+  --all-in-one` writes, read when the first map is made.
 - **Before `require`**, the map service refuses the change while a node
   that is up hasn't reported that it holds an identity and speaks
   version 8. Clients can't be asked, so each node counts the

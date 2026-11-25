@@ -113,6 +113,13 @@ fn main() {
             },
         )
     });
+    // The member's identity on the data path too (D373): what it
+    // answers `StartTls` with and calls storage nodes with.
+    if let Some(d) = get("--api-tls")
+        && let Err(e) = hyperstor_client::load_process_identity(std::path::Path::new(&d), &["api"])
+    {
+        eprintln!("hyperstor-meta: no identity for the data path: {e}");
+    }
     let socket = get("--api-socket").map(|p| {
         let _ = std::fs::remove_file(&p);
         let l = std::os::unix::net::UnixListener::bind(&p).unwrap_or_else(|e| {

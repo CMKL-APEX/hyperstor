@@ -116,6 +116,9 @@ namespace Hyperstor {
   action "ClusterService.SetPortRole" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "ClusterService.SetDataTls" in [Action::"secure", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "ClusterService.SetLending" in [Action::"operate"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };

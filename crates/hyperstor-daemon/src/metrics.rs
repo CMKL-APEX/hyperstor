@@ -98,6 +98,8 @@ pub struct ShardMetrics {
     pub discarded_bytes: AtomicU64,
     pub discard_queued_bytes: AtomicU64,
     pub map_epoch: AtomicU64,
+    /// Connections served a request without having authenticated (D373).
+    pub unauthenticated: AtomicU64,
 }
 
 impl ShardMetrics {
@@ -275,6 +277,12 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "Epoch of the cluster map this reactor holds.",
         &|m| vec![("", g(&m.map_epoch))],
     );
+    family(
+        "hyperstor_unauthenticated_connections_total",
+        "counter",
+        "Connections served a request without a TLS handshake: who would be cut off if the cluster required authenticated connections.",
+        &|m| vec![("", g(&m.unauthenticated))],
+    );
     let mut hist = String::new();
     hist.push_str(
         "# HELP hyperstor_request_duration_seconds Time from a client request's arrival to its answer; writes include every replica.\n# TYPE hyperstor_request_duration_seconds histogram\n",
@@ -390,7 +398,10 @@ mod tests {
         assert!(t.contains("hyperstor_push_holds_total{node=\"4\",device=\"4001\"} 0\n"));
         assert!(t.contains("hyperstor_checkpoint_damage_total{node=\"4\",device=\"4001\"} 0\n"));
         assert!(t.contains("hyperstor_discarded_bytes_total{node=\"4\",device=\"4000\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 21);
+        assert!(t.contains(
+            "hyperstor_unauthenticated_connections_total{node=\"4\",device=\"4000\"} 0\n"
+        ));
+        assert_eq!(t.matches("# TYPE ").count(), 22);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

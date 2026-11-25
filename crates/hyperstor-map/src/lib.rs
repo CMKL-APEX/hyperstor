@@ -49,6 +49,38 @@ pub enum PoolKind {
     Cache,
 }
 
+/// The cluster's mode for the data path's mutual TLS (D373;
+/// 30-data-path-tls.md §33.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DataTls {
+    /// No connection authenticates: `StartTls` is refused. What a cluster
+    /// from before it runs in until an operator says otherwise (D380).
+    #[default]
+    Off,
+    /// A caller with an identity asks, and is authenticated; one that
+    /// doesn't ask is still served.
+    Allow,
+    /// Only `Hello`, `Ping` and `StartTls` are served before the
+    /// handshake.
+    Require,
+}
+
+impl DataTls {
+    pub const ALL: [DataTls; 3] = [DataTls::Off, DataTls::Allow, DataTls::Require];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DataTls::Off => "off",
+            DataTls::Allow => "allow",
+            DataTls::Require => "require",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<DataTls> {
+        DataTls::ALL.into_iter().find(|m| m.as_str() == s)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PoolInfo {
     pub id: u32,
@@ -386,6 +418,9 @@ pub struct ClusterMap {
     /// volume's header names its project and the tenant it was made in, so
     /// a moved project's volumes take their tenant from here.
     pub project_tenants: BTreeMap<u32, u32>,
+    /// Whether connections on the storage network authenticate (D373;
+    /// 30-data-path-tls.md §33.4).
+    pub data_tls: DataTls,
     /// Devices an operator asked to convert to v0.0.8's shard format
     /// (D274, `hyperstorctl device upgrade`): each node converts its own
     /// the next time it opens them, and the map service drops a device
@@ -1964,8 +1999,11 @@ impl ClusterMap {
         // tenants' realms (D259); 20: devices to convert to v0.0.8's shard
         // format (D274), asked only once every node reads it; 21: moved
         // projects' tenants (D303), only while a host is bound and a
-        // project has moved; 22: pools that require capabilities (D371).
-        let format = if self.pools.values().any(|p| p.capabilities) {
+        // project has moved; 22: pools that require capabilities (D371);
+        // 23: the data path's TLS mode other than `off` (D373).
+        let format = if self.data_tls != DataTls::Off {
+            23
+        } else if self.pools.values().any(|p| p.capabilities) {
             22
         } else if !self.project_tenants.is_empty() {
             21
@@ -2275,13 +2313,16 @@ impl ClusterMap {
                 e.bool(p.capabilities);
             }
         }
+        if format >= 23 {
+            e.u8(self.data_tls as u8);
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=22).contains(&v) {
+        if !(1..=23).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2605,6 +2646,11 @@ impl ClusterMap {
                 p.capabilities = d.bool()?;
             }
         }
+        if v >= 23 {
+            m.data_tls = *DataTls::ALL
+                .get(usize::from(d.u8()?))
+                .ok_or(DecodeError::Utf8)?;
+        }
         d.finish()?;
         Ok(m)
     }
@@ -2697,6 +2743,12 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
         let num = |s: &str| s.parse::<u64>().map_err(|_| bad("expected a number"));
         match w[0] {
             "cluster" if w.len() == 2 => map.cluster_id = num(w[1])? as u128,
+            // data-tls off|allow|require: the mode a new cluster starts in
+            // (D373, D380); a file without the line starts `off`.
+            "data-tls" if w.len() == 2 => {
+                map.data_tls =
+                    DataTls::parse(w[1]).ok_or_else(|| bad("data-tls is off, allow or require"))?;
+            }
             "node" if w.len() >= 5 && w[2] == "rack" => {
                 let node = num(w[1])? as u32;
                 let mut named = Vec::new();
@@ -3069,6 +3121,11 @@ mod parse_tests {
         )
         .unwrap();
         assert_eq!(m.cluster_id, 7);
+        // Without a `data-tls` line a cluster starts `off` (D380).
+        assert_eq!(m.data_tls, super::DataTls::Off);
+        let allow = super::parse_cluster("cluster 7\ndata-tls allow\nnode 0 rack 0 1.2.3.4:1\n");
+        assert_eq!(allow.unwrap().data_tls, super::DataTls::Allow);
+        assert!(super::parse_cluster("data-tls on\n").is_err());
         assert_eq!(m.devices.len(), 4);
         assert_eq!(m.pools[&1].chunk_size, 1 << 20);
         assert_eq!(m.pools[&2].size, 3);
@@ -4206,8 +4263,19 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(m.encode(), before);
         // A build from before it refuses the map rather than misread it.
         let mut newer = b.clone();
-        newer[..4].copy_from_slice(&23u32.to_le_bytes());
+        newer[..4].copy_from_slice(&24u32.to_le_bytes());
         assert!(ClusterMap::decode(&newer).is_err());
+        // D373: the TLS mode travels in format 23, only when not `off`.
+        for mode in [DataTls::Allow, DataTls::Require] {
+            m.data_tls = mode;
+            let b = m.encode();
+            assert_eq!(format(&b), 23);
+            assert_eq!(ClusterMap::decode(&b).unwrap().data_tls, mode);
+            assert_eq!(DataTls::parse(mode.as_str()), Some(mode));
+        }
+        m.data_tls = DataTls::Off;
+        assert_eq!(m.encode(), before);
+        assert_eq!(DataTls::parse("on"), None);
     }
 
     /// D274: devices to convert travel in format 20, only while one is

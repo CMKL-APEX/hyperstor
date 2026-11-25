@@ -1048,6 +1048,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.ListPorts", "port list"),
     ("ClusterService.SetPortRole", "port role"),
     ("ClusterService.SetLending", "port lending"),
+    ("ClusterService.SetDataTls", "data-tls set"),
     ("ClusterService.ClaimPort", "claim port"),
     ("ClusterService.RenewClaim", "claim renew"),
     ("ClusterService.ReleaseClaim", "claim release"),
@@ -1370,6 +1371,21 @@ pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<St
         ));
     }
     Ok(l.api_address.clone())
+}
+
+/// `hyperstorctl data-tls status`: the mode, and what it means.
+pub fn data_tls_text(mode: &str) -> String {
+    let what = match mode {
+        "allow" => {
+            "connections authenticate with the cluster's certificates where both ends can; others are still served"
+        }
+        "require" => "only authenticated connections are served",
+        _ => "no connection on the storage network authenticates",
+    };
+    format!(
+        "data path TLS: {}: {what}\n",
+        if mode.is_empty() { "off" } else { mode }
+    )
 }
 
 /// `hyperstorctl sealing-key list`.

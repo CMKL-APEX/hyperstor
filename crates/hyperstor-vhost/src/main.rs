@@ -1,4 +1,4 @@
-//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N]`
+//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N]`
 //! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -86,6 +86,17 @@ fn main() {
                     .unwrap_or_else(|| usage()),
             };
             let stop = stop_on_signal();
+            // The host's identity on the data path (D373, D375): its own
+            // `host` certificate, else its storage node's or member's.
+            if let Some(dir) = get("--identity")
+                && let Err(e) = hyperstor_client::load_process_identity(
+                    std::path::Path::new(&dir),
+                    &["host", "node", "api"],
+                )
+            {
+                eprintln!("hyperstor-vhost: --identity: {e}");
+                std::process::exit(2)
+            }
             let r = serve(
                 Options {
                     meta,

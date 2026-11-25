@@ -210,6 +210,7 @@ impl Group {
             pings: None,
             older: None,
             sealing: None,
+            tls: None,
             kv: Default::default(),
             partitions: None,
             node_id: n as u32,

@@ -158,6 +158,7 @@ impl Rig {
                     pings: None,
                     older: None,
                     sealing: None,
+                    tls: None,
                     kv: Default::default(),
                     partitions: partitions.clone(),
                     node_id: n,

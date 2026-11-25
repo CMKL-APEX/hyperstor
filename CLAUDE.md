@@ -46,7 +46,7 @@ design is split by topic, with section numbers kept across files.
   choices behind D28–D31 and D34–D37; I427 and I430 (I425 retired by
   D355) and host checks G60 and G61.
 - **Open for the owner's review:** D20–D26, D28–D37, D56–D60 and D66's merge
-  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I243, I246, I247, I249, I253, I254, I255, I256, I257, I259, I260, I261, I262, I263, I264, I265, I267, I268, I269, I271, I272, I279, I280, I292, I416, I439, I440, I441, I442, I443, I444, every host check (G1–G46, G62–G69,
+  rule, D145, D146, F1–F12 in detail, I1–I78, I80–I243, I246, I247, I249, I253, I254, I255, I256, I257, I259, I260, I261, I262, I263, I264, I265, I267, I268, I269, I271, I272, I279, I280, I292, I416, I439, I440, I441, I442, I443, I444, I445, every host check (G1–G46, G62–G69,
   FG1–FG2), and points 97–103 (the engine's layout and AI workloads) and
   128–137 (S3 sooner) of `spec/05-decision-log.md`. Pools and devices at
   run time (`spec/24-pools-and-devices.md`, D163–D176, D184, D186–D188)

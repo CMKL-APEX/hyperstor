@@ -190,6 +190,16 @@ fn main() {
                 eprintln!("hyperstord: --identity: {e}");
                 std::process::exit(2)
             });
+            // The same identity on the data path (D373): what the node
+            // answers `StartTls` with and calls its peers with.
+            let names = sealing::identity_names(node);
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            if let Err(e) =
+                hyperstor_client::load_process_identity(std::path::Path::new(&dir), &names)
+            {
+                eprintln!("hyperstord: --identity: {e}");
+                std::process::exit(2)
+            }
             let addrs: Vec<String> = api
                 .split(',')
                 .filter(|a| !a.is_empty())
@@ -264,6 +274,7 @@ fn main() {
         pings: None,
         older: None,
         sealing: held.clone(),
+        tls: hyperstor_client::process_identity(),
         kv: Default::default(),
         partitions: None,
         node_id: node,

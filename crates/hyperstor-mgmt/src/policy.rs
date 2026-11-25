@@ -86,6 +86,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("ClusterService.ListPorts", Group::Read, false),
     ("ClusterService.SetPortRole", Group::Operate, false),
     ("ClusterService.SetLending", Group::Operate, false),
+    ("ClusterService.SetDataTls", Group::Secure, true),
     ("ClusterService.ClaimPort", Group::Machine, false),
     ("ClusterService.RenewClaim", Group::Machine, false),
     ("ClusterService.ReleaseClaim", Group::Operate, false),

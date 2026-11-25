@@ -254,7 +254,7 @@ covered by tests that run on every change.
 | Feature | Status |
 |---|---|
 | T0: certificates on every host: `node` certificates on member hosts, `host` tokens and `--role vhost --join` | Done |
-| T1: `--identity` on every data-path binary; the TLS 1.3 handshake after `Hello` (`StartTls`, protocol version 8) in rustls on the reactor, the turn back to plaintext, modes `off` and `allow`, identities kept with connections, unauthenticated connections counted | Planned |
+| T1: `--identity` on every data-path binary; the TLS 1.3 handshake after `Hello` (`StartTls`, protocol version 8) in rustls on the reactor, the turn back to plaintext, modes `off` and `allow`, identities kept with connections, unauthenticated connections counted | Done |
 | T2: `require`, refused while a node has no identity; authorization by certificate role; a node's id and a client's host name from the certificate; UDP pings keyed with the sealing key | Planned |
 | T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
 

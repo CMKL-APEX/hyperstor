@@ -2096,6 +2096,10 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             "pool 2 cache cache copies 1 pgs {} chunk 4194304 domain host\n",
             pgs(1)
         );
+        // A new cluster's connections authenticate where both ends can
+        // (D380): every host has its certificates from the start. A
+        // cluster that runs already keeps the mode its map has.
+        cluster += "data-tls allow\n";
         let map = format!("127.0.0.1:{}", s.map_port);
         let metrics = (0..s.nodes)
             .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))
@@ -3648,6 +3652,11 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
             args += &format!(" --group {g}");
         }
         args += &networks_arg(s, p);
+        // Its identity on the data path, where the host has one (D373,
+        // D375): a VM host's own, a storage host's node's, a member's.
+        if (s.role == "vhost" && !s.join.is_empty()) || node_api(s, p).is_some() {
+            args += " --identity /etc/hyperstor/pki";
+        }
         if !v.cpus.is_empty() {
             args += &format!(" --cpus {}", glidex_topology::numa::format_list(&v.cpus));
         }
@@ -6907,7 +6916,9 @@ mod tests {
         let file = |n: &str| f.iter().find(|x| x.0 == n).unwrap().1.clone();
         assert_eq!(
             file("/etc/hyperstor/vhost.env"),
-            "HS_ARGS=--meta 127.0.0.1:8849 --dir /run/hyperstor/vhost --allow-uid 0 --group 0\n"
+            // With the host's identity for the data path (D373): this
+            // host runs the map service.
+            "HS_ARGS=--meta 127.0.0.1:8849 --dir /run/hyperstor/vhost --allow-uid 0 --group 0 --identity /etc/hyperstor/pki\n"
         );
         let unit = file("/etc/systemd/system/hyperstor-vhost.service");
         assert!(
@@ -7059,14 +7070,14 @@ mod tests {
         p.nodes[0].networks = vec!["fast".into(), "ib".into()];
         p.nodes[1].networks = vec!["ib".into()];
         assert!(
-            env(&s, &p).ends_with(" --networks fast,ib\n"),
+            env(&s, &p).ends_with(" --networks fast,ib --identity /etc/hyperstor/pki\n"),
             "{}",
             env(&s, &p)
         );
         s.client_networks = "none".into();
         assert!(!env(&s, &p).contains("--networks"));
         s.client_networks = "ib".into();
-        assert!(env(&s, &p).ends_with(" --networks ib\n"));
+        assert!(env(&s, &p).ends_with(" --networks ib --identity /etc/hyperstor/pki\n"));
         let mut t = Settings::defaults();
         t.apply(&s.save());
         assert_eq!(t.client_networks, "ib");
