@@ -37,6 +37,11 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   agreed; a peer refuses a frame whose header version it doesn't read.
   A new message is negotiated through `Hello` and sent only to peers
   that answered a version that has it (`Host`, version 3, D261).
+- **Capabilities** (version 7, D363, D371, I442). `Capability { sealed }`,
+  after `Hello` and `Host`: a sealed capability the connection keeps,
+  answered `Noted`, or `Error` with `Denied` (code 14) and why it doesn't
+  open. In a pool that requires capabilities, a client's request on an
+  object the connection holds none for is answered `Denied` too.
 - **Checksummed writes in operation lists** (version 4, D279, I323).
   `WriteCrcs { off, data, crcs }` is a write with the CRC32C of each
   4 KiB block, taken by the writer (the S3 gateway, as it cuts a chunk).

@@ -242,6 +242,13 @@ fn main() {
             })
             .collect(),
     };
+    // The keys the reactors open capabilities with (D363), fetched from
+    // a thread of their own (D370).
+    let held = sealing.map(|src| {
+        let held = sealing::Sealing::new();
+        sealing::start(node, held.clone(), src);
+        held
+    });
     let h = start(NodeConfig {
         no_discard,
         endpoints,
@@ -255,6 +262,7 @@ fn main() {
         commit_delays: None,
         pings: None,
         older: None,
+        sealing: held.clone(),
         kv: Default::default(),
         partitions: None,
         node_id: node,
@@ -276,11 +284,6 @@ fn main() {
             .then_some(hyperstor_engine::DEFER_MAX),
         scrub_interval: std::time::Duration::ZERO,
         no_digests: false,
-    });
-    let held = sealing.map(|src| {
-        let held = sealing::Sealing::new();
-        sealing::start(node, held.clone(), src);
-        held
     });
     if let Some(l) = admin {
         hyperstor_daemon::metrics::serve(l, node, h.metrics.clone(), held);

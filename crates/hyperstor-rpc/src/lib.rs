@@ -630,6 +630,16 @@ impl Pool {
         self.connects.get()
     }
 
+    /// Every live connection held.
+    pub fn conns(&self) -> Vec<Conn> {
+        self.conns
+            .borrow()
+            .values()
+            .filter(|c| !c.is_dead())
+            .cloned()
+            .collect()
+    }
+
     /// Live connections held.
     pub fn live(&self) -> usize {
         self.conns

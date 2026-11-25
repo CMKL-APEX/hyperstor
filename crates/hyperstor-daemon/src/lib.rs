@@ -47,6 +47,7 @@ use hyperstor_engine::{
     Namespace, ObjKey, Op, OpError, OpList, ReadPlan, UringDev,
 };
 use hyperstor_meta::{ClusterMap, NO_DEVICE, PgInfo, ScrubSettings};
+use hyperstor_pki::seal::{Access, Capability};
 use hyperstor_proto::{
     Code, DAMAGED, HeldBlocks, LEASE_EXPIRES, LEASE_LOST, LEASE_RENEWED, LEASE_RETRY, LEASE_RW,
     Looked, Msg, ScrubDetail, Target, VERSION, WATCH_CHANGED, WATCH_QUIESCE, WireKey, WireObject,
@@ -255,6 +256,10 @@ pub struct NodeConfig {
     pub pings: Option<Arc<faults::Pings>>,
     /// Test hook: message kinds nodes don't know, as an older build.
     pub older: Option<Arc<faults::Older>>,
+    /// The sealing keys the node holds (D370), which its reactors open
+    /// clients' capabilities with (D363). None: it opens none, and a pool
+    /// that requires capabilities (D371) serves no client here.
+    pub sealing: Option<Arc<sealing::Sealing>>,
     /// Jobs on the key–value ranges this node is primary of.
     pub kv: KvJobs,
 }
@@ -478,6 +483,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
         }
         let ping_faults = cfg.pings.clone();
         let older = cfg.older.clone();
+        let sealing = cfg.sealing.clone();
         let io_timeout = match cfg.io_timeout {
             Duration::ZERO => IO_TIMEOUT,
             t => t,
@@ -542,6 +548,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         st.push_part_bytes.set(push_part_bytes);
                         *st.partitions.borrow_mut() = partitions.map(|p| (node, p));
                         *st.older.borrow_mut() = older.map(|o| (node, o));
+                        *st.sealing.borrow_mut() = sealing;
                         *st.commit_delays.borrow_mut() = commit_delays;
                         let no_udp = ping_faults.as_ref().is_some_and(|f| f.no_udp(node));
                         *st.ping_faults.borrow_mut() = ping_faults;
@@ -777,6 +784,8 @@ struct ShardState {
     partitions: RefCell<Option<(u32, Arc<faults::Partitions>)>>,
     /// The test hook of `NodeConfig::older`, with this node's id.
     older: RefCell<Option<(u32, Arc<faults::Older>)>>,
+    /// The node's sealing keys (`NodeConfig::sealing`).
+    sealing: RefCell<Option<Arc<sealing::Sealing>>>,
     /// Objects the last scrub of each PG left unresolved, as reported.
     inconsistent: RefCell<HashMap<(u32, u32), u32>>,
     /// PGs this device has peered as primary (I61): the PG epoch, and
@@ -928,6 +937,43 @@ fn fenced(map: &ClusterMap, instance: u64, lease: u64) -> Option<Msg> {
     } else {
         None
     }
+}
+
+/// The most capabilities one connection keeps: a client's mounts on one
+/// reactor. Why a bound: each is memory a client makes the node hold.
+const CAPABILITIES_MAX: usize = 4096;
+
+/// Seconds since 1970, for capabilities' expiry.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Whether a connection holding `caps` may read, or with `write` change,
+/// the object `key` in a pool that requires capabilities (D371): the
+/// object must be a chunk of a lineage's branch (`heat::volume_of`) that
+/// one of them grants, for writing if it writes, and not expired. Else
+/// why not.
+fn allowed(caps: &[Capability], key: &WireKey, write: bool, now_unix: u64) -> Result<(), String> {
+    let Some((lineage, branch)) = heat::volume_of(&key.name) else {
+        return Err("this pool requires capabilities, and the object is no dataset's chunk".into());
+    };
+    let Some(c) = caps
+        .iter()
+        .find(|c| (c.lineage, c.branch) == (lineage, branch))
+    else {
+        return Err(format!(
+            "no capability shown for lineage {lineage:032x} branch {branch}"
+        ));
+    };
+    if c.expires_unix <= now_unix {
+        return Err(format!("the capability expired at {}", c.expires_unix));
+    }
+    if write && !c.access.allows(Access::ReadWrite) {
+        return Err("the capability is read-only".into());
+    }
+    Ok(())
 }
 
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
@@ -1458,6 +1504,7 @@ impl ShardState {
             inconsistent: RefCell::new(HashMap::new()),
             partitions: RefCell::new(None),
             older: RefCell::new(None),
+            sealing: RefCell::new(None),
             watches: RefCell::new(HashMap::new()),
             quiesce: RefCell::new(HashMap::new()),
             peered: RefCell::new(HashMap::new()),
@@ -2209,6 +2256,8 @@ impl ShardState {
         let mut instance = 0;
         // The host the client named after `Hello` (D261); empty: none.
         let mut host = String::new();
+        // The capabilities the client has shown on this connection (D363).
+        let mut caps: Vec<Capability> = Vec::new();
         let counter = counter_of(&s);
         loop {
             let Ok((h, msg, payload)) = read_request(&s, counter.as_deref()).await else {
@@ -2240,7 +2289,46 @@ impl ShardState {
                 reply(&m, &[]);
                 continue;
             }
+            // A pool that requires capabilities serves a client only what
+            // the connection holds one for (D371): a lookup in what it
+            // showed, no key and no MAC per request.
+            if let Some((to, key, write)) = msg.object_access()
+                && self
+                    .map()
+                    .pools
+                    .get(&to.pool)
+                    .is_some_and(|p| p.capabilities)
+                && let Err(why) = allowed(&caps, key, write, unix_now())
+            {
+                reply(&err(Code::Denied, &self.map(), why), &[]);
+                continue;
+            }
             match msg {
+                Msg::Capability { sealed } => {
+                    let keys = self.sealing.borrow().as_ref().map(|s| s.keys());
+                    let opened = match keys {
+                        None => Err("this node holds no sealing keys".to_string()),
+                        Some(_) if caps.len() >= CAPABILITIES_MAX => Err(format!(
+                            "a connection keeps at most {CAPABILITIES_MAX} capabilities"
+                        )),
+                        Some(k) => k
+                            .open(&sealed, unix_now(), instance, &host)
+                            .map_err(|e| e.to_string()),
+                    };
+                    match opened {
+                        Ok(c) => {
+                            caps.retain(|h| (h.lineage, h.branch) != (c.lineage, c.branch));
+                            caps.push(c);
+                            reply(
+                                &Msg::Noted {
+                                    map_epoch: self.map().epoch,
+                                },
+                                &[],
+                            )
+                        }
+                        Err(why) => reply(&err(Code::Denied, &self.map(), why), &[]),
+                    }
+                }
                 Msg::Hello { .. } => reply(
                     &Msg::HelloOk {
                         version: self.version(),

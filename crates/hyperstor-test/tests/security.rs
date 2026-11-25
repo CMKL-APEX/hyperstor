@@ -436,3 +436,69 @@ fn sealing_keys_rotate_and_reach_only_storage_nodes() {
         assert!(!audit.iter().any(|l| l.contains(&hex(k))));
     }
 }
+
+/// A pool made to require capabilities (D371) with `hyperstorctl pool set
+/// --capabilities on` serves no client that shows none, as `io-test`
+/// doesn't; says so in `pools`; is audited; and serves again once it is
+/// turned off.
+#[test]
+fn a_pool_requires_capabilities_when_told() {
+    let c = Cluster::all_in_one("capspool", 1);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    c.ctl(&["io-test", "--mib", "1"]).ok();
+
+    let on = c
+        .ctl(&["pool", "set", "--pool", "1", "--capabilities", "on"])
+        .ok();
+    assert!(
+        on.has("serves clients only what they show a capability for"),
+        "{}",
+        on.out
+    );
+    let pools = c.ctl(&["pools"]).ok();
+    assert!(pools.has("pool 1: requires capabilities"), "{}", pools.out);
+    assert!(
+        c.ctl(&["pools", "--json"])
+            .ok()
+            .has("\"capabilities\":true")
+    );
+    // The node takes the map within moments; from then on a client
+    // without a capability is refused, and told why.
+    let refused = wait_for("io-test to be refused", 30, || {
+        let r = c.ctl(&["io-test", "--mib", "1"]);
+        (r.code != 0).then_some(r)
+    });
+    assert!(
+        refused.has("Denied") && refused.has("no capability shown"),
+        "{}",
+        refused.out
+    );
+    // .meta keeps none: volumes' headers are fenced by leases.
+    c.ctl(&["pool", "set", "--pool", "0", "--capabilities", "on"])
+        .expect(1);
+    // Only `pool set` takes it.
+    c.ctl(&["pools", "--capabilities", "on"]).expect(2);
+
+    let off = c
+        .ctl(&["pool", "set", "--pool", "1", "--capabilities", "off"])
+        .ok();
+    assert!(
+        off.has("serves clients without capabilities"),
+        "{}",
+        off.out
+    );
+    wait_for("io-test to be served again", 30, || {
+        (c.ctl(&["io-test", "--mib", "1"]).code == 0).then_some(())
+    });
+    assert!(!c.ctl(&["pools"]).ok().has("requires capabilities"));
+
+    let audit = c.audit();
+    for what in ["capabilities=on", "capabilities=off"] {
+        assert!(
+            audit.iter().any(|l| l.contains("\"op\":\"SetPool\"")
+                && l.contains(what)
+                && l.contains("\"result\":\"ok")),
+            "{what}: {audit:#?}"
+        );
+    }
+}

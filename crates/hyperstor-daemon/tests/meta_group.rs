@@ -209,6 +209,7 @@ impl Group {
             commit_delays: None,
             pings: None,
             older: None,
+            sealing: None,
             kv: Default::default(),
             partitions: None,
             node_id: n as u32,
