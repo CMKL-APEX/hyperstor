@@ -7,11 +7,12 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **design; H0 begun** (01-implementation-notes.md I439, I440: the
-sealing keys, the capability's format, and storage nodes holding the keys;
-nothing checks a capability yet). The order agreed with the owner
-(2026-11-25): the rest of H0, then the data path's mutual TLS (D25), then
-H1 and H2. D360–D371 are settled with the owner
+Status: **design; H0 built** (01-implementation-notes.md I439–I441: the
+sealing keys, the capability's format, storage nodes holding the keys, and
+reactors checking capabilities in pools that require them; nothing issues
+a capability yet, which comes with datasets in H1, and peers aren't told
+from clients until D25). The order agreed with the owner (2026-11-25):
+H0, then the data path's mutual TLS (D25), then H1 and H2. D360–D371 are settled with the owner
 (05-decision-log.md points 323–334, 2026-11-24 and 2026-11-25), D361 (the name `hsfs`)
 and D367 (no striping across clusters) among them. Host checks G62–G66
 are still to run. It builds on the

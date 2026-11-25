@@ -157,6 +157,7 @@ impl Rig {
                     commit_delays: None,
                     pings: None,
                     older: None,
+                    sealing: None,
                     kv: Default::default(),
                     partitions: partitions.clone(),
                     node_id: n,

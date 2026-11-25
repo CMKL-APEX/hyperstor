@@ -1167,6 +1167,17 @@ tests = [
     "hyperstor_daemon::metrics::tests::the_sealing_keys_held_are_counted",
 ]
 
+[[milestone.item]]
+what = "hsfs H0: a pool flag requires capabilities (D371); clients show sealed capabilities on each connection and reactors serve a flagged pool's chunks only as granted, read-only where so; nothing issues capabilities yet"
+spec = ["29-hsfs.md §32.6", "13-protocol.md §13.2", "D363", "D371", "I441"]
+status = "partial"
+tests = [
+    "cluster::a_pool_that_requires_capabilities_serves_only_what_a_client_shows",
+    "security::a_pool_requires_capabilities_when_told",
+    "hyperstor_map::port_tests::pools_that_require_capabilities_travel_only_while_one_does",
+    "hyperstor_meta::tests::a_pool_is_made_to_require_capabilities_and_not",
+]
+
 [[milestone]]
 id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"

@@ -80,6 +80,9 @@ pub struct PoolChange {
     pub autoscale: Option<bool>,
     /// Cache pools: seconds a PG waits for a down member (D189).
     pub cache_grace: Option<u32>,
+    /// Whether clients need a sealed capability for what they ask of the
+    /// pool (D371).
+    pub capabilities: Option<bool>,
 }
 
 /// What `SetScrubSettings` changes (28-scrub.md §31.2, D224); `None`
@@ -2592,6 +2595,7 @@ impl Meta {
             pg_count,
             autoscale,
             cache_grace,
+            capabilities,
         } = change;
         if classes.is_none()
             && name.is_none()
@@ -2599,9 +2603,10 @@ impl Meta {
             && pg_count.is_none()
             && autoscale.is_none()
             && cache_grace.is_none()
+            && capabilities.is_none()
         {
             return Err(
-                "nothing to change: give classes, a name, a domain, a PG count, autoscale or a cache grace"
+                "nothing to change: give classes, a name, a domain, a PG count, autoscale, a cache grace or capabilities"
                     .into(),
             );
         }
@@ -2616,6 +2621,9 @@ impl Meta {
         }
         if let Some(g) = cache_grace {
             wanted.cache_grace = g;
+        }
+        if let Some(c) = capabilities {
+            wanted.capabilities = c;
         }
         if let Some(mut classes) = classes {
             classes.sort();
@@ -2835,6 +2843,7 @@ impl Meta {
             autoscale,
             cache_grace: cache_grace.unwrap_or(CACHE_GRACE_SECS),
             scrub: ScrubSettings::default(),
+            capabilities: false,
         };
         let eligible = map
             .devices
@@ -4447,7 +4456,9 @@ impl Meta {
                 map_epoch: self.published.borrow().epoch,
             },
             // Its host (D261): the map service grants no leases.
-            Ok(Msg::Host { .. }) => Msg::Noted {
+            // A client shows its capabilities to every peer it connects
+            // to; the map service serves no objects and keeps none.
+            Ok(Msg::Host { .. } | Msg::Capability { .. }) => Msg::Noted {
                 map_epoch: self.published.borrow().epoch,
             },
             Ok(Msg::GetMap { have_epoch }) => {
@@ -5858,6 +5869,7 @@ mod tests {
             autoscale: true,
             cache_grace: CACHE_GRACE_SECS,
             scrub: ScrubSettings::default(),
+            capabilities: false,
         });
         m.recompute();
         m
@@ -6517,6 +6529,40 @@ mod tests {
 
     /// D224, D226: scrub settings change in the map; weakening them is
     /// refused unless asked for, and cache pools have none to change.
+    /// D371: a pool's capability requirement is set and lifted with
+    /// `set_pool`, each a new map; `.meta` keeps none.
+    #[test]
+    fn a_pool_is_made_to_require_capabilities_and_not() {
+        let m = Meta::new(map());
+        let pool = *m
+            .map
+            .borrow()
+            .pools
+            .keys()
+            .find(|p| **p != META_POOL)
+            .unwrap();
+        let epoch = m.map.borrow().epoch;
+        let set = |pool, on| {
+            m.set_pool(
+                pool,
+                PoolChange {
+                    capabilities: Some(on),
+                    ..Default::default()
+                },
+                false,
+            )
+        };
+        assert!(!m.map.borrow().pools[&pool].capabilities);
+        let (e, _) = set(pool, true).unwrap();
+        assert!(e > epoch && m.map.borrow().pools[&pool].capabilities);
+        // Asked again: nothing changes, and no new map.
+        assert_eq!(set(pool, true).unwrap().0, e);
+        let (e2, _) = set(pool, false).unwrap();
+        assert!(e2 > e && !m.map.borrow().pools[&pool].capabilities);
+        assert!(set(META_POOL, true).is_err());
+        assert!(set(9999, true).is_err());
+    }
+
     #[test]
     fn scrub_settings_are_set_and_weakening_is_asked_for() {
         let m = Meta::new(map());

@@ -69,6 +69,12 @@ enum MetaCmd {
     /// Forgets the primaries' space reports, as a new leader would.
     ForgetSpace,
     /// Splits a pool to the PG count given (D187).
+    /// Turns a pool's capability requirement on or off (D371).
+    Capabilities(
+        u32,
+        bool,
+        std::sync::mpsc::Sender<Result<(u64, bool), String>>,
+    ),
     Split(
         u32,
         u32,
@@ -183,6 +189,9 @@ struct Cluster {
     pings: Arc<hyperstor_daemon::faults::Pings>,
     /// Message kinds nodes don't know, as an older build.
     older: Arc<hyperstor_daemon::faults::Older>,
+    /// The sealing keys every node holds (D370): none until a test sets
+    /// some.
+    sealing: Arc<hyperstor_daemon::sealing::Sealing>,
     /// I/O timeout given to restarted nodes; zero: the default.
     io_timeout: std::time::Duration,
     /// Read timeout given to restarted nodes (D190); zero: the default.
@@ -408,6 +417,7 @@ impl Cluster {
             autoscale: false,
             cache_grace: hyperstor_meta::CACHE_GRACE_SECS,
             scrub: Default::default(),
+            capabilities: false,
         });
         map.ensure_meta_pool();
         map.recompute();
@@ -482,6 +492,13 @@ impl Cluster {
                             };
                             let _ = tx.send(r);
                         }
+                        MetaCmd::Capabilities(pool, on, tx) => {
+                            let change = hyperstor_meta::PoolChange {
+                                capabilities: Some(on),
+                                ..Default::default()
+                            };
+                            let _ = tx.send(meta.set_pool(pool, change, false));
+                        }
                         MetaCmd::Split(pool, pgs, tx) => {
                             let change = hyperstor_meta::PoolChange {
                                 pg_count: Some(pgs),
@@ -500,6 +517,7 @@ impl Cluster {
         let commit_delays = Arc::new(hyperstor_daemon::faults::CommitDelays::default());
         let pings = Arc::new(hyperstor_daemon::faults::Pings::default());
         let older = Arc::new(hyperstor_daemon::faults::Older::default());
+        let sealing = hyperstor_daemon::sealing::Sealing::new();
         let mut faulty = std::collections::HashMap::new();
         let nodes = listeners
             .into_iter()
@@ -518,6 +536,7 @@ impl Cluster {
                     commit_delays: Some(commit_delays.clone()),
                     pings: Some(pings.clone()),
                     older: Some(older.clone()),
+                    sealing: Some(sealing.clone()),
                     kv,
                     partitions: Some(partitions.clone()),
                     node_id: n as u32,
@@ -576,6 +595,7 @@ impl Cluster {
             commit_delays,
             pings,
             older,
+            sealing,
             io_timeout: std::time::Duration::ZERO,
             read_timeout: std::time::Duration::ZERO,
             stray_grace: grace,
@@ -626,6 +646,7 @@ impl Cluster {
             commit_delays: Some(self.commit_delays.clone()),
             pings: Some(self.pings.clone()),
             older: Some(self.older.clone()),
+            sealing: Some(self.sealing.clone()),
             kv: self.kv,
             partitions: Some(self.partitions.clone()),
             node_id: n as u32,
@@ -712,6 +733,17 @@ impl Cluster {
                 .is_ok()
         );
         rx.recv().unwrap()
+    }
+
+    /// Makes `pool` require capabilities, or not (D371).
+    fn require_capabilities(&self, pool: u32, on: bool) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::Capabilities(pool, on, tx))
+                .is_ok()
+        );
+        rx.recv().unwrap().unwrap();
     }
 
     /// Splits `pool` to `pgs` PGs (24-pools-and-devices.md §27.5, D187).
@@ -9906,5 +9938,182 @@ fn space_counts(seed: u64) {
     assert!(
         most >= 3 && snap_only && cloned && rolled,
         "seed {seed} covered too little: {most} volumes, snapshot-only {snap_only}, clones {cloned}, rollbacks {rolled}"
+    );
+}
+
+/// A pool that requires capabilities (D371) serves a client only the
+/// branches it has shown a sealed capability for (D363), for reading or
+/// for writing as granted; a capability for another client, another host,
+/// under an unknown key or expired opens nothing; replication and a
+/// node's restart go on; and with the requirement off the pool serves as
+/// before.
+#[test]
+fn a_pool_that_requires_capabilities_serves_only_what_a_client_shows() {
+    use hyperstor_client::ClientError;
+    use hyperstor_pki::seal::{Access, Capability, SealingKey, SealingKeys};
+    use hyperstor_proto::Code;
+    let mut c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let keys = || SealingKeys::new(vec![SealingKey::new(1, [7; 32])]);
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<&'static str>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            let cl = Client::connect(meta, 99).await.unwrap();
+            cl.set_host("h1");
+            let data = pattern(1, 8192);
+            let denied = |r: Result<(), ClientError>, why: &str| match r {
+                Err(ClientError::Server {
+                    code: Code::Denied,
+                    detail,
+                }) => assert!(detail.contains(why), "{detail}"),
+                r => panic!("not denied ({why}): {r:?}"),
+            };
+            let far = u64::MAX;
+            let cap = |lineage: u128, access, instance, host: &str, expires_unix| Capability {
+                tenant: 3,
+                lineage,
+                branch: 0,
+                access,
+                instance,
+                host: host.into(),
+                expires_unix,
+            };
+            let seal = |c: &Capability| keys().seal(c).unwrap();
+
+            // Without the requirement, as before.
+            cl.write(POOL, 1, 0, data.clone()).await.unwrap();
+            step_tx.send("require").unwrap();
+            go_rx.recv().unwrap();
+
+            // Required: nothing shown, nothing served, not even a read.
+            // The nodes learn of it with the map, within moments.
+            let t0 = std::time::Instant::now();
+            while cl.write(POOL, 1, 0, data.clone()).await.is_ok() {
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            denied(
+                cl.write(POOL, 1, 0, data.clone()).await,
+                "no capability shown",
+            );
+            denied(
+                cl.read(POOL, 1, 0, 8192).await.map(|_| ()),
+                "no capability shown",
+            );
+
+            // Shown for lineage 1, read-write: served, and no other lineage.
+            let rw = cap(1, Access::ReadWrite, cl.instance, "h1", far);
+            cl.show_capability(1, 0, seal(&rw)).await;
+            cl.write(POOL, 1, 0, data.clone()).await.unwrap();
+            assert!(cl.read(POOL, 1, 0, 8192).await.unwrap() == data);
+            denied(
+                cl.write(POOL, 2, 0, data.clone()).await,
+                "no capability shown",
+            );
+
+            // Read-only for lineage 2: reads, no writes.
+            let ro = cap(2, Access::Read, cl.instance, "h1", far);
+            cl.show_capability(2, 0, seal(&ro)).await;
+            assert!(
+                cl.read(POOL, 2, 0, 8192)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|&b| b == 0)
+            );
+            denied(cl.write(POOL, 2, 0, data.clone()).await, "read-only");
+
+            // What opens nothing: another client's, another host's, one
+            // sealed under a key the nodes don't hold, one expired, and
+            // bytes that are no capability.
+            let other = SealingKeys::new(vec![SealingKey::new(9, [1; 32])]);
+            for (lineage, sealed) in [
+                (
+                    3,
+                    seal(&cap(3, Access::ReadWrite, cl.instance + 1, "h1", far)),
+                ),
+                (4, seal(&cap(4, Access::ReadWrite, cl.instance, "h2", far))),
+                (
+                    5,
+                    other
+                        .seal(&cap(5, Access::ReadWrite, cl.instance, "h1", far))
+                        .unwrap(),
+                ),
+                (6, seal(&cap(6, Access::ReadWrite, cl.instance, "h1", 1))),
+                (7, vec![1, 2, 3]),
+            ] {
+                cl.show_capability(lineage, 0, sealed).await;
+                denied(
+                    cl.write(POOL, lineage, 0, data.clone()).await,
+                    "no capability shown",
+                );
+                cl.forget_capability(lineage, 0);
+            }
+            // A capability for a branch is for that branch.
+            denied(
+                cl.write_at(POOL, 1, 5, 0, 0, data.clone()).await,
+                "no capability shown",
+            );
+
+            // A node restarts: the client shows them again as it
+            // reconnects, and goes on.
+            step_tx.send("restart").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            for i in 0..8u64 {
+                cl.write(POOL, 1, i * CHUNK as u64, pattern(i, 4096))
+                    .await
+                    .unwrap();
+            }
+            for i in 0..8u64 {
+                assert!(
+                    cl.read(POOL, 1, i * CHUNK as u64, 4096).await.unwrap() == pattern(i, 4096)
+                );
+            }
+            denied(cl.write(POOL, 2, 0, data.clone()).await, "read-only");
+
+            // A second client shows nothing and gets nothing, whatever
+            // the first holds.
+            let cl2 = Client::connect(meta, 100).await.unwrap();
+            denied(
+                cl2.read(POOL, 1, 0, 8192).await.map(|_| ()),
+                "no capability shown",
+            );
+
+            // Not required again: as before.
+            step_tx.send("lift").unwrap();
+            go_rx.recv().unwrap();
+            let t0 = std::time::Instant::now();
+            while cl2.write(POOL, 8, 0, data.clone()).await.is_err() {
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert!(cl2.read(POOL, 1, 0, 4096).await.unwrap() == pattern(0, 4096));
+            step_tx.send("done").unwrap();
+        })
+    });
+    loop {
+        match step_rx.recv().unwrap() {
+            "require" => {
+                c.sealing.set(keys());
+                c.require_capabilities(POOL, true);
+            }
+            "restart" => {
+                c.kill(1);
+                c.restart(1);
+            }
+            "lift" => c.require_capabilities(POOL, false),
+            _ => break,
+        }
+        go_tx.send(()).unwrap();
+    }
+    t.join().unwrap();
+    // Every copy of lineage 1's chunks agrees: replication went on.
+    let (map, devs) = c.stop();
+    copies_agree(
+        &map,
+        devs,
+        &(0..8u64).map(|i| (1u128, i)).collect::<Vec<_>>(),
     );
 }

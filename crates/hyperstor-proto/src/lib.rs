@@ -25,8 +25,11 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// only to a peer whose `HelloOk` answers 3 or more (D261). 4:
 /// [`WireOp::WriteCrcs`] in operation lists (D279). 5:
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
-/// operation lists (D357).
-pub const VERSION: u16 = 6;
+/// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
+/// (D363, D371).
+pub const VERSION: u16 = 7;
+/// The first version that decodes [`Msg::Capability`] (D363).
+pub const CAPABILITY_VERSION: u16 = 7;
 /// The first version whose primaries take [`WireOp::ZeroRange`] (D357).
 pub const ZERO_RANGE_VERSION: u16 = 6;
 /// The first version that decodes [`Msg::LeasePromote`] (D351).
@@ -147,6 +150,9 @@ pub enum Code {
     /// The request's lease identity ([`Target::lease`]) is blocklisted:
     /// that volume's lease is gone, the client's others aren't (D150).
     Fenced = 13,
+    /// The pool requires capabilities (D371) and the connection has shown
+    /// none that allows the request (D363); `detail` says which.
+    Denied = 14,
 }
 
 impl Code {
@@ -164,6 +170,7 @@ impl Code {
             11 => Code::NotLeader,
             12 => Code::Busy,
             13 => Code::Fenced,
+            14 => Code::Denied,
             _ => Code::Invalid,
         }
     }
@@ -381,6 +388,14 @@ pub enum Msg {
     /// (D259). Answered `Noted`.
     Host {
         name: String,
+    },
+    /// Client to storage node, after `Hello` and `Host`, when the node's
+    /// `HelloOk` answered [`CAPABILITY_VERSION`] or more: a sealed
+    /// capability (`hyperstor_pki::seal`; 29-hsfs.md §32.6, D363) for the
+    /// connection to keep. Answered `Noted`, or `Error` with
+    /// [`Code::Denied`] and why it doesn't open.
+    Capability {
+        sealed: Vec<u8>,
     },
     /// Storage node to map service: the host it runs on, by its host
     /// name, at start and every 30 s (D348), for people to find the
@@ -920,10 +935,31 @@ mod kind {
     pub const ERROR: u16 = 99;
     pub const NODE_HOST: u16 = 100;
     pub const LEASE_PROMOTE: u16 = 101;
+    pub const CAPABILITY: u16 = 102;
 }
 
 impl Msg {
     /// Where the request is addressed, if it is addressed to a PG.
+    /// What a client asks of an object, if this is one of a client's
+    /// requests on an object: where, which object, and whether it changes
+    /// it. What a pool that requires capabilities checks (D371). Peers'
+    /// messages, leases and the like give None.
+    pub fn object_access(&self) -> Option<(&Target, &WireKey, bool)> {
+        match self {
+            Msg::Write { to, key, .. }
+            | Msg::Exec { to, key, .. }
+            | Msg::DropVersions { to, key, .. }
+            | Msg::Flatten { to, key, .. } => Some((to, key, true)),
+            Msg::Read { to, key, .. }
+            | Msg::Lookup { to, key, .. }
+            | Msg::ReadAt { to, key, .. }
+            | Msg::Sources { to, key, .. }
+            | Msg::Versions { to, key, .. }
+            | Msg::Watch { to, key, .. } => Some((to, key, false)),
+            _ => None,
+        }
+    }
+
     pub fn target(&self) -> Option<&Target> {
         match self {
             Msg::Digests { to, .. }
@@ -998,6 +1034,7 @@ impl Msg {
             Msg::EndpointDown { .. } => ENDPOINT_DOWN,
             Msg::PortReport { .. } => PORT_REPORT,
             Msg::Host { .. } => HOST,
+            Msg::Capability { .. } => CAPABILITY,
             Msg::NodeHost { .. } => NODE_HOST,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
@@ -1177,6 +1214,9 @@ impl Msg {
             }
             Msg::Host { name } => {
                 e.str(name);
+            }
+            Msg::Capability { sealed } => {
+                e.bytes(sealed);
             }
             Msg::NodeHost { node, name } => {
                 e.u32(*node).str(name);
@@ -1673,6 +1713,9 @@ impl Msg {
             ENDPOINT_DOWN => Msg::EndpointDown {
                 reporter: d.u32()?,
                 addr: d.str()?.parse().map_err(|_| DecodeError::Utf8)?,
+            },
+            CAPABILITY => Msg::Capability {
+                sealed: d.bytes()?.to_vec(),
             },
             HOST => Msg::Host {
                 name: d.str()?.to_string(),
@@ -2605,6 +2648,9 @@ mod tests {
             },
             Msg::Host {
                 name: "hv-7".into(),
+            },
+            Msg::Capability {
+                sealed: vec![1, 2, 3],
             },
             Msg::NodeHost {
                 node: 2,
