@@ -22,6 +22,7 @@ pub mod realms;
 pub mod replica;
 pub mod s3keys;
 pub mod scrubs;
+pub mod sealkeys;
 pub mod settings;
 pub mod space;
 pub mod store;
@@ -1908,7 +1909,7 @@ impl Meta {
                     if !self.persisted.get() {
                         // A new group: the cluster file's map is the first,
                         // tried until it is committed, while this member
-                        // leads in this term (I439). The publisher only
+                        // leads in this term (I441). The publisher only
                         // publishes a working map newer than the published
                         // one, so a first commit refused or timed out (a
                         // loaded host, #430) would otherwise stay

@@ -173,6 +173,10 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("RealmService.SetClientRealms", Group::Secure, true),
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
+    // The keys that seal NFS stateids and dataset capabilities (D133,
+    // D363): listed without their bytes; a rotation is a step-up.
+    ("CaService.ListSealingKeys", Group::Secure, false),
+    ("CaService.RotateSealingKey", Group::Secure, true),
     ("MapService.GetMapBackup", Group::Secure, true),
     ("AuditService.ListAudit", Group::Secure, false),
     ("AuditService.GetAuditSettings", Group::Secure, false),
@@ -194,6 +198,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.GetS3Gateway", Group::Machine, false),
     // The cluster key, for map service members alone (D162).
     ("CaService.GetClusterKey", Group::Machine, false),
+    // The sealing keys' bytes, for storage nodes alone (D133).
+    ("CaService.GetSealingKeys", Group::Machine, false),
     // mgmt's own calls for directories (D306): their key, relays, feeds
     // and reports.
     ("TrustService.GetTrustKey", Group::Machine, false),

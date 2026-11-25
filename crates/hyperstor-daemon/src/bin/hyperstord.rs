@@ -1,7 +1,7 @@
 //! `hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...]
 //!            [--cpus 2,3] [--buffered] [--hdd] [--spin-us N] [--peer-timeout-ms N]
 //!            [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N]
-//!            [--no-discard ID[,ID...]|all]`
+//!            [--no-discard ID[,ID...]|all] [--api ADDR[,ADDR...] --identity DIR]`
 //!
 //! Runs storage node N: one reactor per `--shard`, listening at ADDR (as in
 //! the cluster file) as device ID (default `N * 1000 +` its position among
@@ -32,6 +32,12 @@
 //! checkpoint (a deallocate on a drive, a punched hole in a file;
 //! 04-decisions.md D275); `--no-discard` names devices that don't, for
 //! drives that handle a discard slowly, or `all`.
+//! `--api ADDR[,ADDR...] --identity DIR`: the node fetches the cluster's
+//! sealing keys from the cluster API at those addresses, tried in turn, as
+//! the identity in DIR (`node.crt` and `node.key`, or a map service
+//! member's `api.crt` and `api.key`, with `root.crt`), at start and every
+//! 30 s (04-decisions.md D370). Without them it holds no key and opens no
+//! sealed capability.
 
 use hyperstor_daemon::*;
 use std::path::PathBuf;
@@ -46,7 +52,7 @@ fn main() {
     };
     let usage = || -> ! {
         eprintln!(
-            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--no-discard ID[,ID...]|all] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]]"
+            "usage: hyperstord --node N --meta ADDR --shard [ID@]ADDR=PATH:SIZE_GIB [--shard ...] [--cpus 2,3] [--buffered] [--hdd] [--admin ADDR] [--io-timeout-secs N] [--read-timeout-ms N] [--no-discard ID[,ID...]|all] [--endpoint DEV=ADDR ...] [--networks NAME[,NAME...]] [--api ADDR[,ADDR...] --identity DIR]"
         );
         std::process::exit(2)
     };
@@ -175,6 +181,34 @@ fn main() {
                 .collect()
         })
         .unwrap_or_default();
+    // D370: where the sealing keys come from, and as whom.
+    let sealing = match (get("--api"), get("--identity")) {
+        (None, None) => None,
+        (Some(api), Some(dir)) => {
+            let tls = sealing::identity(std::path::Path::new(&dir)).unwrap_or_else(|e| {
+                eprintln!("hyperstord: --identity: {e}");
+                std::process::exit(2)
+            });
+            let addrs: Vec<String> = api
+                .split(',')
+                .filter(|a| !a.is_empty())
+                .map(str::to_string)
+                .collect();
+            if addrs.is_empty() {
+                usage()
+            }
+            Some(sealing::Source {
+                addrs,
+                tls,
+                every: sealing::EVERY,
+                retry: sealing::RETRY,
+            })
+        }
+        _ => {
+            eprintln!("hyperstord: --api and --identity go together");
+            std::process::exit(2)
+        }
+    };
     let admin = get("--admin").map(|a| {
         std::net::TcpListener::bind(&a).unwrap_or_else(|e| {
             eprintln!("bind {a}: {e}");
@@ -243,8 +277,13 @@ fn main() {
         scrub_interval: std::time::Duration::ZERO,
         no_digests: false,
     });
+    let held = sealing.map(|src| {
+        let held = sealing::Sealing::new();
+        sealing::start(node, held.clone(), src);
+        held
+    });
     if let Some(l) = admin {
-        hyperstor_daemon::metrics::serve(l, node, h.metrics.clone());
+        hyperstor_daemon::metrics::serve(l, node, h.metrics.clone(), held);
     }
     // Run until killed; a reactor that fails to start ends the process.
     for r in h.stop_when_any_fails() {

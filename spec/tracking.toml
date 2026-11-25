@@ -328,7 +328,7 @@ tests = ["cluster::clients_follow_map_changes"]
 
 [[milestone.item]]
 what = "Replicated map service (Raft)"
-spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279", "I292", "I436", "I439"]
+spec = ["D2", "D20", "D71", "D72", "D73", "D74", "D236", "I62", "I194", "I273", "I276", "I279", "I292", "I436", "I441"]
 status = "partial"
 tests = [
     "meta_group::the_map_service_survives_its_leader",
@@ -1148,6 +1148,25 @@ title = "S3 over RDMA"
 [[milestone]]
 id = "HS14"
 title = "Distributed filesystem"
+
+[[milestone.item]]
+what = "hsfs H0: sealing keys in the map service (made on a storage node's first ask, rotated with the one before still valid, bytes for storage nodes and members only, audited), the sealed capability's format, and storage nodes fetching the keys from the cluster API (D370); no reactor checks a capability yet"
+spec = ["29-hsfs.md §32.6", "22-nfs.md §26.7", "D133", "D363", "D370", "I439", "I440"]
+status = "partial"
+tests = [
+    "security::sealing_keys_rotate_and_reach_only_storage_nodes",
+    "hyperstor_meta::sealkeys::tests::the_newest_two_keys_are_kept_in_order",
+    "hyperstor_meta::sealkeys::tests::a_rotation_that_lost_a_race_is_refused",
+    "hyperstor_meta::sealkeys::tests::ids_turn_from_1_to_255_and_never_0",
+    "hyperstor_meta::sealkeys::tests::s3_rows_beside_them_are_not_keys",
+    "hyperstor_pki::seal::tests::a_capability_opens_only_as_it_was_granted",
+    "hyperstor_pki::seal::tests::any_change_to_a_sealed_capability_is_refused",
+    "hyperstor_pki::seal::tests::two_keys_are_valid_through_a_rotation",
+    "hyperstor_pki::seal::tests::nothing_seals_without_a_key_or_with_a_name_too_long",
+    "hyperstor_daemon::sealing::tests::a_node_holds_nothing_until_set_and_then_the_newest",
+    "hyperstor_daemon::sealing::tests::the_identity_is_the_nodes_or_the_members",
+    "hyperstor_daemon::metrics::tests::the_sealing_keys_held_are_counted",
+]
 
 [[milestone]]
 id = "HS15"

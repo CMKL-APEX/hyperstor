@@ -7,9 +7,13 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **design; nothing built.** D360–D368 are settled with the owner
-(05-decision-log.md points 323–331, 2026-11-24), D361 (the name `hsfs`)
-and D367 (no striping across clusters) among them. Host checks G62–G65
+Status: **design; H0 begun** (01-implementation-notes.md I439, I440: the
+sealing keys, the capability's format, and storage nodes holding the keys;
+nothing checks a capability yet). The order agreed with the owner
+(2026-11-25): the rest of H0, then the data path's mutual TLS (D25), then
+H1 and H2. D360–D371 are settled with the owner
+(05-decision-log.md points 323–334, 2026-11-24 and 2026-11-25), D361 (the name `hsfs`)
+and D367 (no striping across clusters) among them. Host checks G62–G66
 are still to run. It builds on the
 filesystem ([00-filesystem.md](00-filesystem.md) F1–F12), volumes
 (10-volumes.md §10), tenants and projects (20-tenants.md §24), NFS
@@ -103,6 +107,22 @@ for scripts that already use `hyperstorctl`. Never `zfs`: OpenZFS
 installs that command on the same hosts, and its semantics differ where
 it matters (one host against many).
 
+**How a client reaches it (D369).**
+
+| Client | Path |
+|---|---|
+| glidex VMs | virtio-fs from `hyperstor-vhost`; no daemon in the guest |
+| Bare metal, Kubernetes | FUSE over io_uring: every program, no kernel module |
+| Data-heavy jobs on those hosts | The same mount, plus `libhsfs-preload.so`: I/O on the mount's paths goes to the client core in process, with no kernel crossing |
+| Applications that link the library | The POSIX or object layer in process (D364) |
+| GPU-direct | `libhyperstor-gpu` (F9) |
+| Hosts that can't run our daemon | pNFS (the `nfs` property) |
+
+The preloaded library is a fast path, never the only one: what it
+doesn't catch falls through to the mount, and both go through the same
+client core's rules (§32.5), so a process with it and one without see
+the same file. No kernel module (00-filesystem.md §1).
+
 **Parallel and striped I/O.** A file's chunks are spread by stripe
 groups over `W` PGs (D130), and PGs over nodes by placement
 (07-placement.md §5). The client core splits a read or write by chunk
@@ -142,6 +162,9 @@ chunks.
   `rw`), the client's session and authenticated host, and an expiry,
   under a MAC with the cluster's sealing key (the key, key ids and
   rotation of D133).
+- Storage nodes hold the sealing keys: each fetches them from the
+  cluster API on a thread of its own, at start and every 30 s (D370).
+- A pool requires capabilities only when flagged, off by default (D371).
 - The client presents its capabilities when it opens a connection to a
   reactor. The reactor checks the MAC and the connection's host once and
   keeps `(tenant, lineage, branch, access)` with the connection. Each
@@ -251,6 +274,12 @@ Part of HS14, in stages. N0 (22-nfs.md §26.10) needs H0–H2.
   and an `/etc/fstab` line work through a `mount.fuse.hsfs` helper on
   the distributions we ship, and that no package claims `hsfs` (Solaris
   used the name for its ISO 9660 driver; check Linux distributions).
+- **G66. What interception catches** (D369). With `libhsfs-preload.so`:
+  Python (CPython's `open`, NumPy, PyTorch's `DataLoader` workers after
+  `fork`), `dd`, `cp`, `tar`, a Go binary and a statically linked one.
+  Which go in process and which fall through to FUSE, and that a file
+  written one way reads the same the other. Then the gain: a data
+  loader's throughput with and without it (with FG2's numbers).
 - **G65. Stale data versions** (§32.5). A writer racing a truncate from
   another client: no write lands in a truncated range, under a
   randomized test against a model.

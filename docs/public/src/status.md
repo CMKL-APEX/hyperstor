@@ -27,7 +27,7 @@ covered by tests that run on every change.
 | HS11b: Key-value transactions | Planned |
 | HS12: S3 gateway | Done |
 | HS13: S3 over RDMA | Planned |
-| HS14: Distributed filesystem | Planned |
+| HS14: Distributed filesystem | In progress |
 | HS15: Tenancy: quotas and fair share between tenants | In progress |
 | HS16: Sites and replication between clusters | Planned |
 | HS17: Global namespace and federation | Planned |
@@ -191,6 +191,12 @@ covered by tests that run on every change.
 | Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4) | Done |
 | Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Done |
 | Virtual-hosted addressing, buckets and keys in mgmt's UI and hyperstorctl, public docs (stage 5) | Done |
+
+## HS14: Distributed filesystem
+
+| Feature | Status |
+|---|---|
+| hsfs H0: sealing keys in the map service (made on a storage node's first ask, rotated with the one before still valid, bytes for storage nodes and members only, audited), the sealed capability's format, and storage nodes fetching the keys from the cluster API (D370); no reactor checks a capability yet | In progress |
 
 ## HS15: Tenancy: quotas and fair share between tenants
 

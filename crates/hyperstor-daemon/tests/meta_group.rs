@@ -351,7 +351,7 @@ fn pattern(seed: u64, len: usize) -> Vec<u8> {
 /// return (after waiting out the old leader's leases, D73), and the old
 /// leader comes back as a follower with the current map.
 /// A new group's first map is committed even when its leader's first try
-/// is refused (#430, I439): it was tried once, and a group with nothing
+/// is refused (#430, I441): it was tried once, and a group with nothing
 /// else to change (no storage nodes) never had its map, so a member's
 /// store stayed without one.
 #[test]
