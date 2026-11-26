@@ -580,7 +580,7 @@ impl RealmService for Api {
         out.retain(|r| scope.realm(r.id));
         // Bindings name other realms too: the cluster's callers only.
         let clients = if scope.whole() {
-            // Bound clients, and unbound ones that hold token roles (D381).
+            // Bound clients, and unbound ones that hold token roles (D382).
             let names: std::collections::BTreeSet<&String> =
                 all.clients.keys().chain(all.client_tokens.keys()).collect();
             names
@@ -821,7 +821,7 @@ impl Api {
     }
 
     /// Whether management client `client`, bound to realms, may make a
-    /// join token for `role` (D381). Read as [`Api::client_reach`] is; a
+    /// join token for `role` (D382). Read as [`Api::client_reach`] is; a
     /// copy that can't be read grants nothing.
     pub(super) fn client_may_token(&self, client: &str, role: &str) -> bool {
         self.s3_store()

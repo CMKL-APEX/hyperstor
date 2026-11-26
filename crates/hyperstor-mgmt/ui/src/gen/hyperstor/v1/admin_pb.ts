@@ -3828,7 +3828,7 @@ export type RealmClient = Message<"hyperstor.v1.RealmClient"> & {
   realms: string[];
 
   /**
-   * The roles it may make join tokens for while bound (D381).
+   * The roles it may make join tokens for while bound (D382).
    *
    * @generated from field: repeated string token_roles = 3 [json_name = "token_roles"];
    */
@@ -3856,7 +3856,7 @@ export type RealmClientJson = {
   realms?: string[];
 
   /**
-   * The roles it may make join tokens for while bound (D381).
+   * The roles it may make join tokens for while bound (D382).
    *
    * @generated from field: repeated string token_roles = 3 [json_name = "token_roles"];
    */
@@ -8042,7 +8042,7 @@ export const RealmService: GenService<{
   },
   /**
    * Lets a management client make join tokens for the roles given while
-   * it is bound to realms (D381): `host` alone, so that glidex's servers
+   * it is bound to realms (D382): `host` alone, so that glidex's servers
    * can join their VM hosts; none takes that away. An unbound client makes
    * any token, as an administrator does. Write.
    *

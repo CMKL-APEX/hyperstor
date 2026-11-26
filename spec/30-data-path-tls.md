@@ -5,8 +5,8 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D381 are settled with the owner
-(05-decision-log.md points 335–344, 2026-11-25 and 26). Host checks G67–G69 are
+Status: **design.** D372–D380 and D382 are settled with the owner
+(05-decision-log.md points 335–345, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`, and nothing is refused yet (`require` is T2). It delivers D25, which stays the rule.
@@ -133,7 +133,7 @@ Once a connection is authenticated, and for every connection in
   (glidex #665). Its servers make each node's `host` token with their
   `mgmt` identity: an unbound one may already; one bound to realms (D311)
   only once an administrator lets it, with
-  `hyperstorctl realm client-tokens --client C --role host` (D381, I446).
+  `hyperstorctl realm client-tokens --client C --role host` (D382, I447).
 - **Why a grant, not every bound client:** the client chooses the name
   in the token, and a `host` certificate opens volumes under that name
   (D377). An administrator gives that power to one client knowingly.

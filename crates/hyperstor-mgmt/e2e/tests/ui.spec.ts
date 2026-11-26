@@ -622,7 +622,7 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
     await expect(row).toContainText("ui-realm");
     await expect(realm).toContainText(name);
     if (what === "client") {
-      // Let make VM hosts' join tokens, then no longer (D381).
+      // Let make VM hosts' join tokens, then no longer (D382).
       const tokens = page.getByTestId(`tenancy-client-tokens-${name}`);
       await expect(tokens).toHaveText("–");
       await row.getByRole("button", { name: "Allow host tokens" }).click();

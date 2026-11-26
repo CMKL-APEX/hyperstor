@@ -104,7 +104,7 @@
 //!   how long it is kept (0: forever; D112, D113);
 //! - `realm client-tokens --client C --role host|none`: lets a management
 //!   client bound to realms make `host` join tokens, for its VM hosts
-//!   (D381), or no longer;
+//!   (D382), or no longer;
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares, and says which networks it used;
@@ -486,7 +486,7 @@ struct Args {
     /// `realm host`: the host, as it names itself (D261).
     host: Option<String>,
     /// `realm client`, `realm client-tokens`: a management client, by the
-    /// name in its `mgmt` certificate (D311, D381).
+    /// name in its `mgmt` certificate (D311, D382).
     client: Option<String>,
     description: Option<String>,
     /// `s3 placement set`: pool names.

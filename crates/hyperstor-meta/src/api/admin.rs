@@ -367,7 +367,7 @@ impl TokenService for Api {
         let (who, reach) = self.authorize_reach(&ctx, "CreateToken", &target, Need::Write)?;
         // A token reaches the cluster as a whole, so whoever acts only in
         // realms makes none; but a management client an administrator let
-        // make a VM host's (D381).
+        // make a VM host's (D382).
         if let Some(realms) = reach {
             let granted = Identity::parse(&who)
                 .filter(|i| i.is_mgmt_client())

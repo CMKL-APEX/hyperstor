@@ -13,7 +13,7 @@
 //!   I397), by the name in its `mgmt` certificate (glidex's datastore
 //!   driver, D122); a client without a row is unbound.
 //! - `ctoken/<client>`: the roles a management client may make join
-//!   tokens for while it is bound to realms (D381): `host` alone today.
+//!   tokens for while it is bound to realms (D382): `host` alone today.
 //!
 //! "default" is realm 0 and has no row. What one row needs of the others
 //! (a realm deleted only when nothing names it, a pool taken from a realm
@@ -35,7 +35,7 @@ const HOST: &str = "hrealm/";
 const CLIENT: &str = "crealm/";
 const CLIENT_TOKENS: &str = "ctoken/";
 
-/// The roles a bound management client may be let make tokens for (D381):
+/// The roles a bound management client may be let make tokens for (D382):
 /// a VM host's alone. Any other role's certificate reaches past a realm.
 pub const CLIENT_TOKEN_ROLES: [&str; 1] = ["host"];
 
@@ -97,7 +97,7 @@ pub struct Realms {
     /// name.
     pub clients: BTreeMap<String, Client>,
     /// The roles each management client may make tokens for while bound
-    /// (D381); never empty in a stored row.
+    /// (D382); never empty in a stored row.
     pub client_tokens: BTreeMap<String, Vec<String>>,
 }
 
@@ -164,7 +164,7 @@ impl Realms {
     }
 
     /// Whether management client `client` may make a join token for
-    /// `role` while it is bound to realms (D381).
+    /// `role` while it is bound to realms (D382).
     pub fn client_may_token(&self, client: &str, role: &str) -> bool {
         self.client_tokens
             .get(client)
@@ -393,7 +393,7 @@ pub fn set_client(db: &Db, client: &str, realms: &[u32]) -> Result<(), Error> {
 }
 
 /// Lets management client `client` make join tokens for `roles` while it
-/// is bound to realms (D381), each one of [`CLIENT_TOKEN_ROLES`]; none
+/// is bound to realms (D382), each one of [`CLIENT_TOKEN_ROLES`]; none
 /// takes that away.
 pub fn set_client_tokens(db: &Db, client: &str, roles: &[String]) -> Result<(), Error> {
     write(db, |t, _| {
@@ -836,7 +836,7 @@ mod tests {
         }
     }
 
-    /// D381: the roles a client may make tokens for are kept apart from
+    /// D382: the roles a client may make tokens for are kept apart from
     /// its realms, through failovers, and a row that isn't one is no
     /// grant.
     #[test]

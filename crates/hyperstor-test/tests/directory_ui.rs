@@ -247,7 +247,7 @@ fn a_bound_client_acts_only_in_its_realms() {
     );
 }
 
-/// D381: a management client bound to realms makes no join token until
+/// D382: a management client bound to realms makes no join token until
 /// an administrator lets it make a VM host's; then a host's and no other
 /// role's, named in the token and the audit as its maker. The grant is
 /// listed, taken away again, and only `host` can be granted.

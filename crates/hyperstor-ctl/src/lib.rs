@@ -1734,7 +1734,7 @@ pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
     );
     // Management clients bound to realms (D311).
     for c in &r.clients {
-        // Unbound, a client is listed for its token roles alone (D381).
+        // Unbound, a client is listed for its token roles alone (D382).
         if !c.realms.is_empty() {
             let _ = writeln!(o, "Client {} acts in: {}", c.client, c.realms.join(","));
         }

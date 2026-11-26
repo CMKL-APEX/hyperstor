@@ -384,13 +384,14 @@ tests = [
 
 [[milestone.item]]
 what = "Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate)"
-spec = ["D350", "D351", "D352", "I421", "11-frontends.md §11.4"]
+spec = ["D350", "D351", "D352", "D381", "I421", "I446", "11-frontends.md §11.4"]
 status = "done"
 tests = [
     "cluster::a_delegate_is_promoted_and_the_old_holder_fenced",
     "cluster::a_delegate_is_not_promoted_by_older_storage_nodes",
     "cluster::a_promotion_sent_again_after_a_lost_reply_succeeds",
     "cluster::a_promoted_holders_first_write_waits_for_the_fence",
+    "cluster::a_standbys_writes_wait_for_its_promotion",
     "vhost::a_disk_is_handed_to_a_migrations_target",
 ]
 
@@ -2196,8 +2197,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A bound management client makes VM hosts' join tokens once an administrator lets it (realm client-tokens), so that glidex's servers can join their nodes (D381)"
-spec = ["30-data-path-tls.md §33.6", "D381", "I446"]
+what = "A bound management client makes VM hosts' join tokens once an administrator lets it (realm client-tokens), so that glidex's servers can join their nodes (D382)"
+spec = ["30-data-path-tls.md §33.6", "D382", "I447"]
 status = "done"
 tests = [
     "hyperstor_meta::realms::tests::a_clients_token_roles_are_kept_apart_from_its_realms",
