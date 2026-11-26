@@ -1915,6 +1915,18 @@ chose:
 |---|---|---|---|
 | 345 | How glidex's servers make `host` tokens for VM nodes when their identity is bound to realms (2026-11-26; glidex #665): every bound client may make `host` tokens (recommended); a separate grant an administrator sets on the client; or no change, an administrator makes each token | A separate grant on the identity | D382 |
 
+## Data-path TLS, stage T2: before building (2026-11-26)
+
+Two choices came up while reading the code for stage T2
+(30-data-path-tls.md §33.9). The second is a gap in D382, found then: a
+bound client with the grant could ask for a `host` certificate under a
+new name, and an unbound host attaches volumes of any realm (D251).
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 346 | How T2 closes the gap in D382's grant: bind hosts joined with a bound client's token to that client's realms (recommended); a name pattern on the grant, which a new matching name still gets past; or leave it as a cluster-wide power an administrator gives knowingly | Bind joined hosts to the client's realms | D383 |
+| 347 | How the revocation list reaches storage nodes, which must refuse revoked certificates once connections are authorized by them: in the cluster map, as the blocklist and realm bindings are (recommended); or polled from the cluster API every 30 s with the sealing keys | In the cluster map | D384 |
+
 ## A standby hold glidex can see (2026-11-26)
 
 glidex's migration check passed with D381 built (glidex#674), but found
@@ -1926,4 +1938,4 @@ every host being upgraded), the owner chose:
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 346 | How glidex tells a target that holds a standby's writes from one that fails them: a `standby_hold` feature in `hello` (recommended), protocol 5, or nothing | A `standby_hold` feature | D381 (amended) |
+| 348 | How glidex tells a target that holds a standby's writes from one that fails them: a `standby_hold` feature in `hello` (recommended), protocol 5, or nothing | A `standby_hold` feature | D381 (amended) |

@@ -98,7 +98,9 @@ fn unreachable_api_is_status_3() {
 /// Revocation (D56, D93): a certificate revoked by serial is refused by
 /// the API from then on, with the reason, while others go on; the list
 /// shows it; the local socket still works for root and the service's
-/// user, whatever the list says.
+/// user, whatever the list says. And on the data path (D384): the
+/// command answers once storage nodes hold the map that lists it, and
+/// the certificate moves no data from then on.
 #[test]
 fn revoked_certificates_are_refused() {
     let c = Cluster::all_in_one("revoke", 3);
@@ -114,6 +116,9 @@ fn revoked_certificates_are_refused() {
         ])
         .ok();
     assert!(shown.has("identity hyperstor://"), "{}", shown.out);
+    // It moves data, the API reached through the local socket.
+    c.ctl_via(Via::SocketWith(&ops), &["io-test", "--mib", "1"])
+        .ok();
     let serial = shown
         .out
         .lines()
@@ -122,8 +127,24 @@ fn revoked_certificates_are_refused() {
         .to_string();
     let r = c.ctl(&["cert", "revoke", "--serial", &serial]).ok();
     assert!(r.has(&format!("certificate {serial} revoked")), "{}", r.out);
+    // A new cluster's mode is `allow` (D380): the nodes hold the list.
+    assert!(
+        r.has("storage nodes and clients refuse it too"),
+        "{}",
+        r.out
+    );
     let r = c.ctl_via(Via::Tls(&ops), &["status"]).expect(4);
     assert!(r.has("is revoked (revoked)"), "{}", r.out);
+    // The data path refuses it as well, where the socket's API doesn't
+    // ask for a certificate; the administrator's own goes on.
+    let r = c.ctl_via(Via::SocketWith(&ops), &["io-test", "--mib", "1"]);
+    assert!(r.code != 0, "{}", r.out);
+    c.ctl(&["io-test", "--mib", "1"]).ok();
+    // Asked again: the same entry, and still held.
+    let again = c
+        .ctl(&["cert", "revoke", "--serial", &serial, "--json"])
+        .ok();
+    assert!(again.has("\"data_path\":\"nodes\""), "{}", again.out);
     // Others are untouched; the list shows it.
     let l = c.ctl(&["cert", "list"]).ok();
     assert!(l.has(&serial) && l.has("revoked"), "{}", l.out);
@@ -507,9 +528,10 @@ fn a_pool_requires_capabilities_when_told() {
 /// 30-data-path-tls.md §33.4). A new cluster starts in `allow`: its
 /// nodes, its map service and `hyperstorctl` each hold a certificate, so
 /// every connection authenticates and no node serves one that didn't.
-/// Turned `off`, connections made from then on don't, and are counted.
-/// `require` isn't offered before authorization by role; each change is
-/// audited.
+/// `require` is taken at once, as every node holds one (D377): the
+/// cluster's own connections go on, none refused. Turned `off`,
+/// connections made from then on don't authenticate, and are counted;
+/// `require` isn't offered from `off`. Each change is audited.
 #[test]
 fn a_new_clusters_connections_authenticate() {
     let c = Cluster::all_in_one("datatls", 3);
@@ -528,19 +550,34 @@ fn a_new_clusters_connections_authenticate() {
     c.ctl(&["io-test", "--mib", "4"]).ok();
     assert_eq!(unauthenticated(&c), 0, "{}", c.metrics(0));
 
-    // `require` waits for authorization by role (stage T2).
-    let r = c.ctl(&["data-tls", "set", "--mode", "require"]);
-    assert!(r.code != 0 && r.has("isn't built yet"), "{}", r.out);
+    // Every node holds a certificate and refuses by it: `require`.
+    let refused = |c: &Cluster| c.metric_sum("hyperstor_refused_connections_total", "");
+    let r = c.ctl(&["data-tls", "set", "--mode", "require"]).ok();
+    assert!(r.has("data path TLS: require, was allow"), "{}", r.out);
+    assert!(
+        c.ctl(&["data-tls", "status"])
+            .ok()
+            .has("only authenticated connections are served")
+    );
+    // Writes, replication, heartbeats and the tool go on; nothing of the
+    // cluster's own was refused, here or in `allow`.
+    c.ctl(&["io-test", "--mib", "4"]).ok();
+    c.ctl(&["status", "--wait", "60"]).ok();
+    assert_eq!(refused(&c), 0, "{}", c.metrics(0));
+    assert_eq!(unauthenticated(&c), 0, "{}", c.metrics(0));
     c.ctl(&["data-tls", "set", "--mode", "on"]).expect(2);
     c.ctl(&["data-tls", "set"]).expect(2);
 
     let off = c.ctl(&["data-tls", "set", "--mode", "off"]).ok();
-    assert!(off.has("data path TLS: off, was allow"), "{}", off.out);
+    assert!(off.has("data path TLS: off, was require"), "{}", off.out);
     assert!(
         c.ctl(&["data-tls", "status"])
             .ok()
             .has("data path TLS: off")
     );
+    // Not from `off`: nodes show what they hold in `allow` first.
+    let r = c.ctl(&["data-tls", "set", "--mode", "require"]);
+    assert!(r.code != 0 && r.has("allow first"), "{}", r.out);
     // Connections made from now on don't authenticate: the tool's next
     // ones are served, and counted.
     wait_for("an unauthenticated connection to be counted", 30, || {
@@ -553,8 +590,9 @@ fn a_new_clusters_connections_authenticate() {
 
     let audit = c.audit();
     for (what, result) in [
+        ("mode=require", "\"result\":\"ok, was allow"),
         ("mode=require", "\"result\":\"failed: "),
-        ("mode=off", "\"result\":\"ok, was allow"),
+        ("mode=off", "\"result\":\"ok, was require"),
         ("mode=allow", "\"result\":\"ok, was off"),
     ] {
         assert!(

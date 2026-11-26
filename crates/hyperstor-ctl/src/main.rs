@@ -2681,7 +2681,7 @@ where
             refused_or(r, |r| {
                 let r = r.into_owned();
                 println!(
-                    "data path TLS: {mode}, was {} (map epoch {}); connections open now stay as they are",
+                    "data path TLS: {mode}, was {} (map epoch {}); connections open now stay open, and are served by the new mode",
                     r.was, r.map_epoch
                 )
             })?
@@ -4694,9 +4694,10 @@ where
     show(a, &r, || {
         let x = r.revoked.as_option().cloned().unwrap_or_default();
         format!(
-            "certificate {} revoked: refused by every map service member until {} (UTC)\n",
+            "certificate {} revoked: refused by every map service member until {} (UTC)\n{}\n",
             x.serial,
-            utc(x.until_unix)
+            utc(x.until_unix),
+            revoked_data_path_text(&r.data_path)
         )
     });
     Ok(Next::Exit(0))

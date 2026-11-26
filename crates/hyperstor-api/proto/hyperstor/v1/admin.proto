@@ -112,7 +112,9 @@ service CaService {
   rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesResponse);
 
   // Refuses a certificate, by serial, on every map service member from
-  // now until it would have expired (04-decisions.md D56, D93). Write.
+  // now until it would have expired (04-decisions.md D56, D93), and on
+  // the data path once storage nodes hold the cluster map that lists it
+  // (D384). Write.
   rpc RevokeCertificate(RevokeCertificateRequest) returns (RevokeCertificateResponse);
 
   // The cluster key (04-decisions.md D162), for a map service member
@@ -305,6 +307,9 @@ message Token {
   string created_by = 6 [json_name = "created_by"];
   // "mgmt" and "s3": the identity it enrolls.
   string name = 7;
+  // "host", made by a management client bound to realms: the realms the
+  // join binds the host to (D383). Empty otherwise.
+  repeated string bind_realms = 8 [json_name = "bind_realms"];
 }
 
 message ListTokensRequest {}
@@ -403,6 +408,13 @@ message RevokeCertificateRequest {
 
 message RevokeCertificateResponse {
   RevokedSerial revoked = 1;
+  // Where the data path refuses it (04-decisions.md D384): "nodes",
+  // storage nodes, the map service's data port and clients, which hold
+  // the map that lists it; "off", nowhere, as the cluster's data-path
+  // TLS mode is off and no connection shows a certificate; "old_nodes",
+  // not yet, as a storage node runs a build from before the list or
+  // hasn't said which it runs.
+  string data_path = 2 [json_name = "data_path"];
 }
 
 message GetMapBackupRequest {}

@@ -69,6 +69,11 @@ enum MetaCmd {
     /// Forgets the primaries' space reports, as a new leader would.
     ForgetSpace,
     /// Splits a pool to the PG count given (D187).
+    /// Mirrors these revoked certificates into the map (D384).
+    Revoke(
+        Vec<hyperstor_meta::certs::Revoked>,
+        std::sync::mpsc::Sender<Result<hyperstor_meta::RevokedOn, String>>,
+    ),
     /// Sets the data path's TLS mode (D373).
     DataTls(
         hyperstor_meta::DataTls,
@@ -231,14 +236,26 @@ impl TestPki {
     }
 
     fn identity(&self, role: hyperstor_pki::Role, id: &str) -> hyperstor_client::rpc::TlsIdentity {
+        self.certificate(role, id).0
+    }
+
+    /// An identity and its certificate's serial.
+    fn certificate(
+        &self,
+        role: hyperstor_pki::Role,
+        id: &str,
+    ) -> (hyperstor_client::rpc::TlsIdentity, String) {
         let who = hyperstor_pki::Identity {
             cluster: Self::CLUSTER.into(),
             role,
             id: id.into(),
         };
         let leaf = hyperstor_pki::issue(&self.ca, &who, &[], &[], 30).unwrap();
-        hyperstor_client::rpc::TlsIdentity::from_pem(&leaf.cert, &leaf.key, &self.root.cert)
-            .unwrap()
+        (
+            hyperstor_client::rpc::TlsIdentity::from_pem(&leaf.cert, &leaf.key, &self.root.cert)
+                .unwrap(),
+            hyperstor_pki::serial_in(&leaf.cert).unwrap(),
+        )
     }
 }
 
@@ -532,7 +549,10 @@ impl Cluster {
                             let _ = tx.send(r);
                         }
                         MetaCmd::DataTls(mode, tx) => {
-                            let _ = tx.send(meta.set_data_tls(mode));
+                            let _ = tx.send(meta.set_data_tls(mode).await);
+                        }
+                        MetaCmd::Revoke(list, tx) => {
+                            let _ = tx.send(meta.revoke_on_data_path(list).await);
                         }
                         MetaCmd::Capabilities(pool, on, tx) => {
                             let change = hyperstor_meta::PoolChange {
@@ -787,6 +807,21 @@ impl Cluster {
     ) -> Result<(u64, hyperstor_meta::DataTls), String> {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::DataTls(mode, tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// Gives the map service the revoked certificates (D384); where the
+    /// data path refuses them.
+    fn revoke(
+        &self,
+        list: &[hyperstor_meta::certs::Revoked],
+    ) -> Result<hyperstor_meta::RevokedOn, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::Revoke(list.to_vec(), tx))
+                .is_ok()
+        );
         rx.recv().unwrap()
     }
 
@@ -10253,8 +10288,7 @@ fn a_pool_that_requires_capabilities_serves_only_what_a_client_shows() {
 /// authenticate each other and the map service, a client with an identity
 /// is authenticated and one without is still served, and each node counts
 /// the connections it serves unauthenticated. I/O, replication, a node's
-/// restart and the turn back to `off` go on throughout. `require` waits
-/// for authorization by role.
+/// restart and the turn back to `off` go on throughout.
 #[test]
 fn connections_authenticate_when_the_cluster_allows_it() {
     use hyperstor_meta::DataTls;
@@ -10372,9 +10406,9 @@ fn connections_authenticate_when_the_cluster_allows_it() {
     loop {
         match step_rx.recv().unwrap() {
             "allow" => {
-                // `require` isn't offered before authorization by role.
+                // `require` only from `allow`, where nodes show they can.
                 let e = c.data_tls(DataTls::Require).unwrap_err();
-                assert!(e.contains("isn't built yet"), "{e}");
+                assert!(e.contains("allow first"), "{e}");
                 let (epoch, was) = c.data_tls(DataTls::Allow).unwrap();
                 assert_eq!(was, DataTls::Off);
                 // Asked again: no new map.
@@ -10404,5 +10438,535 @@ fn connections_authenticate_when_the_cluster_allows_it() {
         &(0..6u64)
             .flat_map(|i| [(1u128, i), (2u128, i)])
             .collect::<Vec<_>>(),
+    );
+}
+
+/// Revoked certificates on the data path (D384; 30-data-path-tls.md
+/// §33.5). The map carries the list only once every node that is up reads
+/// it; from then a node and the map service refuse a handshake with a
+/// revoked certificate, by serial or by identity, and drop a connection
+/// whose certificate is revoked later, at its next request. Other callers
+/// and the cluster's I/O go on.
+#[test]
+fn a_revoked_certificate_is_refused_on_the_data_path() {
+    use hyperstor_meta::certs::{ID_PREFIX, Revoked};
+    use hyperstor_meta::{DataTls, RevokedOn};
+    use hyperstor_pki::Role;
+    use hyperstor_proto::Msg;
+    let mut c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let (stolen, serial) = c.pki.certificate(Role::Host, "hv-1");
+    let (gone, _) = c.pki.certificate(Role::Host, "hv-2");
+    let (good, _) = c.pki.certificate(Role::Host, "hv-3");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let entry = |key: String| Revoked {
+        serial: key,
+        until_unix: now + 3600,
+        // Certificates of the identity issued until then: `gone`'s.
+        revoked_unix: now + 5,
+        by: "test".into(),
+    };
+    let by_serial = vec![entry(serial)];
+    let both = vec![
+        by_serial[0].clone(),
+        entry(format!(
+            "{ID_PREFIX}hyperstor://{}/host/hv-2",
+            TestPki::CLUSTER
+        )),
+    ];
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<&'static str>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            let hello = Msg::Hello {
+                min_version: hyperstor_proto::OLDEST_VERSION,
+                max_version: hyperstor_proto::VERSION,
+                id: 7,
+                instance: 8,
+            };
+            // A connection as `tls`, authenticated.
+            let open = async |addr: SocketAddr, tls: &hyperstor_client::rpc::TlsIdentity| {
+                let t0 = std::time::Instant::now();
+                loop {
+                    let (conn, _) = hyperstor_rpc::Conn::open(
+                        addr,
+                        std::time::Duration::from_secs(5),
+                        &hello,
+                        Some(&tls.calling(false)),
+                    )
+                    .await
+                    .unwrap();
+                    if conn.peer().is_some() {
+                        return conn;
+                    }
+                    conn.kill();
+                    assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                    hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            };
+            // Whether it is served: a request a node and the map service
+            // both answer, its host's name as its certificate has it.
+            let served = async |(conn, name): &(hyperstor_rpc::Conn, &str)| {
+                let name = name.to_string();
+                matches!(
+                    conn.call_within(&Msg::Host { name }, &[], std::time::Duration::from_secs(5))
+                        .await,
+                    Ok((Msg::Noted { .. }, _))
+                )
+            };
+            let cl = Client::connect(meta, 98).await.unwrap();
+            cl.set_identity(good.clone());
+            let node0 = cl.map().device_addr(0).unwrap();
+            let io = async |seed: u64| {
+                for i in 0..6u64 {
+                    cl.write(POOL, 1, i * CHUNK as u64, pattern(seed + i, 4096))
+                        .await
+                        .unwrap();
+                }
+                for i in 0..6u64 {
+                    assert!(
+                        cl.read(POOL, 1, i * CHUNK as u64, 4096).await.unwrap()
+                            == pattern(seed + i, 4096)
+                    );
+                }
+            };
+            step_tx.send("allow").unwrap();
+            go_rx.recv().unwrap();
+            // Connections made before any revocation, by each caller, to
+            // a node and to the map service.
+            let mut kept = Vec::new();
+            for (tls, name) in [(&stolen, "hv-1"), (&gone, "hv-2"), (&good, "hv-3")] {
+                for addr in [node0, meta] {
+                    let conn = (open(addr, tls).await, name);
+                    assert!(served(&conn).await);
+                    kept.push(conn);
+                }
+            }
+            io(10).await;
+
+            // A node from before the list is up: the map doesn't carry
+            // it, and the certificate still works on the data path.
+            step_tx.send("older").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            step_tx.send("revoke-early").unwrap();
+            go_rx.recv().unwrap();
+            cl.refresh_map().await.unwrap();
+            assert!(cl.map().revoked.is_empty());
+            assert!(served(&(open(node0, &stolen).await, "hv-1")).await);
+            io(20).await;
+
+            // Every node reads it: revoked by serial.
+            step_tx.send("newer").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            step_tx.send("revoke").unwrap();
+            go_rx.recv().unwrap();
+            // Its kept connections are dropped at their next request, and
+            // a new one right after its handshake.
+            assert!(!served(&kept[0]).await, "node, kept");
+            assert!(!served(&kept[1]).await, "map service, kept");
+            for addr in [node0, meta] {
+                let conn = hyperstor_rpc::Conn::open(
+                    addr,
+                    std::time::Duration::from_secs(5),
+                    &hello,
+                    Some(&stolen.calling(false)),
+                )
+                .await;
+                assert!(
+                    match conn {
+                        Ok((conn, _)) => !served(&(conn, "hv-1")).await,
+                        Err(_) => true,
+                    },
+                    "{addr}"
+                );
+            }
+            // The others go on, over the connections they had.
+            for conn in &kept[2..] {
+                assert!(served(conn).await);
+            }
+            cl.refresh_map().await.unwrap();
+            assert_eq!(cl.map().revoked.len(), 1);
+            io(30).await;
+
+            // An identity revoked: every certificate of it issued until
+            // then.
+            step_tx.send("revoke-identity").unwrap();
+            go_rx.recv().unwrap();
+            assert!(!served(&kept[2]).await, "node, kept");
+            assert!(!served(&kept[3]).await, "map service, kept");
+            for conn in &kept[4..] {
+                assert!(served(conn).await);
+            }
+            assert!(served(&(open(node0, &good).await, "hv-3")).await);
+            // A node restarts and comes back among its peers with the
+            // list in the map.
+            step_tx.send("restart").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            io(40).await;
+            step_tx.send("done").unwrap();
+        })
+    });
+    let dropped = |c: &Cluster| -> u64 {
+        c.nodes
+            .iter()
+            .flatten()
+            .flat_map(|n| n.metrics.iter())
+            .map(|(_, m)| m.revoked.load(std::sync::atomic::Ordering::Relaxed))
+            .sum()
+    };
+    // The list reaches the map once the map service has heard which
+    // build each node runs: moments after a restarted node is up.
+    let revoke_until = |c: &Cluster, list: &[Revoked], want: RevokedOn| {
+        let t0 = std::time::Instant::now();
+        loop {
+            let on = c.revoke(list).unwrap();
+            if on == want {
+                return;
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(30),
+                "{on:?}, not {want:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    loop {
+        match step_rx.recv().unwrap() {
+            "allow" => {
+                // In `off` nothing shows a certificate: no list.
+                assert_eq!(c.revoke(&by_serial).unwrap(), RevokedOn::Off);
+                c.data_tls(DataTls::Allow).unwrap();
+            }
+            "older" => {
+                c.older
+                    .set_version(1, Some(hyperstor_proto::REVOKED_VERSION - 1));
+                c.kill(1);
+                c.restart(1);
+            }
+            "revoke-early" => {
+                assert_eq!(c.revoke(&by_serial).unwrap(), RevokedOn::OldNodes);
+                assert!(c.published().revoked.is_empty());
+                assert_eq!(dropped(&c), 0);
+            }
+            "newer" => {
+                c.older.set_version(1, None);
+                c.kill(1);
+                c.restart(1);
+            }
+            "revoke" => {
+                revoke_until(&c, &by_serial, RevokedOn::Nodes);
+                assert_eq!(c.published().revoked.len(), 1);
+            }
+            "revoke-identity" => {
+                assert!(dropped(&c) >= 2, "{}", dropped(&c));
+                revoke_until(&c, &both, RevokedOn::Nodes);
+            }
+            "restart" => {
+                c.kill(2);
+                c.restart(2);
+            }
+            _ => break,
+        }
+        go_tx.send(()).unwrap();
+    }
+    t.join().unwrap();
+    assert!(dropped(&c) >= 3, "{}", dropped(&c));
+    let (map, devs) = c.stop();
+    assert_eq!(map.revoked.len(), 2);
+    copies_agree(
+        &map,
+        devs,
+        &(0..6u64).map(|i| (1u128, i)).collect::<Vec<_>>(),
+    );
+}
+
+/// Who may do what on the data path (D377; 30-data-path-tls.md §33.4,
+/// §33.5). An authenticated connection is served by its certificate's
+/// role: clients' messages for a host, nodes' too for a node, its reports
+/// only as itself, the map service's for a member; a host names itself as
+/// its certificate does. `require` is set only once every node that is up
+/// runs a build that refuses and holds a certificate; from then a
+/// connection that shows none gets `Hello`, `Ping` and `StartTls`, and
+/// the cluster's own I/O, replication and a node's restart go on.
+#[test]
+fn a_connection_is_served_by_its_certificates_role() {
+    use hyperstor_meta::DataTls;
+    use hyperstor_pki::Role;
+    use hyperstor_proto::{Code, Msg};
+    let mut c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let host = c.pki.identity(Role::Host, "hv-1");
+    let node0 = c.pki.identity(Role::Node, "0");
+    let member = c.pki.identity(Role::Meta, "1");
+    let scraper = c.pki.identity(Role::Metrics, "prometheus");
+    let mgmt = c.pki.identity(Role::Mgmt, "glidex");
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<&'static str>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            let hello = Msg::Hello {
+                min_version: hyperstor_proto::OLDEST_VERSION,
+                max_version: hyperstor_proto::VERSION,
+                id: 7,
+                instance: 8,
+            };
+            // A connection as `tls`, authenticated; or with None, bare.
+            let open =
+                async |addr: SocketAddr, tls: Option<&hyperstor_client::rpc::TlsIdentity>| {
+                    let t0 = std::time::Instant::now();
+                    loop {
+                        let (conn, answer) = hyperstor_rpc::Conn::open(
+                            addr,
+                            std::time::Duration::from_secs(5),
+                            &hello,
+                            tls.map(|t| t.calling(false)).as_ref(),
+                        )
+                        .await
+                        .unwrap();
+                        assert!(matches!(answer, Msg::HelloOk { .. }), "{answer:?}");
+                        if tls.is_none() || conn.peer().is_some() {
+                            return conn;
+                        }
+                        conn.kill();
+                        assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                        hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+                    }
+                };
+            // What it is answered: None if refused by its certificate.
+            let ask = async |conn: &hyperstor_rpc::Conn, msg: Msg| match conn
+                .call_within(&msg, &[], std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+                .0
+            {
+                Msg::Error {
+                    code: Code::Denied, ..
+                } => None,
+                other => Some(other),
+            };
+            let cl = Client::connect(meta, 98).await.unwrap();
+            cl.set_identity(host.clone());
+            let bare = Client::connect(meta, 97).await.unwrap();
+            let dev0 = cl.map().device_addr(0).unwrap();
+            let io = async |cl: &std::rc::Rc<Client>, seed: u64| {
+                for i in 0..6u64 {
+                    cl.write(POOL, 1, i * CHUNK as u64, pattern(seed + i, 4096))
+                        .await?;
+                }
+                for i in 0..6u64 {
+                    assert!(
+                        cl.read(POOL, 1, i * CHUNK as u64, 4096).await? == pattern(seed + i, 4096)
+                    );
+                }
+                Ok::<(), hyperstor_client::ClientError>(())
+            };
+            let fence = || Msg::Fence {
+                epoch: 0,
+                pgs: Vec::new(),
+            };
+            let beat = |node: u32| Msg::Heartbeat { node };
+            let space = |device: u32| Msg::DeviceSpace {
+                device,
+                total_bytes: 1 << 30,
+                free_bytes: 1 << 30,
+            };
+            let named = |name: &str| Msg::Host { name: name.into() };
+
+            step_tx.send("allow").unwrap();
+            go_rx.recv().unwrap();
+            // A host: clients' messages, under its own name only.
+            for addr in [dev0, meta] {
+                let h = open(addr, Some(&host)).await;
+                assert!(ask(&h, named("hv-1")).await.is_some(), "{addr}");
+                assert!(ask(&h, named("hv-2")).await.is_none(), "{addr}");
+                assert!(ask(&h, fence()).await.is_none(), "{addr}");
+            }
+            let h = open(meta, Some(&host)).await;
+            assert!(ask(&h, Msg::GetMap { have_epoch: 0 }).await.is_some());
+            assert!(ask(&h, beat(0)).await.is_none());
+            assert!(ask(&h, space(0)).await.is_none());
+            // A node: nodes' messages, as itself; not the map service's.
+            let n = open(meta, Some(&node0)).await;
+            assert!(ask(&n, beat(0)).await.is_some());
+            assert!(ask(&n, beat(1)).await.is_none());
+            assert!(ask(&n, space(0)).await.is_some());
+            assert!(ask(&n, space(1000)).await.is_none(), "node 1's device");
+            assert!(ask(&n, Msg::LeaderState).await.is_none());
+            assert!(ask(&n, named("anything")).await.is_some());
+            let n = open(dev0, Some(&node0)).await;
+            assert!(ask(&n, fence()).await.is_none());
+            // A member: all of it.
+            let m = open(meta, Some(&member)).await;
+            assert!(ask(&m, Msg::LeaderState).await.is_some());
+            assert!(ask(&m, beat(1)).await.is_some());
+            // A certificate with no business here: nothing but the start.
+            let g = open(meta, Some(&scraper)).await;
+            assert!(ask(&g, Msg::Ping).await.is_some());
+            assert!(ask(&g, Msg::GetMap { have_epoch: 0 }).await.is_none());
+            // A management client moves volume data: a client, no more.
+            let g = open(meta, Some(&mgmt)).await;
+            assert!(ask(&g, Msg::GetMap { have_epoch: 0 }).await.is_some());
+            assert!(ask(&g, beat(0)).await.is_none());
+            // In `allow`, a connection that shows none is served as before.
+            let b = open(dev0, None).await;
+            assert!(ask(&b, named("hv-9")).await.is_some());
+            io(&cl, 10).await.unwrap();
+            io(&bare, 20).await.unwrap();
+
+            // A node from before it is up: no `require`.
+            step_tx.send("older").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            step_tx.send("refused").unwrap();
+            go_rx.recv().unwrap();
+            step_tx.send("newer").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            step_tx.send("require").unwrap();
+            go_rx.recv().unwrap();
+            // Published within moments.
+            let t0 = std::time::Instant::now();
+            while cl.map().data_tls != DataTls::Require {
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+                cl.refresh_map().await.unwrap();
+            }
+
+            // What shows no certificate gets the start and no more, from
+            // a node and from the map service; nodes take the map within
+            // moments.
+            let t0 = std::time::Instant::now();
+            loop {
+                let b = open(dev0, None).await;
+                assert!(ask(&b, Msg::Ping).await.is_some());
+                if ask(&b, named("hv-9")).await.is_none() {
+                    break;
+                }
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            let b = open(meta, None).await;
+            assert!(ask(&b, Msg::Ping).await.is_some());
+            assert!(ask(&b, Msg::GetMap { have_epoch: 0 }).await.is_none());
+            assert!(ask(&b, beat(0)).await.is_none());
+            // A client without one is cut off; with one it goes on, and
+            // so do the nodes: writes replicate, a node restarts and
+            // rejoins.
+            let fresh = Client::connect(meta, 96).await;
+            assert!(
+                match fresh {
+                    Ok(f) => io(&f, 30).await.is_err(),
+                    Err(_) => true,
+                },
+                "a client with no certificate was served"
+            );
+            io(&cl, 40).await.unwrap();
+            step_tx.send("restart").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            io(&cl, 50).await.unwrap();
+
+            // Back to `allow`: served again.
+            step_tx.send("allow-again").unwrap();
+            go_rx.recv().unwrap();
+            let t0 = std::time::Instant::now();
+            loop {
+                let b = open(dev0, None).await;
+                if ask(&b, named("hv-9")).await.is_some() {
+                    break;
+                }
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            io(&cl, 60).await.unwrap();
+            step_tx.send("done").unwrap();
+        })
+    });
+    let refused = |c: &Cluster| -> u64 {
+        c.nodes
+            .iter()
+            .flatten()
+            .flat_map(|n| n.metrics.iter())
+            .map(|(_, m)| m.refused.load(std::sync::atomic::Ordering::Relaxed))
+            .sum()
+    };
+    // The map service reads a node's build from its push connection:
+    // moments after a restarted node is up.
+    type Set = Result<(u64, DataTls), String>;
+    let set_until = |c: &Cluster, want: &dyn Fn(&Set) -> bool| {
+        let t0 = std::time::Instant::now();
+        loop {
+            let r = c.data_tls(DataTls::Require);
+            if want(&r) {
+                return r;
+            }
+            assert!(t0.elapsed() < std::time::Duration::from_secs(30), "{r:?}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    loop {
+        match step_rx.recv().unwrap() {
+            "allow" => {
+                c.data_tls(DataTls::Allow).unwrap();
+            }
+            "older" => {
+                c.older
+                    .set_version(1, Some(hyperstor_proto::AUTHZ_VERSION - 1));
+                c.kill(1);
+                c.restart(1);
+            }
+            "refused" => {
+                let r = set_until(&c, &|r| {
+                    r.as_ref().is_err_and(|e| e.contains("upgrade them first"))
+                });
+                assert!(r.unwrap_err().contains("node(s) 1 "));
+                assert_eq!(c.published().data_tls, DataTls::Allow);
+                // Each connection refused above was counted, once, by
+                // the node that refused it.
+                assert!(refused(&c) >= 2, "{}", refused(&c));
+            }
+            "newer" => {
+                c.older.set_version(1, None);
+                c.kill(1);
+                c.restart(1);
+            }
+            "require" => {
+                let r = set_until(&c, &|r| r.is_ok()).unwrap();
+                assert_eq!(r.1, DataTls::Allow);
+                // Asked again: no new map, and no questions.
+                assert_eq!(
+                    c.data_tls(DataTls::Require).unwrap(),
+                    (r.0, DataTls::Require)
+                );
+            }
+            "restart" => {
+                // Heartbeats and pings went on through the change: over
+                // connections made again where they were bare.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let map = c.published();
+                assert!(map.nodes.values().all(|n| n.up), "{:?}", map.nodes);
+                c.kill(2);
+                c.restart(2);
+            }
+            "allow-again" => {
+                assert_eq!(c.data_tls(DataTls::Allow).unwrap().1, DataTls::Require);
+            }
+            _ => break,
+        }
+        go_tx.send(()).unwrap();
+    }
+    t.join().unwrap();
+    let (map, devs) = c.stop();
+    assert_eq!(map.data_tls, DataTls::Allow);
+    copies_agree(
+        &map,
+        devs,
+        &(0..6u64).map(|i| (1u128, i)).collect::<Vec<_>>(),
     );
 }

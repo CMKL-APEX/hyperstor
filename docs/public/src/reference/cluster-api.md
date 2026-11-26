@@ -31,7 +31,9 @@ a client certificate issued by the cluster's CA, whose identity
 A certificate of another cluster is refused, and so is a revoked one:
 `RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
 list every map service member checks, on the API and between members,
-until the certificate would have expired. `hyperstor-install` makes
+until the certificate would have expired. Where the data path's TLS
+mode isn't `off`, the cluster map carries the list and storage nodes
+refuse the certificate too (the answer's `data_path`). `hyperstor-install` makes
 the certificates in `/etc/hyperstor/pki`.
 
 **Joining.** `Join` is the only call without a client certificate: a
@@ -100,7 +102,7 @@ values are left out of answers.
 | `PromotePgs` | `{"pool": 3}`, with `"pgs": [17]` for some (else every PG whose copies are lost), `"device": 3001` to name the member, `"dry_run": true` to change nothing. Gives up what the lost copies acknowledged (04-decisions.md D359). Needs step-up through hyperstor-mgmt | `pgs`: each `pg`, its `candidates` (`device`, `objects` it holds, absent if it didn't answer), `differ` (objects they disagree on), and the `device` promoted or why not (`refused`); `map_epoch` once published. `not_found` without the pool, `failed_precondition` (`pg_conflict`) for a pool that isn't replicated or a PG named that hasn't lost its copies |
 | `ListPorts` | `{}`, or `{"node": 1}` | `ports`: each node's port, by `node` and `name`, with its `role` (`role_set` when the operator set it), and from its node's last reports `reported`, `up`, `speed_mbps`, `addresses`, `tx_bytes_per_sec`, `rx_bytes_per_sec`, `other_bytes_per_sec` (the larger direction's traffic that isn't hyperstor's); for ports that carry storage, `lent`, `revoking_until_ms` and `weight_mbs`. The leader answers |
 | `SetLending` | `{"lending": "off"}` for the cluster, `{"node": 1, "name": "ibp12s0", "lending": "always"}` for a port, without `lending` for the default | `map_epoch`; `invalid_argument` for a bad lending, or a node without a name |
-| `SetDataTls` | `{"mode": "allow"}`, or `"off"`: whether connections on the storage network authenticate with the cluster's certificates. `"require"` is refused for now (`failed_precondition`, `not_built`). Needs step-up through hyperstor-mgmt | `map_epoch`, and `was`, the mode before. `GetStatus` gives the mode as `data_tls` |
+| `SetDataTls` | `{"mode": "allow"}`, `"off"` or `"require"`: whether connections on the storage network authenticate with the cluster's certificates, and whether one that doesn't is served. `"require"` is refused (`failed_precondition`, `nodes_not_ready`), with the nodes named, unless the mode is `allow` and every storage node that is up holds a certificate and runs a release that refuses by it. Needs step-up through hyperstor-mgmt | `map_epoch`, and `was`, the mode before. `GetStatus` gives the mode as `data_tls` |
 | `SetNetwork` | `{"network": {"name": "fast", "kind": "data", "trusted": false, "matches": "subnet 192.0.2.0/24"}}` adds or changes a network; with `"remove": true`, only its name, removes it | `map_epoch`; `invalid_argument` for a bad name, kind or match, `not_found` when removing a network the map doesn't have, `failed_precondition` (`network_in_use`) when devices have endpoints on it and it would go, stop carrying data or change its match |
 | `ClaimPort` | `{"node": 1, "name": "ibp12s0", "holder": "job 42", "exclusive": true, "ttl_secs": 60}`: the `orchestrator` role, `admin` or `mgmt` | `claim` (`node`, `name`, `holder`, under an orchestrator's name, `exclusive`, `expires_ms`) and `map_epoch`; `failed_precondition` (`claimed`) while another holder's claim is live, `invalid_argument` for a TTL outside 10 to 3600 s |
 | `RenewClaim` | `{"node": 1, "name": "ibp12s0", "holder": "job 42", "ttl_secs": 60}` | `claim`; `not_found` when the holder has none. Not audited |
@@ -158,12 +160,12 @@ values are left out of answers.
 | Method | Request | Answer |
 |---|---|---|
 | `CreateToken` | `{"role": "node"}` (or `"meta"`, or `"mgmt"` with `"name"`: a management client such as glidex, 1–32 of a–z, 0–9 and -, or `"s3"` with `"name"`: an S3 gateway, or `"host"` with `"name"`: a host that runs VMs, by its host name), optionally `"ttl_seconds"` (default 3600, at most a week) | `token` (shown once), `info`, `api_address`. On the leader |
-| `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by`, and a mgmt token's `name` |
+| `ListTokens` | `{}` | `tokens`: `id`, `role`, `expires_unix`, `used`, `revoked`, `created_by`, a token's `name` where it has one, and `bind_realms`: the realms a host token made by a bound management client binds its host to at the join |
 | `RevokeToken` | `{"id": "…"}` | `{}` |
 | `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips`; a management client: nothing more; a gateway: `gateway_ips`, which its certificate names | `cluster_id`, `certificate` (chain), `root`, `identity` (the URI the certificate names); a storage host: `node`, `map_addresses`; a management client: `map_addresses` (it renews with `RenewCertificate`); a member: `intermediate`, `intermediate_key`, `cluster_file`, `cluster_key` (empty where the member answering has none); a gateway: `map_addresses` |
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
-| `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
+| `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry, and `data_path`: `nodes` (storage nodes hold the cluster map that lists it, and refuse it), `off` (the data path's TLS mode is `off`), `old_nodes` (a storage node runs a release from before the list; the map service adds it once none does) or `pending` (the map service didn't say). Answers once storage nodes hold the map. On the leader |
 | `GetClusterKey` | `{}`. Map service members (`meta` certificates) only, audited: `hyperstor-install` asks for it on a member that has none | `cluster_key`; `failed_precondition` (`no_cluster_key`) where the member answering has none |
 | `ListSealingKeys` | `{}` | `keys`, oldest first: `id` (1 to 255), `seq`, `created_unix`, `created_by`, `current` (the newest, which seals). Never a key's bytes |
 | `RotateSealingKey` | `{}`. On the leader; audited | `keys` valid now: the new one last, the one before it still valid, older ones dropped |

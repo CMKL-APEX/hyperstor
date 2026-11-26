@@ -27,7 +27,14 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
 /// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
 /// (D363, D371). 8: [`Msg::StartTls`] (D25, D373).
-pub const VERSION: u16 = 8;
+pub const VERSION: u16 = 10;
+/// The version whose storage nodes refuse by certificate role, and
+/// everything unauthenticated in mode `require` (D377): what the map
+/// service wants of every node before it sets that mode.
+pub const AUTHZ_VERSION: u16 = 10;
+/// The version whose storage nodes and clients read a map with revoked
+/// certificates (format 24; D384) and refuse them.
+pub const REVOKED_VERSION: u16 = 9;
 /// The first version that decodes [`Msg::StartTls`] (D373).
 pub const TLS_VERSION: u16 = 8;
 /// The first version that decodes [`Msg::Capability`] (D363).
@@ -952,7 +959,165 @@ mod kind {
     pub const START_TLS_OK: u16 = 104;
 }
 
+/// Who may send a message once connections authenticate (D377;
+/// 30-data-path-tls.md §33.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sender {
+    /// Anyone, before the handshake too: what a connection starts with,
+    /// and answers, which nothing serves as requests.
+    Any,
+    /// A client: object reads and writes, leases, snapshots, map
+    /// requests. Storage nodes and the map service are clients too.
+    Client,
+    /// A storage node: replication, pushes and fetches between nodes,
+    /// and reports to the map service.
+    Node,
+    /// The map service: what it sends storage nodes, and what its
+    /// members ask each other.
+    Meta,
+    /// A storage node or the map service: both ask a node for a PG's
+    /// digests.
+    NodeOrMeta,
+}
+
+/// Whom a storage node's report says it is from (D377): what must be the
+/// certificate's node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Claim {
+    Node(u32),
+    /// A device, which the map places on a node.
+    Device(u32),
+}
+
 impl Msg {
+    /// Who may send this (D377). Every kind is named, so a new one can't
+    /// be added without saying.
+    pub fn sender(&self) -> Sender {
+        match self {
+            Msg::Hello { .. } | Msg::Ping | Msg::StartTls => Sender::Any,
+            // Answers.
+            Msg::HelloOk { .. }
+            | Msg::Pong
+            | Msg::Map { .. }
+            | Msg::WriteOk { .. }
+            | Msg::ReadOk { .. }
+            | Msg::ExecOk
+            | Msg::LookupOk { .. }
+            | Msg::ReplOk { .. }
+            | Msg::HeartbeatOk { .. }
+            | Msg::FenceOk
+            | Msg::MapPushOk
+            | Msg::PeerDownOk
+            | Msg::StartTlsOk
+            | Msg::PushOk
+            | Msg::DigestsOk
+            | Msg::HoldsOk
+            | Msg::BackfillOk { .. }
+            | Msg::LeaseOk { .. }
+            | Msg::LeaseHeld { .. }
+            | Msg::LeaseRenewOk { .. }
+            | Msg::BlocklistOk { .. }
+            | Msg::ScrubAgesOk { .. }
+            | Msg::ScrubNowOk { .. }
+            | Msg::StuckStateOk { .. }
+            | Msg::DriveStateOk { .. }
+            | Msg::PgUsageOk { .. }
+            | Msg::PgSpaceOk { .. }
+            | Msg::LeaderStateOk { .. }
+            | Msg::Noted { .. }
+            | Msg::FetchOk { .. }
+            | Msg::FetchPartOk { .. }
+            | Msg::ReadAtOk { .. }
+            | Msg::VersionsOk { .. }
+            | Msg::WatchOk { .. }
+            | Msg::Error { .. } => Sender::Any,
+            Msg::GetMap { .. }
+            | Msg::Host { .. }
+            | Msg::Capability { .. }
+            | Msg::Write { .. }
+            | Msg::Read { .. }
+            | Msg::Exec { .. }
+            | Msg::Lookup { .. }
+            | Msg::Lease { .. }
+            | Msg::LeaseDelegates { .. }
+            | Msg::LeasePromote { .. }
+            | Msg::LeaseRelease { .. }
+            | Msg::LeaseRenew { .. }
+            | Msg::Blocklist { .. }
+            | Msg::CacheRelease { .. }
+            | Msg::ReadAt { .. }
+            | Msg::Sources { .. }
+            | Msg::Versions { .. }
+            | Msg::DropVersions { .. }
+            | Msg::Flatten { .. }
+            | Msg::Watch { .. }
+            | Msg::Quiesced { .. }
+            | Msg::Snapshot { .. }
+            | Msg::Quiesce { .. }
+            | Msg::Release { .. } => Sender::Client,
+            Msg::Repl { .. }
+            | Msg::ReplExec { .. }
+            | Msg::Push { .. }
+            | Msg::PushObject { .. }
+            | Msg::PushKv { .. }
+            | Msg::Fetch { .. }
+            | Msg::FetchPart { .. }
+            | Msg::Holds { .. }
+            | Msg::ReadCopy { .. }
+            | Msg::Heartbeat { .. }
+            | Msg::PeerDown { .. }
+            | Msg::EndpointDown { .. }
+            | Msg::PortReport { .. }
+            | Msg::NodeHost { .. }
+            | Msg::BackfillDone { .. }
+            | Msg::DeviceFailed { .. }
+            | Msg::MemberSlow { .. }
+            | Msg::ScrubReport { .. }
+            | Msg::ScrubAges { .. }
+            | Msg::Stuck { .. }
+            | Msg::PgUsage { .. }
+            | Msg::PerfReport { .. }
+            | Msg::PgSpace { .. }
+            | Msg::DeviceSpace { .. }
+            | Msg::DeviceKind { .. }
+            | Msg::DeviceFormat { .. }
+            | Msg::PgSplit { .. } => Sender::Node,
+            Msg::Fence { .. }
+            | Msg::MapPush { .. }
+            | Msg::ScrubNow { .. }
+            | Msg::LeaderState
+            | Msg::StuckState
+            | Msg::DriveState => Sender::Meta,
+            Msg::Digests { .. } => Sender::NodeOrMeta,
+        }
+    }
+
+    /// Whom a storage node's report says it is from, if it says: the
+    /// node, or one of its devices (D377). A report about another's
+    /// device (`BackfillDone`, the slow member of `MemberSlow`) names no
+    /// sender there.
+    pub fn claim(&self) -> Option<Claim> {
+        match self {
+            Msg::Heartbeat { node } | Msg::PortReport { node, .. } | Msg::NodeHost { node, .. } => {
+                Some(Claim::Node(*node))
+            }
+            Msg::PeerDown { reporter, .. } | Msg::EndpointDown { reporter, .. } => {
+                Some(Claim::Node(*reporter))
+            }
+            Msg::MemberSlow { reporter, .. } => Some(Claim::Device(*reporter)),
+            Msg::DeviceFailed { device }
+            | Msg::Stuck { device, .. }
+            | Msg::PgUsage { device, .. }
+            | Msg::PgSpace { device, .. }
+            | Msg::DeviceSpace { device, .. }
+            | Msg::DeviceKind { device, .. }
+            | Msg::DeviceFormat { device, .. }
+            | Msg::PgSplit { device, .. } => Some(Claim::Device(*device)),
+            Msg::PerfReport { report } => Some(Claim::Device(report.device)),
+            _ => None,
+        }
+    }
+
     /// Where the request is addressed, if it is addressed to a PG.
     /// What a client asks of an object, if this is one of a client's
     /// requests on an object: where, which object, and whether it changes

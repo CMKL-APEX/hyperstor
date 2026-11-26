@@ -367,6 +367,75 @@ between members, until it would have expired anyway (30 days at most).
 The local socket on a map service host needs no certificate, so
 revoking the administrator's own never locks root out.
 
+Storage nodes refuse it too, where connections authenticate (the
+data path's TLS mode is `allow`; `hyperstorctl data-tls status`). The
+list travels in the cluster map, and the command answers once every
+storage node that is up holds it. From then:
+
+- a new connection that shows the certificate is dropped right after
+  its handshake, by storage nodes and by the map service;
+- a connection open already is dropped at its next request;
+- clients and nodes drop a connection to a peer that shows it.
+
+The command's second line says where the data path stands:
+
+| It says | Meaning |
+|---|---|
+| storage nodes and clients refuse it too | The cluster map lists it |
+| the data path checks no certificates | The mode is `off`: no connection shows a certificate, so there is nothing to refuse |
+| storage nodes don't refuse it yet | A storage node runs a release from before revocation lists and couldn't read a map with one. The map service adds the list by itself once every node that is up runs a newer release |
+
+A revoked storage node's certificate cuts the node off: its peers and
+the map service drop their connections to it, and it is marked down
+when its lease runs out. Each node counts what it dropped in
+`hyperstor_revoked_connections_total`.
+
+## Authenticated connections on the storage network
+
+Storage nodes, the map service and clients prove who they are to each
+other with the cluster's certificates. The cluster's mode says how far
+that goes:
+
+```sh
+hyperstorctl data-tls status
+hyperstorctl data-tls set --mode allow      # or off, or require
+```
+
+| Mode | A connection that shows a certificate | One that shows none |
+|---|---|---|
+| `off` | Nobody shows one | Served |
+| `allow` | Served by what its certificate allows | Served, and counted |
+| `require` | Served by what its certificate allows | Gets `Hello`, `Ping` and the start of TLS; everything else is refused |
+
+What a certificate allows:
+
+| Certificate | May send |
+|---|---|
+| `host`, `s3`, `admin`, `mgmt` | Clients' requests: reads and writes, leases, snapshots, the map. A `host` names itself only as its certificate does, so realm bindings hold for a name the host can't choose |
+| `node` | Those, and what storage nodes send each other and report to the map service, as itself: node 3's certificate reports nothing for node 4 or its devices |
+| `meta` (a map service member) | Everything |
+| `metrics`, `orchestrator` | Nothing: they use the cluster API |
+
+A caller checks who answered too: at a device's address the node the
+map has there, elsewhere the map service.
+
+To move a cluster to `require`:
+
+1. Set `allow`, and give every client a certificate (VM hosts join
+   with a `host` token; see Installation).
+2. Watch `hyperstor_unauthenticated_connections_total` on every node:
+   while it rises, something still connects without one.
+3. `hyperstorctl data-tls set --mode require`. It is refused, with the
+   nodes named, while a storage node that is up runs a release from
+   before it or holds no certificate: that node would be cut off by
+   its peers, or would go on serving anyone. The map service asks
+   each node as the command runs; one that is up and doesn't answer
+   is named too.
+
+Each node counts the connections it refused a request in
+`hyperstor_refused_connections_total` and names the first refusal of
+each in its log. `allow` turns it back at any time.
+
 ## Volumes and snapshots
 
 ```sh
@@ -664,6 +733,8 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_checkpoint_damage_total` | Damaged checkpoint pages and directories the device's checkpoint scrub found and rewrote (see [Troubleshooting](troubleshooting.md)). Any rise means the device's media is failing somewhere |
 | `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
 | `hyperstor_sealing_keys` | Sealing keys the node holds (one per node, without a `device` label): 1, or 2 after a rotation. 0 means the cluster API hasn't answered the node since it started; absent on a node started without `--api` |
+| `hyperstor_revoked_connections_total` | Connections the device's reactor dropped because the caller showed a revoked certificate, at the handshake or once it was revoked. A rise after a revocation is the revoked holder still trying |
+| `hyperstor_refused_connections_total` | Connections the device's reactor refused a request: their certificate's role may not send it, or they showed none while the mode is `require` |
 | `hyperstor_unauthenticated_connections_total` | Connections the device's reactor served a request on without a TLS handshake. While the cluster's mode is `allow` (`hyperstorctl data-tls status`), a rise names a client or node without a certificate: who would be cut off if connections had to authenticate |
 
 Gauges are updated once a second. `GET /health` answers `ok` while the

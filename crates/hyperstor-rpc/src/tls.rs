@@ -42,6 +42,28 @@ pub enum TlsError {
     BadName,
 }
 
+/// Who a handshake's other end proved to be, and which of its
+/// certificates it showed: what the revocation list names (D384).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peer {
+    pub who: Identity,
+    /// The certificate's serial, as `hyperstor_pki::serial_of` gives it.
+    pub serial: String,
+    /// When it was issued (Unix seconds): an identity's revocation covers
+    /// certificates issued until then.
+    pub issued_unix: u64,
+}
+
+impl Peer {
+    fn of(leaf: &[u8]) -> Option<Peer> {
+        Some(Peer {
+            who: hyperstor_pki::identity_of(leaf)?,
+            serial: hyperstor_pki::serial_of(leaf)?,
+            issued_unix: hyperstor_pki::issued_unix(leaf)?,
+        })
+    }
+}
+
 /// One connection's handshake state and whether the peer has sent its
 /// `close_notify`.
 struct Session<'a> {
@@ -82,7 +104,7 @@ impl Session<'_> {
 
     /// The handshake, then the turn back to plaintext: `first` sends its
     /// `close_notify` first (the caller), the other answers it.
-    async fn run(&mut self, first: bool) -> Result<Identity, TlsError> {
+    async fn run(&mut self, first: bool) -> Result<Peer, TlsError> {
         loop {
             self.flush().await?;
             if !self.conn.is_handshaking() {
@@ -94,7 +116,7 @@ impl Session<'_> {
             .conn
             .peer_certificates()
             .and_then(|c| c.first())
-            .and_then(|leaf| hyperstor_pki::identity_of(leaf))
+            .and_then(|leaf| Peer::of(leaf))
             .ok_or(TlsError::NoIdentity)?;
         if first {
             self.conn.send_close_notify();
@@ -111,7 +133,7 @@ impl Session<'_> {
     }
 }
 
-async fn bounded(mut s: Session<'_>, first: bool) -> Result<Identity, TlsError> {
+async fn bounded(mut s: Session<'_>, first: bool) -> Result<Peer, TlsError> {
     match timeout(HANDSHAKE_TIMEOUT, s.run(first)).await {
         Ok(r) => r,
         Err(_) => Err(TlsError::TimedOut(HANDSHAKE_TIMEOUT)),
@@ -125,7 +147,7 @@ async fn bounded(mut s: Session<'_>, first: bool) -> Result<Identity, TlsError> 
 pub async fn caller(
     stream: &TcpStream,
     config: Arc<rustls::ClientConfig>,
-) -> Result<Identity, TlsError> {
+) -> Result<Peer, TlsError> {
     // The name is never checked (the peer's identity is, by the caller of
     // this function), but TLS wants one: the address dialled.
     let name = rustls::pki_types::ServerName::from(
@@ -149,7 +171,7 @@ pub async fn caller(
 pub async fn answerer(
     stream: &TcpStream,
     config: Arc<rustls::ServerConfig>,
-) -> Result<Identity, TlsError> {
+) -> Result<Peer, TlsError> {
     let conn = rustls::ServerConnection::new(config)?;
     bounded(
         Session {
@@ -220,7 +242,7 @@ mod tests {
         let (r, hello) = s.read_exact_n(5).await;
         r?;
         assert_eq!(hello, vec![n ^ 0xff; 5]);
-        let who = caller(&s, config).await?;
+        let who = caller(&s, config).await?.who;
         // Frames go on at once, several before any answer is read.
         for i in 0..3u8 {
             let (r, _) = s.write_all(vec![n.wrapping_add(i); 1000]).await;
@@ -242,7 +264,7 @@ mod tests {
         r?;
         let (r, _) = s.write_all(hello.iter().map(|b| b ^ 0xff).collect()).await;
         r?;
-        let who = answerer(&s, config).await?;
+        let who = answerer(&s, config).await?.who;
         for _ in 0..3 {
             let (r, frame) = s.read_exact_n(1000).await;
             r?;
@@ -368,7 +390,7 @@ mod tests {
                         detail: "no TLS here".into(),
                     };
                     match crate::answer_start_tls(&s, &tx, h.req, &tls, no).await {
-                        Ok(w) => who = w,
+                        Ok(w) => who = w.map(|p| p.who),
                         Err(_) => return who,
                     }
                 }

@@ -100,6 +100,11 @@ pub struct ShardMetrics {
     pub map_epoch: AtomicU64,
     /// Connections served a request without having authenticated (D373).
     pub unauthenticated: AtomicU64,
+    /// Connections dropped for a revoked certificate (D384).
+    pub revoked: AtomicU64,
+    /// Connections refused a request by their certificate's role, or for
+    /// showing none in mode `require` (D377).
+    pub refused: AtomicU64,
 }
 
 impl ShardMetrics {
@@ -283,6 +288,18 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "Connections served a request without a TLS handshake: who would be cut off if the cluster required authenticated connections.",
         &|m| vec![("", g(&m.unauthenticated))],
     );
+    family(
+        "hyperstor_revoked_connections_total",
+        "counter",
+        "Connections dropped because the caller showed a revoked certificate, at the handshake or once it was revoked.",
+        &|m| vec![("", g(&m.revoked))],
+    );
+    family(
+        "hyperstor_refused_connections_total",
+        "counter",
+        "Connections refused a request because their certificate's role may not send it, or because they showed none while the cluster requires authenticated connections.",
+        &|m| vec![("", g(&m.refused))],
+    );
     let mut hist = String::new();
     hist.push_str(
         "# HELP hyperstor_request_duration_seconds Time from a client request's arrival to its answer; writes include every replica.\n# TYPE hyperstor_request_duration_seconds histogram\n",
@@ -401,7 +418,9 @@ mod tests {
         assert!(t.contains(
             "hyperstor_unauthenticated_connections_total{node=\"4\",device=\"4000\"} 0\n"
         ));
-        assert_eq!(t.matches("# TYPE ").count(), 22);
+        assert!(t.contains("hyperstor_revoked_connections_total{node=\"4\",device=\"4000\"} 0\n"));
+        assert!(t.contains("hyperstor_refused_connections_total{node=\"4\",device=\"4000\"} 0\n"));
+        assert_eq!(t.matches("# TYPE ").count(), 24);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

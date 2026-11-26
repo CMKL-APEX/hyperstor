@@ -14,6 +14,8 @@ pub mod tls;
 
 /// A data-path peer's identity, from its certificate.
 pub use hyperstor_pki::Identity;
+/// What a certificate lets its holder do.
+pub use hyperstor_pki::Role;
 
 use hyperstor_codec::{AlignedBuf, IoBuf};
 use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame, encode_head};
@@ -157,7 +159,7 @@ struct Inner {
     version: Cell<u16>,
     /// Who the peer proved to be in the TLS handshake ([`Conn::open`]);
     /// None on a connection that didn't authenticate.
-    peer: RefCell<Option<hyperstor_pki::Identity>>,
+    peer: RefCell<Option<tls::Peer>>,
 }
 
 /// What a caller with an identity does about TLS on a new connection
@@ -228,7 +230,7 @@ pub async fn answer_start_tls(
     req: u64,
     tls: &AnswererTls,
     refusal: Msg,
-) -> Result<Option<hyperstor_pki::Identity>, RpcError> {
+) -> Result<Option<tls::Peer>, RpcError> {
     let Some(config) = tls else {
         let _ = tx.send(Frame::new(req, &refusal, &[]));
         return Ok(None);
@@ -565,7 +567,18 @@ impl Conn {
     /// Who the peer proved to be, on a connection [`Conn::open`]
     /// authenticated.
     pub fn peer(&self) -> Option<hyperstor_pki::Identity> {
-        self.inner.peer.borrow().clone()
+        self.inner.peer.borrow().as_ref().map(|p| p.who.clone())
+    }
+
+    /// Whether the peer authenticated with a certificate `revoked` says
+    /// is revoked (D384): given its serial, its identity's URI and when
+    /// it was issued. False on an unauthenticated connection.
+    pub fn peer_revoked(&self, revoked: impl FnOnce(&str, &str, u64) -> bool) -> bool {
+        self.inner
+            .peer
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| revoked(&p.serial, &p.who.uri(), p.issued_unix))
     }
 
     /// Starts the connection's tasks on a connected socket.
@@ -776,6 +789,19 @@ impl Pool {
     /// there is none.
     pub async fn get(&self, addr: SocketAddr) -> Result<Conn, RpcError> {
         self.get_with(addr, Conn::connect).await
+    }
+
+    /// Closes the connection kept for `addr` if `stale` says so: the next
+    /// [`Pool::get_with`] makes a new one. For a connection made before
+    /// the cluster required authentication, which is refused everything
+    /// now (D377).
+    pub fn close_if(&self, addr: SocketAddr, stale: impl FnOnce(&Conn) -> bool) {
+        if let Some(c) = self.conns.borrow().get(&addr)
+            && !c.is_dead()
+            && stale(c)
+        {
+            c.kill();
+        }
     }
 
     /// [`Pool::get`] with `connect` making a new connection (and saying

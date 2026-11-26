@@ -384,7 +384,7 @@ tests = [
 
 [[milestone.item]]
 what = "Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate)"
-spec = ["D350", "D351", "D352", "D381", "I421", "I446", "I449", "11-frontends.md §11.4"]
+spec = ["D350", "D351", "D352", "D381", "I421", "I446", "I452", "11-frontends.md §11.4"]
 status = "done"
 tests = [
     "cluster::a_delegate_is_promoted_and_the_old_holder_fenced",
@@ -1609,8 +1609,25 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T2: `require`, refused while a node has no identity; authorization by certificate role; a node's id and a client's host name from the certificate; UDP pings keyed with the sealing key"
-spec = ["30-data-path-tls.md §33.4", "30-data-path-tls.md §33.5", "30-data-path-tls.md §33.7", "D373", "D377", "D379"]
+what = "T2: revoked certificates in the cluster map (format 24, protocol version 9): refused by storage nodes, the map service's data port and callers, at the handshake and once revoked; `cert revoke` answers once nodes hold the map"
+spec = ["30-data-path-tls.md §33.5", "D384", "I450"]
+status = "done"
+tests = [
+    "hyperstor_map::port_tests::revoked_certificates_travel_only_while_there_are_any",
+    "cluster::a_revoked_certificate_is_refused_on_the_data_path",
+]
+
+[[milestone.item]]
+what = "T2: authorization by certificate role on storage nodes and the map service (protocol version 10): clients', nodes' and the map service's messages, a node's reports only as itself, a host's name from its certificate, callers checking who answered; `require`, set only once every node that is up holds a certificate and refuses by it"
+spec = ["30-data-path-tls.md §33.4", "30-data-path-tls.md §33.5", "D373", "D377", "I451"]
+status = "done"
+tests = [
+    "cluster::a_connection_is_served_by_its_certificates_role",
+]
+
+[[milestone.item]]
+what = "T2: UDP pings keyed with the sealing key; the unauthenticated peers by address in `data-tls status`; a `host` certificate for hyperstor-vhost on storage hosts; `hyperstorctl --identity` for the volume commands"
+spec = ["30-data-path-tls.md §33.4", "30-data-path-tls.md §33.6", "30-data-path-tls.md §33.7", "D375", "D379"]
 status = "planned"
 
 [[milestone.item]]
@@ -2203,6 +2220,15 @@ status = "done"
 tests = [
     "hyperstor_meta::realms::tests::a_clients_token_roles_are_kept_apart_from_its_realms",
     "directory_ui::a_bound_client_makes_host_tokens_once_let",
+]
+
+[[milestone.item]]
+what = "A host that joins with a bound management client's token is bound to that client's realms, so its certificate opens no other realm's volumes (D383)"
+spec = ["30-data-path-tls.md §33.6", "D383", "I449"]
+status = "done"
+tests = [
+    "hyperstor_meta::realms::tests::a_host_joined_by_a_bound_client_is_bound_to_its_realms",
+    "install::a_host_a_bound_client_joins_is_bound_to_its_realms",
 ]
 
 [[milestone]]

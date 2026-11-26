@@ -547,6 +547,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             defer,
                             blocked.clone(),
                             m,
+                            tls.clone(),
                         )
                         .await?;
                         st.no_digests.set(no_digests);
@@ -1362,13 +1363,25 @@ impl ShardState {
         defer: Option<usize>,
         blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
         metrics: Arc<metrics::ShardMetrics>,
+        tls: Option<hyperstor_client::rpc::TlsIdentity>,
     ) -> Result<Rc<Self>, String> {
         // The map first: its cluster is written into a new device's
         // superblock, and a device of another device or cluster (a drive
         // moved here, a wrong path) is refused, never served (I203).
         let mut client = None;
         for _ in 0..100 {
-            match Client::connect_members(meta.clone(), node as u64).await {
+            // As this node, from the first connection: its heartbeats
+            // and reports are a node's by its certificate, and a cluster
+            // in `require` gives no map without one (D377).
+            let identity = tls.clone().or_else(hyperstor_client::process_identity);
+            match Client::connect_members_with(
+                meta.clone(),
+                node as u64,
+                hyperstor_client::random_u64().max(1),
+                identity,
+            )
+            .await
+            {
                 Ok(c) => {
                     client = Some(c);
                     break;
@@ -2148,7 +2161,12 @@ impl ShardState {
         // And TLS right after it, where the peer has it and the cluster
         // isn't `off` (D373).
         let tls = self.calling_tls();
-        Ok(self
+        let map = self.map();
+        // One kept bare from before `require` is made again (D377).
+        if tls.as_ref().is_some_and(|t| t.required) {
+            self.peers.close_if(addr, |c| c.peer().is_none());
+        }
+        let c = self
             .peers
             .get_with(addr, |addr| async move {
                 let (c, _) = Conn::open(
@@ -2158,9 +2176,31 @@ impl ShardState {
                     tls.as_ref(),
                 )
                 .await?;
+                // The node the map has there, and no other (D377).
+                hyperstor_client::expected_peer(&map, addr, &c)?;
                 Ok(c)
             })
-            .await?)
+            .await?;
+        // At the handshake, and on a kept connection once a map revokes
+        // its peer's certificate (D384).
+        if hyperstor_client::peer_revoked(&self.map(), &c) {
+            return Err(hyperstor_client::refuse_revoked(&c, addr).into());
+        }
+        Ok(c)
+    }
+
+    /// Drops a served connection whose caller showed a revoked
+    /// certificate (D384), saying so once in the log.
+    fn refuse_revoked(&self, s: &TcpStream, p: &hyperstor_client::rpc::tls::Peer) {
+        eprintln!(
+            "hyperstord: node {}: {} at {} shows the revoked certificate {}: connection dropped",
+            self.me,
+            p.who.uri(),
+            s.peer_addr().map_or("?".into(), |a| a.to_string()),
+            p.serial
+        );
+        metrics::ShardMetrics::add(&self.metrics.revoked, 1);
+        let _ = s.shutdown();
     }
 
     /// What this node calls peers with (D373): its identity unless the
@@ -2292,9 +2332,14 @@ impl ShardState {
         // The capabilities the client has shown on this connection (D363).
         let mut caps: Vec<Capability> = Vec::new();
         // Who the caller proved to be (D373); None: it didn't authenticate.
-        let mut peer: Option<hyperstor_pki::Identity> = None;
+        let mut peer: Option<hyperstor_client::rpc::tls::Peer> = None;
+        // The map epoch its certificate was last checked against the
+        // revoked list at (D384).
+        let mut checked = 0;
         // Counted once it asks for something unauthenticated.
         let mut counted = false;
+        // Counted and logged once it is refused something (D377).
+        let mut refused = false;
         let counter = counter_of(&s);
         loop {
             let Ok((h, msg, payload)) = read_request(&s, counter.as_deref()).await else {
@@ -2312,6 +2357,42 @@ impl ShardState {
             let reply = |m: &Msg, p: &[u8]| {
                 let _ = tx.send(Frame::new(h.req, m, p));
             };
+            // A certificate revoked since the handshake (D384): the
+            // connection is dropped at its next request, checked once a
+            // map.
+            if let Some(p) = &peer {
+                let map = self.map();
+                if map.epoch != checked {
+                    checked = map.epoch;
+                    if hyperstor_client::cert_revoked(&map, p) {
+                        self.refuse_revoked(&s, p);
+                        return;
+                    }
+                }
+            }
+            // By the caller's certificate (D377), and in `require` only
+            // what a connection starts with before one is shown.
+            {
+                let map = self.map();
+                if let Err(why) = hyperstor_client::may_send(
+                    map.data_tls == hyperstor_meta::DataTls::Require,
+                    peer.as_ref().map(|p| &p.who),
+                    &msg,
+                    &map,
+                ) {
+                    if !refused {
+                        refused = true;
+                        metrics::ShardMetrics::add(&self.metrics.refused, 1);
+                        eprintln!(
+                            "hyperstord: node {}: {} refused: {why}",
+                            self.me,
+                            s.peer_addr().map_or("?".into(), |a| a.to_string())
+                        );
+                    }
+                    reply(&err(Code::Denied, &map, &why), &[]);
+                    continue;
+                }
+            }
             if let Msg::Hello { instance: i, .. } = msg {
                 instance = i;
             }
@@ -2363,7 +2444,16 @@ impl ShardState {
                     )
                     .await
                     {
-                        Ok(who) => peer = who,
+                        // A revoked certificate is refused at the
+                        // handshake (D384).
+                        Ok(Some(p)) if hyperstor_client::cert_revoked(&self.map(), &p) => {
+                            self.refuse_revoked(&s, &p);
+                            return;
+                        }
+                        Ok(who) => {
+                            checked = self.map().epoch;
+                            peer = who;
+                        }
                         // The stream is mid-handshake: nothing more can
                         // be read from it as frames.
                         Err(e) => {

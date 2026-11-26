@@ -318,6 +318,33 @@ impl Api {
         let _ = tokio::task::spawn_blocking(move || certs.record(rec, now)).await;
     }
 
+    /// Whether a `host` certificate was issued under `name` and hasn't
+    /// expired: the host joined before. From the leader's record of what
+    /// it signed (D93), so a host whose only certificates came from
+    /// renewals through another member isn't known; a store that can't
+    /// be read knows none.
+    async fn host_known(&self, name: &str) -> bool {
+        let Ok((signing, _)) = self.signing() else {
+            return false;
+        };
+        let uri = Identity {
+            cluster: self.cluster.clone().unwrap_or_default(),
+            role: Role::Host,
+            id: name.to_string(),
+        }
+        .uri();
+        let (certs, now) = (signing.certs.clone(), now_unix());
+        tokio::task::spawn_blocking(move || certs.list())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .is_some_and(|(issued, _)| {
+                issued
+                    .iter()
+                    .any(|i| i.identity == uri && i.not_after_unix > now)
+            })
+    }
+
     /// Checks and burns a join token; returns its record.
     async fn redeem(&self, token: &str, root: &str) -> Result<Record, ConnectError> {
         let (pin, secret) =
@@ -368,11 +395,49 @@ impl TokenService for Api {
         // A token reaches the cluster as a whole, so whoever acts only in
         // realms makes none; but a management client an administrator let
         // make a VM host's (D382).
+        // The realms the join binds the host to (D383): the client's.
+        let mut bind: Vec<u32> = Vec::new();
+        let mut bind_names: Vec<String> = Vec::new();
         if let Some(realms) = reach {
-            let granted = Identity::parse(&who)
-                .filter(|i| i.is_mgmt_client())
+            let client = Identity::parse(&who).filter(|i| i.is_mgmt_client());
+            let granted = client
+                .as_ref()
                 .is_some_and(|i| self.client_may_token(&i.id, req.role));
-            if !granted {
+            if granted && let Some(i) = &client {
+                let all = self.realms().await?;
+                bind = all
+                    .clients
+                    .get(&i.id)
+                    .map_or(Vec::new(), |c| c.realms.clone());
+                bind_names = bind.iter().map(|r| all.name(*r)).collect();
+                // Refused now rather than at the join, which would burn
+                // the token: a name that isn't a host's to bind, one bound
+                // past the client's realms, or one every realm shares.
+                let name = req.name.to_string();
+                let r = if !crate::realms::valid_host(&name) {
+                    Err(invalid(
+                        format!(
+                            "{name:?}: a host a management client joins is bound to its realms, and a bound host's name is 1-64 of letters, digits, '.', '-' and '_'"
+                        ),
+                        "invalid_argument",
+                    ))
+                } else {
+                    let known = self.host_known(&name).await;
+                    all.joined_host(&name, &bind, known)
+                        .map(|_| ())
+                        .map_err(|e| match e {
+                            TokenError::Refused { reason, why } => {
+                                with_reason(ConnectError::permission_denied(why), reason)
+                            }
+                            e => ConnectError::internal(format!("{e:?}")),
+                        })
+                };
+                if let Err(e) = r {
+                    refused(&who, "CreateToken", &target, &e);
+                    return Err(e);
+                }
+            }
+            if !granted || bind.is_empty() {
                 let e = with_reason(
                     ConnectError::permission_denied(format!(
                         "CreateToken reaches the cluster as a whole, and {who} acts only in realms {}: a management client makes host tokens once an administrator lets it (hyperstorctl realm client-tokens)",
@@ -466,6 +531,7 @@ impl TokenService for Api {
             expires_unix: now_unix() + u64::from(ttl),
             created_by: who.clone(),
             name: name.clone(),
+            bind_realms: bind_names,
             ..Default::default()
         };
         let rec = Record {
@@ -477,6 +543,7 @@ impl TokenService for Api {
             revoked: false,
             created_by: who.clone(),
             name,
+            realms: bind,
         };
         let now = now_unix();
         if let Err(e) = self.create_token_record(rec, now).await {
@@ -510,6 +577,13 @@ impl TokenService for Api {
     ) -> ServiceResult<pb::ListTokensResponse> {
         self.authorize(&ctx, "ListTokens", "tokens", false)?;
         let tokens = self.tokens(|t| t.list()).await?;
+        // Named only when a token binds any; "default" for all if the
+        // realms can't be read, rather than no list.
+        let realms = if tokens.iter().any(|t| !t.realms.is_empty()) {
+            self.realms().await.unwrap_or_default()
+        } else {
+            Default::default()
+        };
         Ok(pb::ListTokensResponse {
             tokens: tokens
                 .into_iter()
@@ -521,6 +595,7 @@ impl TokenService for Api {
                     revoked: r.revoked,
                     created_by: r.created_by,
                     name: r.name,
+                    bind_realms: r.realms.iter().map(|id| realms.name(*id)).collect(),
                     ..Default::default()
                 })
                 .collect(),
@@ -642,6 +717,24 @@ impl TokenService for Api {
                         },
                         id: token.name.clone(),
                     };
+                    // A host joined by a management client bound to
+                    // realms is bound to them (D383), before anything is
+                    // signed, and storage nodes hold the binding before
+                    // the host has its certificate.
+                    let mut bound = String::new();
+                    if role == "host" && !token.realms.is_empty() {
+                        let known = self.host_known(&token.name).await;
+                        let (host, realms) = (token.name.clone(), token.realms.clone());
+                        let now = self
+                            .realm_rows("such realm", move |db| {
+                                crate::realms::bind_joined_host(db, &host, &realms, known)
+                            })
+                            .await?;
+                        self.sync_realms().await?;
+                        let all = self.realms().await?;
+                        let names: Vec<String> = now.iter().map(|r| all.name(*r)).collect();
+                        bound = format!(", bound to realms {}", names.join(","));
+                    }
                     let certificate = hyperstor_pki::sign_request(
                         &signing.ca,
                         req.csr,
@@ -652,7 +745,7 @@ impl TokenService for Api {
                     )
                     .map_err(|e| invalid(e, "bad_request"))?;
                     Ok((
-                        format!("{who_token}: {role} {}", token.name),
+                        format!("{who_token}: {role} {}{bound}", token.name),
                         pb::JoinResponse {
                             cluster_id: cluster.clone(),
                             certificate,
@@ -841,6 +934,31 @@ impl Api {
                 .map_err(ConnectError::internal)?,
         };
         self.seal_rows(move |db| sealkeys::add(db, &row)).await
+    }
+}
+
+impl Api {
+    /// Mirrors the revoked certificates into the cluster map (D384) and
+    /// waits until storage nodes hold them: where the data path refuses
+    /// them now, or `pending` if the map service didn't say.
+    async fn sync_revoked(&self) -> String {
+        let Ok((signing, _)) = self.signing() else {
+            return "pending".into();
+        };
+        let certs = signing.certs.clone();
+        let revoked = tokio::task::spawn_blocking(move || certs.revoked())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        let (reply, rx) = oneshot();
+        if self.tx.send(Admin::SyncRevoked { revoked, reply }).is_err() {
+            return "pending".into();
+        }
+        match rx.recv().await {
+            Some(Ok(on)) => on.as_str().into(),
+            _ => "pending".into(),
+        }
     }
 }
 
@@ -1058,17 +1176,25 @@ impl CaService for Api {
             Ok(r) => Ok(r),
             Err(e) => Err(self.token_error(e).await),
         };
+        // Into the cluster map, for the data path (D384): answered once
+        // storage nodes hold it. The revocation stands whatever this
+        // gives; the map service follows the list every second.
+        let on = match &r {
+            Ok(_) => self.sync_revoked().await,
+            Err(_) => String::new(),
+        };
         audit(
             &who,
             "RevokeCertificate",
             &target,
             &match &r {
-                Ok(x) => format!("ok, refused until {}", x.until_unix),
+                Ok(x) => format!("ok, refused until {}, on the data path: {on}", x.until_unix),
                 Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
             },
         );
         Ok(pb::RevokeCertificateResponse {
             revoked: buffa::MessageField::some(revoked_pb(&r?)),
+            data_path: on,
             ..Default::default()
         }
         .into())

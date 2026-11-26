@@ -953,6 +953,127 @@ fn hyperstor_vhost_is_installed_for_its_users() {
     assert!(r.has("no such user"), "{}", r.out);
 }
 
+/// D383: a host that joins with a token a management client bound to
+/// realms made is bound to that client's realms, so its certificate opens
+/// no other realm's volumes. The client gets no token for a host bound
+/// past its realms, nor for one that joined before and serves every realm.
+#[test]
+fn a_host_a_bound_client_joins_is_bound_to_its_realms() {
+    let c = Cluster::all_in_one("hostbind", 1);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap()
+        .trim()
+        .to_string();
+    let gx = c.identity(hyperstor_pki::Role::Mgmt, "glidex", false);
+    for realm in ["acme", "other"] {
+        c.ctl(&["realm", "create", "--name", realm]).ok();
+    }
+    c.ctl(&["realm", "client", "--client", "glidex", "--realm", "acme"])
+        .ok();
+    c.ctl(&[
+        "realm",
+        "client-tokens",
+        "--client",
+        "glidex",
+        "--role",
+        "host",
+    ])
+    .ok();
+    let make = |host: &str| {
+        c.ctl_via(
+            Via::Tls(&gx),
+            &["token", "create", "--role", "host", "--name", host],
+        )
+    };
+    let join = |root: &str, token: &str| {
+        let root = c.scratch.path(root);
+        link_binaries(&root);
+        let f = c.scratch.path(&format!("{}.token", root.display()));
+        std::fs::write(&f, token.lines().next().unwrap()).unwrap();
+        install_cmd(
+            &root,
+            "install",
+            &[
+                "--role",
+                "vhost",
+                "--join",
+                c.api.as_str(),
+                "--token-file",
+                f.to_str().unwrap(),
+            ],
+        )
+    };
+    let json = |b: &str| -> serde_json::Value {
+        serde_json::from_str(b).unwrap_or_else(|e| panic!("{e}:\n{b}"))
+    };
+    let hosts_of = |realm: &str| {
+        let l = json(&c.ctl(&["realm", "list", "--json"]).ok().out);
+        l["realms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == realm)
+            .map(|r| r["hosts"].to_string())
+            .unwrap_or_default()
+    };
+
+    // The token says what its join binds.
+    let t = make(&name).ok();
+    let tokens = json(&c.ctl(&["token", "list", "--json"]).ok().out);
+    let mine = tokens["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == name.as_str())
+        .unwrap_or_else(|| panic!("{tokens}"));
+    assert_eq!(mine["bind_realms"], serde_json::json!(["acme"]), "{mine}");
+    let listed = c.ctl(&["token", "list"]).ok();
+    assert!(
+        listed.has(&format!("(binds host {name} to acme)")),
+        "{}",
+        listed.out
+    );
+    // Not bound before the join.
+    assert!(!hosts_of("acme").contains(&name), "{}", hosts_of("acme"));
+    join("vm-a", &t.out).ok();
+    assert!(hosts_of("acme").contains(&name), "{}", hosts_of("acme"));
+    assert!(!hosts_of("other").contains(&name));
+    assert!(
+        c.audit().iter().any(|l| l.contains("\"op\":\"Join\"")
+            && l.contains(&format!("host {name}, bound to realms acme"))),
+        "{:?}",
+        c.audit()
+    );
+    // The same host joins again (a reinstall), and stays as it is.
+    join("vm-b", &make(&name).ok().out).ok();
+    assert!(hosts_of("acme").contains(&name));
+
+    // Bound past the client's realms: no token.
+    c.ctl(&["realm", "host", "--host", &name, "--realm", "acme,other"])
+        .ok();
+    let r = make(&name);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.has("is bound to realm other"), "{}", r.out);
+    // Unbound by an administrator, it serves every realm: no token.
+    c.ctl(&["realm", "host", "--host", &name, "--realm", "any"])
+        .ok();
+    let r = make(&name);
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.has("joined before and is bound to no realm"), "{}", r.out);
+    assert!(!hosts_of("acme").contains(&name));
+    // A name no binding could hold.
+    let r = make(&"h".repeat(65));
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(r.has("1-64"), "{}", r.out);
+    // An administrator's token binds nothing.
+    let t = c
+        .ctl(&["token", "create", "--role", "host", "--name", &name])
+        .ok();
+    join("vm-c", &t.out).ok();
+    assert!(!hosts_of("acme").contains(&name) && !hosts_of("other").contains(&name));
+}
+
 /// A VM host joins with a `host` token (D375; 30-data-path-tls.md §33.6):
 /// its certificate names it as it names itself to storage nodes, the map
 /// service's addresses come with the join, and later runs need no token.

@@ -261,6 +261,7 @@ mod tests {
                     revoked: false,
                     created_by: "t".into(),
                     name: String::new(),
+                    realms: Vec::new(),
                 },
                 1,
             )
