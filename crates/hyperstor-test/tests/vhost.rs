@@ -1010,7 +1010,7 @@ fn a_disk_is_handed_to_a_migrations_target() {
     let c = Cluster::all_in_one("vhost-migrate", 3);
     let (v, w) = (volume(&c, "16M"), volume(&c, "16M"));
     let src = Service::start(&c, "mig-src", &[]);
-    let mut dst = Service::start(&c, "mig-dst", &[]);
+    let mut dst = Service::start(&c, "mig-dst", &["--hold-standby", "5"]);
     let ctl = |s: &Service, op: &str, args: serde_json::Value| {
         s.ctl(serde_json::json!({"id": 9, "op": op, "args": args}))
     };
@@ -1061,13 +1061,29 @@ fn a_disk_is_handed_to_a_migrations_target() {
     assert_eq!(none["error"]["code"], "invalid", "{none}");
     let mut gt = Guest::connect(&ts, true);
     assert!(gt.read(0, a.len() as u32) == a);
-    // The switch: the source's hypervisor stops, the target's is promoted.
+    // The switch: the source's hypervisor stops, and the target's resumes
+    // the guest before glidex promotes it (#437): its write is held until
+    // the promotion (D381), then runs.
     drop(gs);
-    let p = ctl(&dst, "promote", serde_json::json!({"volume": v}));
-    assert_eq!(p["ok"]["fencing"].as_array().map(Vec::len), Some(1), "{p}");
-    assert_eq!(role(&dst), "holder");
+    gt.wait = std::time::Duration::from_secs(30);
     let b = pattern(2, 64 << 10);
-    gt.write(0, &b);
+    let early = std::time::Duration::from_secs(1);
+    let (status, t, p) = std::thread::scope(|s| {
+        let w = s.spawn(|| {
+            let t = std::time::Instant::now();
+            let (status, _, _) = gt.request(T_OUT, 0, &b, 0);
+            (status, t.elapsed())
+        });
+        std::thread::sleep(early);
+        let p = ctl(&dst, "promote", serde_json::json!({"volume": v}));
+        let (status, t) = w.join().unwrap();
+        (status, t, p)
+    });
+    assert_eq!(p["ok"]["fencing"].as_array().map(Vec::len), Some(1), "{p}");
+    assert_eq!(status, S_OK, "held until the promotion");
+    assert!(t >= early, "held {t:?}");
+    assert_eq!(role(&dst), "holder");
+    assert!(gt.read(0, b.len() as u32) == b);
     let gone = ctl(&src, "detach", serde_json::json!({"volume": v}));
     assert!(gone.get("ok").is_some(), "{gone}");
     let cc = pattern(3, 64 << 10);
@@ -1098,6 +1114,20 @@ fn a_disk_is_handed_to_a_migrations_target() {
         serde_json::json!({"volume": w, "delegate": id, "holder": "n2"}),
     );
     assert!(t.get("ok").is_some(), "{t}");
+    // Never promoted: past `--hold-standby` the guest's write fails, and
+    // nothing of it reaches the volume.
+    let mut gd = Guest::connect(&PathBuf::from(t["ok"]["socket"].as_str().unwrap()), true);
+    gd.wait = std::time::Duration::from_secs(30);
+    let t0 = std::time::Instant::now();
+    let (status, _, _) = gd.request(T_OUT, 0, &pattern(4, 8192), 0);
+    assert_eq!(status, S_IOERR, "past the hold");
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_secs(5),
+        "{:?}",
+        t0.elapsed()
+    );
+    assert!(gw.read(0, a.len() as u32) == a);
+    drop(gd);
     let off = ctl(
         &dst,
         "detach",
@@ -1122,6 +1152,12 @@ fn a_disk_is_handed_to_a_migrations_target() {
     gw.write(0, &b);
     assert!(gw.read(0, b.len() as u32) == b);
     drop(gw);
+    // A hold past an hour is refused at start.
+    let o = std::process::Command::new(hyperstor_test::bin_dir().join("hyperstor-vhost"))
+        .args(["serve", "--meta", &c.map, "--hold-standby", "3601"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2));
     src.stop();
     dst.stop();
 }

@@ -60,6 +60,9 @@ pub struct Options {
     /// primary, no map service, nodes unreachable) before the guest sees
     /// an I/O error (D354; 0: the client's own tries only).
     pub hold_outage: std::time::Duration,
+    /// How long a migration's target holds a guest's writes before its
+    /// promotion, then fails them (D381; 0: at once).
+    pub hold_standby: std::time::Duration,
     /// The data networks it reaches storage nodes on, in order
     /// (26-networks.md §29.5, D207); none: devices' addresses.
     pub networks: Vec<String>,
@@ -673,6 +676,7 @@ impl Service {
         let fail = |e: ClientError| Refused::Other(control::error_code(&e), e.to_string());
         let att = self.client.delegate(volume, delegate).await.map_err(fail)?;
         att.set_standby().map_err(fail)?;
+        att.set_standby_hold(self.opts.hold_standby);
         *att.label_mut() = hyperstor_client::cut_label(label);
         if let Err(e) = att.check_promote().await {
             att.detach().await.ok();
@@ -1117,6 +1121,7 @@ impl Service {
         };
         let (spec, queues) = (self.reactors.spec(), self.opts.queues);
         let hold = (self.opts.hold_full, self.opts.hold_outage);
+        let hold_standby = self.opts.hold_standby;
         let taken = self
             .reactors
             .run_on(to, move || async move {
@@ -1128,6 +1133,7 @@ impl Service {
                         .await
                         .map_err(|e| e.to_string())?;
                     att.set_standby().map_err(|e| e.to_string())?;
+                    att.set_standby_hold(hold_standby);
                     *att.label_mut() = label;
                     att
                 } else {
