@@ -937,6 +937,31 @@ impl Api {
     }
 }
 
+impl Api {
+    /// Mirrors the revoked certificates into the cluster map (D384) and
+    /// waits until storage nodes hold them: where the data path refuses
+    /// them now, or `pending` if the map service didn't say.
+    async fn sync_revoked(&self) -> String {
+        let Ok((signing, _)) = self.signing() else {
+            return "pending".into();
+        };
+        let certs = signing.certs.clone();
+        let revoked = tokio::task::spawn_blocking(move || certs.revoked())
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        let (reply, rx) = oneshot();
+        if self.tx.send(Admin::SyncRevoked { revoked, reply }).is_err() {
+            return "pending".into();
+        }
+        match rx.recv().await {
+            Some(Ok(on)) => on.as_str().into(),
+            _ => "pending".into(),
+        }
+    }
+}
+
 #[allow(refining_impl_trait)]
 impl CaService for Api {
     async fn get_cluster_key(
@@ -1151,17 +1176,25 @@ impl CaService for Api {
             Ok(r) => Ok(r),
             Err(e) => Err(self.token_error(e).await),
         };
+        // Into the cluster map, for the data path (D384): answered once
+        // storage nodes hold it. The revocation stands whatever this
+        // gives; the map service follows the list every second.
+        let on = match &r {
+            Ok(_) => self.sync_revoked().await,
+            Err(_) => String::new(),
+        };
         audit(
             &who,
             "RevokeCertificate",
             &target,
             &match &r {
-                Ok(x) => format!("ok, refused until {}", x.until_unix),
+                Ok(x) => format!("ok, refused until {}, on the data path: {on}", x.until_unix),
                 Err(e) => format!("failed: {}", e.message.as_deref().unwrap_or("")),
             },
         );
         Ok(pb::RevokeCertificateResponse {
             revoked: buffa::MessageField::some(revoked_pb(&r?)),
+            data_path: on,
             ..Default::default()
         }
         .into())

@@ -81,6 +81,23 @@ impl DataTls {
     }
 }
 
+/// A revoked certificate or identity as the map carries it (D384;
+/// 30-data-path-tls.md §33.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RevokedCert {
+    /// Refused until then (Unix seconds): its certificate is useless
+    /// after.
+    pub until_unix: u64,
+    /// When it was revoked: an identity's revocation covers certificates
+    /// issued until then.
+    pub revoked_unix: u64,
+}
+
+/// What a whole identity's revocation is keyed by in
+/// [`ClusterMap::revoked`], before the identity's URI; a certificate's is
+/// keyed by its serial.
+pub const REVOKED_ID_PREFIX: &str = "id:";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PoolInfo {
     pub id: u32,
@@ -421,6 +438,12 @@ pub struct ClusterMap {
     /// Whether connections on the storage network authenticate (D373;
     /// 30-data-path-tls.md §33.4).
     pub data_tls: DataTls,
+    /// Certificates and identities the data path refuses (D384), as the
+    /// map service's list has them (19-administration.md §23.8): by
+    /// serial, or by [`REVOKED_ID_PREFIX`] and an identity's URI. The map
+    /// service mirrors them here only while the mode isn't `off` and every
+    /// node reads the format.
+    pub revoked: BTreeMap<String, RevokedCert>,
     /// Devices an operator asked to convert to v0.0.8's shard format
     /// (D274, `hyperstorctl device upgrade`): each node converts its own
     /// the next time it opens them, and the map service drops a device
@@ -1539,6 +1562,33 @@ impl ClusterMap {
         self.epoch
     }
 
+    /// Sets the revoked certificates and identities (D384), as the map
+    /// service's list has them: true, and a new epoch, if that changes the
+    /// map.
+    pub fn set_revoked(&mut self, revoked: BTreeMap<String, RevokedCert>) -> bool {
+        if self.revoked == revoked {
+            return false;
+        }
+        self.revoked = revoked;
+        self.epoch += 1;
+        true
+    }
+
+    /// Whether the data path refuses a certificate (D384): `serial` is
+    /// revoked, or the identity `uri` was, at or after the certificate was
+    /// issued. As the cluster API decides it (`Certs::is_revoked_cert`).
+    pub fn cert_revoked(&self, serial: &str, uri: &str, issued_unix: u64, now: u64) -> bool {
+        if self.revoked.is_empty() {
+            return false;
+        }
+        if self.revoked.get(serial).is_some_and(|r| r.until_unix > now) {
+            return true;
+        }
+        self.revoked
+            .get(&format!("{REVOKED_ID_PREFIX}{uri}"))
+            .is_some_and(|r| r.until_unix > now && issued_unix <= r.revoked_unix)
+    }
+
     /// Drops entries expired at `now` (Unix seconds), bumping the epoch if
     /// any were; whether any were.
     pub fn blocklist_prune(&mut self, now: u64) -> bool {
@@ -2001,7 +2051,10 @@ impl ClusterMap {
         // projects' tenants (D303), only while a host is bound and a
         // project has moved; 22: pools that require capabilities (D371);
         // 23: the data path's TLS mode other than `off` (D373).
-        let format = if self.data_tls != DataTls::Off {
+        // 24: revoked certificates (D384), only while there are any.
+        let format = if !self.revoked.is_empty() {
+            24
+        } else if self.data_tls != DataTls::Off {
             23
         } else if self.pools.values().any(|p| p.capabilities) {
             22
@@ -2316,13 +2369,19 @@ impl ClusterMap {
         if format >= 23 {
             e.u8(self.data_tls as u8);
         }
+        if format >= 24 {
+            e.u32(self.revoked.len() as u32);
+            for (key, r) in &self.revoked {
+                e.str(key).u64(r.until_unix).u64(r.revoked_unix);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=23).contains(&v) {
+        if !(1..=24).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2650,6 +2709,18 @@ impl ClusterMap {
             m.data_tls = *DataTls::ALL
                 .get(usize::from(d.u8()?))
                 .ok_or(DecodeError::Utf8)?;
+        }
+        if v >= 24 {
+            for _ in 0..d.u32()? {
+                let key = d.str()?.to_string();
+                m.revoked.insert(
+                    key,
+                    RevokedCert {
+                        until_unix: d.u64()?,
+                        revoked_unix: d.u64()?,
+                    },
+                );
+            }
         }
         d.finish()?;
         Ok(m)
@@ -4263,7 +4334,7 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(m.encode(), before);
         // A build from before it refuses the map rather than misread it.
         let mut newer = b.clone();
-        newer[..4].copy_from_slice(&24u32.to_le_bytes());
+        newer[..4].copy_from_slice(&25u32.to_le_bytes());
         assert!(ClusterMap::decode(&newer).is_err());
         // D373: the TLS mode travels in format 23, only when not `off`.
         for mode in [DataTls::Allow, DataTls::Require] {
@@ -4276,6 +4347,62 @@ pool 1 v replicated size 2 min 1 pgs 8
         m.data_tls = DataTls::Off;
         assert_eq!(m.encode(), before);
         assert_eq!(DataTls::parse("on"), None);
+    }
+
+    /// D384: revoked certificates travel in format 24, only while there
+    /// are any; a serial is refused until its end, an identity's
+    /// certificates issued until it was revoked.
+    #[test]
+    fn revoked_certificates_travel_only_while_there_are_any() {
+        let format = |b: &[u8]| u32::from_le_bytes(b[..4].try_into().unwrap());
+        let mut m = ClusterMap::new(7);
+        m.add_node(1, &["127.0.0.1:7001".parse().unwrap()], 0);
+        m.data_tls = DataTls::Allow;
+        let before = m.encode();
+        assert_eq!(format(&before), 23);
+        let uri = "hyperstor://7/host/hv1";
+        let list: BTreeMap<String, RevokedCert> = [
+            (
+                "ab01".to_string(),
+                RevokedCert {
+                    until_unix: 1000,
+                    revoked_unix: 500,
+                },
+            ),
+            (
+                format!("{REVOKED_ID_PREFIX}{uri}"),
+                RevokedCert {
+                    until_unix: 2000,
+                    revoked_unix: 600,
+                },
+            ),
+        ]
+        .into();
+        let epoch = m.epoch;
+        assert!(m.set_revoked(list.clone()));
+        assert!(!m.set_revoked(list), "the same list changes nothing");
+        assert_eq!(m.epoch, epoch + 1);
+        let b = m.encode();
+        assert_eq!(format(&b), 24);
+        let back = ClusterMap::decode(&b).unwrap();
+        assert_eq!(back, m);
+        // By serial, whoever holds it and whenever it was issued.
+        assert!(back.cert_revoked("ab01", "hyperstor://7/node/1", 900, 999));
+        assert!(!back.cert_revoked("ab01", "hyperstor://7/node/1", 900, 1000));
+        assert!(!back.cert_revoked("ab02", "hyperstor://7/node/1", 900, 999));
+        // By identity: certificates issued until the revocation, to the
+        // second; one issued after is that identity's new one.
+        assert!(back.cert_revoked("cc", uri, 600, 700));
+        assert!(!back.cert_revoked("cc", uri, 601, 700));
+        assert!(!back.cert_revoked("cc", "hyperstor://7/host/hv2", 100, 700));
+        assert!(!back.cert_revoked("cc", uri, 600, 2000), "past its end");
+        // An identity is never mistaken for a serial.
+        assert!(!back.cert_revoked(uri, "", 0, 700));
+        // None left: the format it had.
+        assert!(m.set_revoked(BTreeMap::new()));
+        m.epoch = epoch;
+        assert_eq!(m.encode(), before);
+        assert!(!m.cert_revoked("ab01", uri, 0, 0));
     }
 
     /// D274: devices to convert travel in format 20, only while one is

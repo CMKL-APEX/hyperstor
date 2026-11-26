@@ -1375,6 +1375,25 @@ pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<St
 }
 
 /// `hyperstorctl data-tls status`: the mode, and what it means.
+/// What `cert revoke` says of the data path (D384), from the answer's
+/// `data_path`.
+pub fn revoked_data_path_text(on: &str) -> &'static str {
+    match on {
+        "nodes" => {
+            "storage nodes and clients refuse it too: they hold the cluster map that lists it"
+        }
+        "off" => {
+            "the data path checks no certificates: its TLS mode is off (hyperstorctl data-tls status)"
+        }
+        "old_nodes" => {
+            "storage nodes don't refuse it yet: one runs a build from before revocation lists, or hasn't said which it runs; the map service adds it to the cluster map once all do"
+        }
+        _ => {
+            "the map service didn't say whether storage nodes hold it yet: it adds it to the cluster map within seconds"
+        }
+    }
+}
+
 pub fn data_tls_text(mode: &str) -> String {
     let what = match mode {
         "allow" => {

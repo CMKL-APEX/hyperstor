@@ -27,7 +27,10 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
 /// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
 /// (D363, D371). 8: [`Msg::StartTls`] (D25, D373).
-pub const VERSION: u16 = 8;
+pub const VERSION: u16 = 9;
+/// The version whose storage nodes and clients read a map with revoked
+/// certificates (format 24; D384) and refuse them.
+pub const REVOKED_VERSION: u16 = 9;
 /// The first version that decodes [`Msg::StartTls`] (D373).
 pub const TLS_VERSION: u16 = 8;
 /// The first version that decodes [`Msg::Capability`] (D363).

@@ -1609,6 +1609,15 @@ tests = [
 ]
 
 [[milestone.item]]
+what = "T2: revoked certificates in the cluster map (format 24, protocol version 9): refused by storage nodes, the map service's data port and callers, at the handshake and once revoked; `cert revoke` answers once nodes hold the map"
+spec = ["30-data-path-tls.md §33.5", "D384", "I450"]
+status = "done"
+tests = [
+    "hyperstor_map::port_tests::revoked_certificates_travel_only_while_there_are_any",
+    "cluster::a_revoked_certificate_is_refused_on_the_data_path",
+]
+
+[[milestone.item]]
 what = "T2: `require`, refused while a node has no identity; authorization by certificate role; a node's id and a client's host name from the certificate; UDP pings keyed with the sealing key"
 spec = ["30-data-path-tls.md §33.4", "30-data-path-tls.md §33.5", "30-data-path-tls.md §33.7", "D373", "D377", "D379"]
 status = "planned"

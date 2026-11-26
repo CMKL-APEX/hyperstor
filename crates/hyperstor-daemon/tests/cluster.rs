@@ -69,6 +69,11 @@ enum MetaCmd {
     /// Forgets the primaries' space reports, as a new leader would.
     ForgetSpace,
     /// Splits a pool to the PG count given (D187).
+    /// Mirrors these revoked certificates into the map (D384).
+    Revoke(
+        Vec<hyperstor_meta::certs::Revoked>,
+        std::sync::mpsc::Sender<Result<hyperstor_meta::RevokedOn, String>>,
+    ),
     /// Sets the data path's TLS mode (D373).
     DataTls(
         hyperstor_meta::DataTls,
@@ -231,14 +236,26 @@ impl TestPki {
     }
 
     fn identity(&self, role: hyperstor_pki::Role, id: &str) -> hyperstor_client::rpc::TlsIdentity {
+        self.certificate(role, id).0
+    }
+
+    /// An identity and its certificate's serial.
+    fn certificate(
+        &self,
+        role: hyperstor_pki::Role,
+        id: &str,
+    ) -> (hyperstor_client::rpc::TlsIdentity, String) {
         let who = hyperstor_pki::Identity {
             cluster: Self::CLUSTER.into(),
             role,
             id: id.into(),
         };
         let leaf = hyperstor_pki::issue(&self.ca, &who, &[], &[], 30).unwrap();
-        hyperstor_client::rpc::TlsIdentity::from_pem(&leaf.cert, &leaf.key, &self.root.cert)
-            .unwrap()
+        (
+            hyperstor_client::rpc::TlsIdentity::from_pem(&leaf.cert, &leaf.key, &self.root.cert)
+                .unwrap(),
+            hyperstor_pki::serial_in(&leaf.cert).unwrap(),
+        )
     }
 }
 
@@ -534,6 +551,9 @@ impl Cluster {
                         MetaCmd::DataTls(mode, tx) => {
                             let _ = tx.send(meta.set_data_tls(mode));
                         }
+                        MetaCmd::Revoke(list, tx) => {
+                            let _ = tx.send(meta.revoke_on_data_path(list).await);
+                        }
                         MetaCmd::Capabilities(pool, on, tx) => {
                             let change = hyperstor_meta::PoolChange {
                                 capabilities: Some(on),
@@ -787,6 +807,21 @@ impl Cluster {
     ) -> Result<(u64, hyperstor_meta::DataTls), String> {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::DataTls(mode, tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// Gives the map service the revoked certificates (D384); where the
+    /// data path refuses them.
+    fn revoke(
+        &self,
+        list: &[hyperstor_meta::certs::Revoked],
+    ) -> Result<hyperstor_meta::RevokedOn, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::Revoke(list.to_vec(), tx))
+                .is_ok()
+        );
         rx.recv().unwrap()
     }
 
@@ -10404,5 +10439,250 @@ fn connections_authenticate_when_the_cluster_allows_it() {
         &(0..6u64)
             .flat_map(|i| [(1u128, i), (2u128, i)])
             .collect::<Vec<_>>(),
+    );
+}
+
+/// Revoked certificates on the data path (D384; 30-data-path-tls.md
+/// §33.5). The map carries the list only once every node that is up reads
+/// it; from then a node and the map service refuse a handshake with a
+/// revoked certificate, by serial or by identity, and drop a connection
+/// whose certificate is revoked later, at its next request. Other callers
+/// and the cluster's I/O go on.
+#[test]
+fn a_revoked_certificate_is_refused_on_the_data_path() {
+    use hyperstor_meta::certs::{ID_PREFIX, Revoked};
+    use hyperstor_meta::{DataTls, RevokedOn};
+    use hyperstor_pki::Role;
+    use hyperstor_proto::Msg;
+    let mut c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let (stolen, serial) = c.pki.certificate(Role::Host, "hv-1");
+    let (gone, _) = c.pki.certificate(Role::Host, "hv-2");
+    let (good, _) = c.pki.certificate(Role::Host, "hv-3");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let entry = |key: String| Revoked {
+        serial: key,
+        until_unix: now + 3600,
+        // Certificates of the identity issued until then: `gone`'s.
+        revoked_unix: now + 5,
+        by: "test".into(),
+    };
+    let by_serial = vec![entry(serial)];
+    let both = vec![
+        by_serial[0].clone(),
+        entry(format!(
+            "{ID_PREFIX}hyperstor://{}/host/hv-2",
+            TestPki::CLUSTER
+        )),
+    ];
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<&'static str>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            let hello = Msg::Hello {
+                min_version: hyperstor_proto::OLDEST_VERSION,
+                max_version: hyperstor_proto::VERSION,
+                id: 7,
+                instance: 8,
+            };
+            // A connection as `tls`, authenticated.
+            let open = async |addr: SocketAddr, tls: &hyperstor_client::rpc::TlsIdentity| {
+                let t0 = std::time::Instant::now();
+                loop {
+                    let (conn, _) = hyperstor_rpc::Conn::open(
+                        addr,
+                        std::time::Duration::from_secs(5),
+                        &hello,
+                        Some(&tls.calling(false)),
+                    )
+                    .await
+                    .unwrap();
+                    if conn.peer().is_some() {
+                        return conn;
+                    }
+                    conn.kill();
+                    assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                    hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            };
+            // Whether it is served: a request a node and the map service
+            // both answer, its host's name as its certificate has it.
+            let served = async |conn: &hyperstor_rpc::Conn| {
+                let name = conn.peer().map_or(String::new(), |_| "hv".into());
+                matches!(
+                    conn.call_within(&Msg::Host { name }, &[], std::time::Duration::from_secs(5))
+                        .await,
+                    Ok((Msg::Noted { .. }, _))
+                )
+            };
+            let cl = Client::connect(meta, 98).await.unwrap();
+            cl.set_identity(good.clone());
+            let node0 = cl.map().device_addr(0).unwrap();
+            let io = async |seed: u64| {
+                for i in 0..6u64 {
+                    cl.write(POOL, 1, i * CHUNK as u64, pattern(seed + i, 4096))
+                        .await
+                        .unwrap();
+                }
+                for i in 0..6u64 {
+                    assert!(
+                        cl.read(POOL, 1, i * CHUNK as u64, 4096).await.unwrap()
+                            == pattern(seed + i, 4096)
+                    );
+                }
+            };
+            step_tx.send("allow").unwrap();
+            go_rx.recv().unwrap();
+            // Connections made before any revocation, by each caller, to
+            // a node and to the map service.
+            let mut kept = Vec::new();
+            for tls in [&stolen, &gone, &good] {
+                for addr in [node0, meta] {
+                    let conn = open(addr, tls).await;
+                    assert!(served(&conn).await);
+                    kept.push(conn);
+                }
+            }
+            io(10).await;
+
+            // A node from before the list is up: the map doesn't carry
+            // it, and the certificate still works on the data path.
+            step_tx.send("older").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            step_tx.send("revoke-early").unwrap();
+            go_rx.recv().unwrap();
+            cl.refresh_map().await.unwrap();
+            assert!(cl.map().revoked.is_empty());
+            assert!(served(&open(node0, &stolen).await).await);
+            io(20).await;
+
+            // Every node reads it: revoked by serial.
+            step_tx.send("newer").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            step_tx.send("revoke").unwrap();
+            go_rx.recv().unwrap();
+            // Its kept connections are dropped at their next request, and
+            // a new one right after its handshake.
+            assert!(!served(&kept[0]).await, "node, kept");
+            assert!(!served(&kept[1]).await, "map service, kept");
+            for addr in [node0, meta] {
+                let conn = hyperstor_rpc::Conn::open(
+                    addr,
+                    std::time::Duration::from_secs(5),
+                    &hello,
+                    Some(&stolen.calling(false)),
+                )
+                .await;
+                assert!(
+                    match conn {
+                        Ok((conn, _)) => !served(&conn).await,
+                        Err(_) => true,
+                    },
+                    "{addr}"
+                );
+            }
+            // The others go on, over the connections they had.
+            for conn in &kept[2..] {
+                assert!(served(conn).await);
+            }
+            cl.refresh_map().await.unwrap();
+            assert_eq!(cl.map().revoked.len(), 1);
+            io(30).await;
+
+            // An identity revoked: every certificate of it issued until
+            // then.
+            step_tx.send("revoke-identity").unwrap();
+            go_rx.recv().unwrap();
+            assert!(!served(&kept[2]).await, "node, kept");
+            assert!(!served(&kept[3]).await, "map service, kept");
+            for conn in &kept[4..] {
+                assert!(served(conn).await);
+            }
+            assert!(served(&open(node0, &good).await).await);
+            // A node restarts and comes back among its peers with the
+            // list in the map.
+            step_tx.send("restart").unwrap();
+            go_rx.recv().unwrap();
+            wait_all_up(&cl).await;
+            io(40).await;
+            step_tx.send("done").unwrap();
+        })
+    });
+    let dropped = |c: &Cluster| -> u64 {
+        c.nodes
+            .iter()
+            .flatten()
+            .flat_map(|n| n.metrics.iter())
+            .map(|(_, m)| m.revoked.load(std::sync::atomic::Ordering::Relaxed))
+            .sum()
+    };
+    // The list reaches the map once the map service has heard which
+    // build each node runs: moments after a restarted node is up.
+    let revoke_until = |c: &Cluster, list: &[Revoked], want: RevokedOn| {
+        let t0 = std::time::Instant::now();
+        loop {
+            let on = c.revoke(list).unwrap();
+            if on == want {
+                return;
+            }
+            assert!(
+                t0.elapsed() < std::time::Duration::from_secs(30),
+                "{on:?}, not {want:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    };
+    loop {
+        match step_rx.recv().unwrap() {
+            "allow" => {
+                // In `off` nothing shows a certificate: no list.
+                assert_eq!(c.revoke(&by_serial).unwrap(), RevokedOn::Off);
+                c.data_tls(DataTls::Allow).unwrap();
+            }
+            "older" => {
+                c.older
+                    .set_version(1, Some(hyperstor_proto::REVOKED_VERSION - 1));
+                c.kill(1);
+                c.restart(1);
+            }
+            "revoke-early" => {
+                assert_eq!(c.revoke(&by_serial).unwrap(), RevokedOn::OldNodes);
+                assert!(c.published().revoked.is_empty());
+                assert_eq!(dropped(&c), 0);
+            }
+            "newer" => {
+                c.older.set_version(1, None);
+                c.kill(1);
+                c.restart(1);
+            }
+            "revoke" => {
+                revoke_until(&c, &by_serial, RevokedOn::Nodes);
+                assert_eq!(c.published().revoked.len(), 1);
+            }
+            "revoke-identity" => {
+                assert!(dropped(&c) >= 2, "{}", dropped(&c));
+                revoke_until(&c, &both, RevokedOn::Nodes);
+            }
+            "restart" => {
+                c.kill(2);
+                c.restart(2);
+            }
+            _ => break,
+        }
+        go_tx.send(()).unwrap();
+    }
+    t.join().unwrap();
+    assert!(dropped(&c) >= 3, "{}", dropped(&c));
+    let (map, devs) = c.stop();
+    assert_eq!(map.revoked.len(), 2);
+    copies_agree(
+        &map,
+        devs,
+        &(0..6u64).map(|i| (1u128, i)).collect::<Vec<_>>(),
     );
 }
