@@ -4694,9 +4694,10 @@ where
     show(a, &r, || {
         let x = r.revoked.as_option().cloned().unwrap_or_default();
         format!(
-            "certificate {} revoked: refused by every map service member until {} (UTC)\n",
+            "certificate {} revoked: refused by every map service member until {} (UTC)\n{}\n",
             x.serial,
-            utc(x.until_unix)
+            utc(x.until_unix),
+            revoked_data_path_text(&r.data_path)
         )
     });
     Ok(Next::Exit(0))

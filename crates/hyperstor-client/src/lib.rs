@@ -288,6 +288,33 @@ static PROCESS_IDENTITY: std::sync::OnceLock<rpc::TlsIdentity> = std::sync::Once
 /// [`Client`] made afterwards starts TLS with it where the peer does,
 /// from its first connection. Set once, at start, by a service that was
 /// given one (`--identity DIR`); a second call changes nothing.
+/// Whether `map` has revoked the certificate a handshake showed (D384;
+/// 30-data-path-tls.md §33.5).
+pub fn cert_revoked(map: &ClusterMap, peer: &rpc::tls::Peer) -> bool {
+    !map.revoked.is_empty()
+        && map.cert_revoked(&peer.serial, &peer.who.uri(), peer.issued_unix, wall_unix())
+}
+
+/// Whether `c`'s peer authenticated with a certificate `map` has revoked
+/// (D384). False for a peer that didn't authenticate.
+pub fn peer_revoked(map: &ClusterMap, c: &Conn) -> bool {
+    !map.revoked.is_empty()
+        && c.peer_revoked(|serial, uri, issued| map.cert_revoked(serial, uri, issued, wall_unix()))
+}
+
+/// What a caller gets instead of a connection to a peer whose certificate
+/// is revoked; the connection is dropped.
+pub fn refuse_revoked(c: &Conn, addr: std::net::SocketAddr) -> RpcError {
+    c.kill();
+    RpcError::Protocol(format!("{addr} shows a revoked certificate"))
+}
+
+fn wall_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 pub fn set_process_identity(identity: rpc::TlsIdentity) {
     let _ = PROCESS_IDENTITY.set(identity);
 }
@@ -701,6 +728,11 @@ impl Client {
                 Ok(c)
             })
             .await?;
+        // At the handshake, and on a kept connection once a map revokes
+        // its peer's certificate (D384): a revoked node is no peer.
+        if peer_revoked(&self.map.borrow(), &c) {
+            return Err(refuse_revoked(&c, addr).into());
+        }
         Ok(c)
     }
 

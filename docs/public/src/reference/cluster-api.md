@@ -31,7 +31,9 @@ a client certificate issued by the cluster's CA, whose identity
 A certificate of another cluster is refused, and so is a revoked one:
 `RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
 list every map service member checks, on the API and between members,
-until the certificate would have expired. `hyperstor-install` makes
+until the certificate would have expired. Where the data path's TLS
+mode isn't `off`, the cluster map carries the list and storage nodes
+refuse the certificate too (the answer's `data_path`). `hyperstor-install` makes
 the certificates in `/etc/hyperstor/pki`.
 
 **Joining.** `Join` is the only call without a client certificate: a
@@ -163,7 +165,7 @@ values are left out of answers.
 | `Join` | `token`, `csr` (PEM); a storage host: `addresses` (one per reactor) and `rack`; a member: `member_id` and `member_ips`; a management client: nothing more; a gateway: `gateway_ips`, which its certificate names | `cluster_id`, `certificate` (chain), `root`, `identity` (the URI the certificate names); a storage host: `node`, `map_addresses`; a management client: `map_addresses` (it renews with `RenewCertificate`); a member: `intermediate`, `intermediate_key`, `cluster_file`, `cluster_key` (empty where the member answering has none); a gateway: `map_addresses` |
 | `RenewCertificate` | `csr` (PEM) | `certificate` for the caller's own identity and addresses, `root` |
 | `ListCertificates` | `{}` | `certificates` the API issued (`serial`, `identity`, `not_after_unix`, `issued_unix`, `issued_by`, `revoked`) and `revoked` serials (`serial`, `until_unix`, `revoked_unix`, `revoked_by`) |
-| `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry. On the leader |
+| `RevokeCertificate` | `{"serial": "…"}` | the `revoked` entry, and `data_path`: `nodes` (storage nodes hold the cluster map that lists it, and refuse it), `off` (the data path's TLS mode is `off`), `old_nodes` (a storage node runs a release from before the list; the map service adds it once none does) or `pending` (the map service didn't say). Answers once storage nodes hold the map. On the leader |
 | `GetClusterKey` | `{}`. Map service members (`meta` certificates) only, audited: `hyperstor-install` asks for it on a member that has none | `cluster_key`; `failed_precondition` (`no_cluster_key`) where the member answering has none |
 | `ListSealingKeys` | `{}` | `keys`, oldest first: `id` (1 to 255), `seq`, `created_unix`, `created_by`, `current` (the newest, which seals). Never a key's bytes |
 | `RotateSealingKey` | `{}`. On the leader; audited | `keys` valid now: the new one last, the one before it still valid, older ones dropped |

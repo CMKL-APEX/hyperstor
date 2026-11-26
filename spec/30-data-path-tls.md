@@ -9,7 +9,8 @@ Status: **design.** D372–D380 and D382–D384 are settled with the owner
 (05-decision-log.md points 335–347, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
-in mode `allow`, and nothing is refused yet (`require` is T2). It delivers D25, which stays the rule.
+in mode `allow`. Of T2, revoked certificates are refused (D384, I450);
+nothing is refused by role yet (`require` is the rest of T2). It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -111,9 +112,18 @@ Once a connection is authenticated, and for every connection in
   Realm bindings (D259) and a capability's host (D363) are then checked
   against a name the client can't choose.
 - **Revoked certificates** (§23.8) are refused at the handshake, and a
-  connection whose certificate is revoked later is dropped. The list
-  reaches nodes and clients in the cluster map (D384), so a revocation
-  answers once every node that is up holds it.
+  connection whose certificate is revoked later is dropped at its next
+  request. The list reaches nodes and clients in the cluster map (D384,
+  I450), so a revocation answers once every node that is up holds it.
+  - The map carries it only while the mode isn't `off` and every node
+    that is up reads the format (protocol version 9). Why: a node from
+    before it can't decode such a map, and would stop.
+  - `RevokeCertificate` says which holds (`data_path`): `nodes`, `off`
+    or `old_nodes`. The map service adds the list by itself once the
+    reason is gone.
+  - Callers check too: a client, a node or the map service drops a
+    connection whose peer shows a revoked certificate. So a revoked
+    storage node is cut off, and goes down by its lease.
 - In `allow`, an unauthenticated connection is served as today, and its
   node-to-node messages too: `allow` is a migration state, not a
   boundary.

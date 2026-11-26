@@ -98,7 +98,9 @@ fn unreachable_api_is_status_3() {
 /// Revocation (D56, D93): a certificate revoked by serial is refused by
 /// the API from then on, with the reason, while others go on; the list
 /// shows it; the local socket still works for root and the service's
-/// user, whatever the list says.
+/// user, whatever the list says. And on the data path (D384): the
+/// command answers once storage nodes hold the map that lists it, and
+/// the certificate moves no data from then on.
 #[test]
 fn revoked_certificates_are_refused() {
     let c = Cluster::all_in_one("revoke", 3);
@@ -114,6 +116,9 @@ fn revoked_certificates_are_refused() {
         ])
         .ok();
     assert!(shown.has("identity hyperstor://"), "{}", shown.out);
+    // It moves data, the API reached through the local socket.
+    c.ctl_via(Via::SocketWith(&ops), &["io-test", "--mib", "1"])
+        .ok();
     let serial = shown
         .out
         .lines()
@@ -122,8 +127,24 @@ fn revoked_certificates_are_refused() {
         .to_string();
     let r = c.ctl(&["cert", "revoke", "--serial", &serial]).ok();
     assert!(r.has(&format!("certificate {serial} revoked")), "{}", r.out);
+    // A new cluster's mode is `allow` (D380): the nodes hold the list.
+    assert!(
+        r.has("storage nodes and clients refuse it too"),
+        "{}",
+        r.out
+    );
     let r = c.ctl_via(Via::Tls(&ops), &["status"]).expect(4);
     assert!(r.has("is revoked (revoked)"), "{}", r.out);
+    // The data path refuses it as well, where the socket's API doesn't
+    // ask for a certificate; the administrator's own goes on.
+    let r = c.ctl_via(Via::SocketWith(&ops), &["io-test", "--mib", "1"]);
+    assert!(r.code != 0, "{}", r.out);
+    c.ctl(&["io-test", "--mib", "1"]).ok();
+    // Asked again: the same entry, and still held.
+    let again = c
+        .ctl(&["cert", "revoke", "--serial", &serial, "--json"])
+        .ok();
+    assert!(again.has("\"data_path\":\"nodes\""), "{}", again.out);
     // Others are untouched; the list shows it.
     let l = c.ctl(&["cert", "list"]).ok();
     assert!(l.has(&serial) && l.has("revoked"), "{}", l.out);

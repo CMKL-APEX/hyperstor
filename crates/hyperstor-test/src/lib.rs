@@ -430,6 +430,9 @@ pub enum Via<'a> {
     Tls(&'a Path),
     /// The local socket.
     Socket,
+    /// The local socket for the API, and this directory's certificate on
+    /// the data path (D373).
+    SocketWith(&'a Path),
     /// Plain HTTP (refused by a TLS API).
     Plain,
 }
@@ -1199,6 +1202,12 @@ impl Cluster {
         match via {
             Via::Tls(dir) => c.args(["--api", &self.api, "--tls", dir.to_str().unwrap()]),
             Via::Socket => c.args(["--socket", self.socket().to_str().unwrap()]),
+            Via::SocketWith(dir) => c.args([
+                "--socket",
+                self.socket().to_str().unwrap(),
+                "--tls",
+                dir.to_str().unwrap(),
+            ]),
             Via::Plain => c.args(["--api", &self.api]),
         };
         run_ctl(c, args)

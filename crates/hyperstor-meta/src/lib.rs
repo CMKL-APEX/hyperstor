@@ -444,6 +444,14 @@ pub enum Admin {
         lending: Option<hyperstor_map::Lending>,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// Mirrors the revoked certificates into the map (D384), answered
+    /// once storage nodes hold them. `revoked` is the cluster API's list
+    /// where this member keeps no replicated store. Replies with where
+    /// the list is now.
+    SyncRevoked {
+        revoked: Vec<certs::Revoked>,
+        reply: hyperstor_reactor::chan::OneSender<Result<RevokedOn, String>>,
+    },
     /// Mirrors the realm rows' host bindings and tenants' realms into the
     /// map (D259), answered once published. Replies with the working
     /// map's epoch.
@@ -995,6 +1003,9 @@ pub struct Meta {
     /// answers `StartTls` with and calls storage nodes with. None: it
     /// refuses `StartTls` and never asks.
     tls: RefCell<Option<hyperstor_rpc::TlsIdentity>>,
+    /// The revoked certificates the cluster API last gave (D384), for a
+    /// member without a replicated store to read them from.
+    revoked_given: RefCell<Vec<certs::Revoked>>,
     /// Members' reports of marked PGs split (D187): the PG epoch they name
     /// and who reported.
     split_reports: RefCell<SplitReports>,
@@ -1105,6 +1116,29 @@ pub type Stuck = Vec<(u32, u32, u32, u64)>;
 /// How long a device's stuck report counts: devices send one about every
 /// second while any PG is stuck.
 const STUCK_FOR: Duration = Duration::from_secs(3);
+
+/// Where a revocation is in force on the data path (D384).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokedOn {
+    /// In the map: storage nodes, the map service's data port and clients
+    /// refuse the certificate.
+    Nodes,
+    /// The cluster's mode is `off`: no connection shows a certificate.
+    Off,
+    /// A storage node that is up runs a build from before the list, or
+    /// hasn't said which it runs: the map doesn't carry it yet.
+    OldNodes,
+}
+
+impl RevokedOn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RevokedOn::Nodes => "nodes",
+            RevokedOn::Off => "off",
+            RevokedOn::OldNodes => "old_nodes",
+        }
+    }
+}
 
 /// A pool's usage as [`Admin::PgUsage`] answers it: the reports' version
 /// and, unless unchanged, the bytes of PG n at n (`None`: not reported).
@@ -1276,6 +1310,7 @@ impl Meta {
             lease,
             started: Cell::new(Instant::now()),
             acked: RefCell::new(HashMap::new()),
+            revoked_given: RefCell::new(Vec::new()),
             down_out: Cell::new(DOWN_OUT),
             down_since: RefCell::new(HashMap::new()),
             damping: RefCell::new(HashMap::new()),
@@ -3577,6 +3612,12 @@ impl Meta {
                 } => {
                     self.reply_published(reply, self.set_lending(port.as_deref(), lending), |e| e);
                 }
+                Admin::SyncRevoked { revoked, reply } => {
+                    let me = self.clone();
+                    hyperstor_reactor::spawn(async move {
+                        let _ = reply.send(me.revoke_on_data_path(revoked).await);
+                    });
+                }
                 Admin::SyncRealms {
                     realms,
                     projects,
@@ -4134,6 +4175,9 @@ impl Meta {
             if self.may_change_roles() && pruned.elapsed() >= Duration::from_secs(1) {
                 pruned = Instant::now();
                 self.map.borrow_mut().blocklist_prune(unix_now());
+                // And the revoked certificates follow the list, the mode
+                // and what the nodes read (D384).
+                self.sync_revoked();
             }
             if self.may_change_roles()
                 && self.map.borrow().epoch > self.published.borrow().epoch
@@ -4364,36 +4408,168 @@ impl Meta {
     }
 
     async fn conn(&self, addr: SocketAddr) -> Result<hyperstor_rpc::Conn, hyperstor_rpc::RpcError> {
+        // Unless the cluster's mode is `off`: a `Hello`, which says what
+        // map the node reads (D384), then, with an identity, TLS where
+        // the node has it (D373). A connection from while it was `off`
+        // said no `Hello`: it is replaced.
+        let mode = self.map.borrow().data_tls;
         if let Some(c) = self.conns.borrow().get(&addr)
             && !c.is_dead()
+            && (mode == DataTls::Off || c.version() > 0)
+            && !hyperstor_client::peer_revoked(&self.published.borrow(), c)
         {
             return Ok(c.clone());
         }
-        // With an identity, and unless the cluster's mode is `off`: a
-        // `Hello`, then TLS where the node has it (D373).
-        let mode = self.map.borrow().data_tls;
+        if let Some(c) = self.conns.borrow().get(&addr)
+            && hyperstor_client::peer_revoked(&self.published.borrow(), c)
+        {
+            c.kill();
+        }
         let tls = self
             .tls
             .borrow()
             .as_ref()
             .filter(|_| mode != DataTls::Off)
             .map(|t| t.calling(mode == DataTls::Require));
-        let c = match tls {
-            None => hyperstor_rpc::Conn::connect(addr).await?,
-            Some(tls) => {
-                let hello = hyperstor_proto::Msg::Hello {
-                    min_version: hyperstor_proto::OLDEST_VERSION,
-                    max_version: hyperstor_proto::VERSION,
-                    id: 0,
-                    instance: 0,
-                };
-                hyperstor_rpc::Conn::open(addr, hyperstor_rpc::CONNECT_TIMEOUT, &hello, Some(&tls))
-                    .await?
-                    .0
-            }
+        let c = if mode == DataTls::Off {
+            hyperstor_rpc::Conn::connect(addr).await?
+        } else {
+            let hello = hyperstor_proto::Msg::Hello {
+                min_version: hyperstor_proto::OLDEST_VERSION,
+                max_version: hyperstor_proto::VERSION,
+                id: 0,
+                instance: 0,
+            };
+            hyperstor_rpc::Conn::open(addr, hyperstor_rpc::CONNECT_TIMEOUT, &hello, tls.as_ref())
+                .await?
+                .0
         };
+        // A node whose certificate is revoked gets no map and no fence
+        // (D384): it is down to the cluster once its lease runs out.
+        if hyperstor_client::peer_revoked(&self.published.borrow(), &c) {
+            return Err(hyperstor_client::refuse_revoked(&c, addr));
+        }
         self.conns.borrow_mut().insert(addr, c.clone());
         Ok(c)
+    }
+
+    /// Mirrors the revoked certificates into the map (D384) and returns
+    /// once storage nodes hold them, or can no longer serve by an older
+    /// map, as a blocklisting does: where the list is now. `revoked` is
+    /// the list for a member that keeps no replicated store to read it
+    /// from. Only the leader.
+    pub async fn revoke_on_data_path(
+        self: &Rc<Self>,
+        revoked: Vec<certs::Revoked>,
+    ) -> Result<RevokedOn, String> {
+        if !self.leads() {
+            return Err(self.not_leader());
+        }
+        *self.revoked_given.borrow_mut() = revoked;
+        let before = self.map.borrow().revoked.clone();
+        let mut on = self.sync_revoked();
+        // A node this leader hasn't heard from is being asked which
+        // build it runs: a moment for the answers, so the first
+        // revocation after a change of leader says `nodes` too.
+        let asked = Instant::now();
+        while on == RevokedOn::OldNodes && asked.elapsed() < Duration::from_secs(2) {
+            sleep(Duration::from_millis(50)).await;
+            if !self.leads() {
+                return Err(self.not_leader());
+            }
+            on = self.sync_revoked();
+        }
+        let (changed, epoch) = {
+            let map = self.map.borrow();
+            (map.revoked != before, map.epoch)
+        };
+        self.published_by(epoch).await?;
+        if changed {
+            self.held_by_nodes(epoch).await;
+        }
+        Ok(on)
+    }
+
+    /// Makes the map's revoked certificates (D384) what the list has that
+    /// is still refused, or none while storage nodes don't check them:
+    /// in mode `off`, and until every node that is up reads the map's
+    /// format for them. Where the list is now.
+    ///
+    /// A node's build is known from the `Hello` its push connection
+    /// starts with. One not heard from yet leaves the map as it is (a
+    /// list there was put there when every node read it) and is asked,
+    /// when there is something to add: a leader pushes no map, and so
+    /// opens no connection, until one changes.
+    fn sync_revoked(self: &Rc<Self>) -> RevokedOn {
+        let now = unix_now();
+        let list: BTreeMap<String, hyperstor_map::RevokedCert> =
+            match &*self.scrub_store.borrow() {
+                Some(s) => certs::Certs::replicated(s.db.clone())
+                    .revoked()
+                    .unwrap_or_else(|_| self.revoked_given.borrow().clone()),
+                None => self.revoked_given.borrow().clone(),
+            }
+            .into_iter()
+            .filter(|r| r.until_unix > now)
+            .map(|r| {
+                (
+                    r.serial,
+                    hyperstor_map::RevokedCert {
+                        until_unix: r.until_unix,
+                        revoked_unix: r.revoked_unix,
+                    },
+                )
+            })
+            .collect();
+        let mut map = self.map.borrow_mut();
+        if map.data_tls == DataTls::Off {
+            map.set_revoked(BTreeMap::new());
+            return RevokedOn::Off;
+        }
+        let mut old = false;
+        let mut unknown = Vec::new();
+        {
+            let conns = self.conns.borrow();
+            for d in map.devices.values() {
+                if !map.nodes.get(&d.node).is_some_and(|n| n.up) {
+                    continue;
+                }
+                match conns.get(&d.addr).filter(|c| !c.is_dead()) {
+                    Some(c) if c.version() >= hyperstor_proto::REVOKED_VERSION => {}
+                    // No `Hello` on it: opened while the mode was `off`.
+                    Some(c) if c.version() == 0 => unknown.push(d.addr),
+                    Some(_) => old = true,
+                    None => unknown.push(d.addr),
+                }
+            }
+        }
+        if old {
+            map.set_revoked(BTreeMap::new());
+            return RevokedOn::OldNodes;
+        }
+        if !unknown.is_empty() && map.revoked.is_empty() && !list.is_empty() {
+            for addr in unknown {
+                let me = self.clone();
+                hyperstor_reactor::spawn(async move {
+                    let _ = me.conn(addr).await;
+                });
+            }
+            return RevokedOn::OldNodes;
+        }
+        map.set_revoked(list);
+        RevokedOn::Nodes
+    }
+
+    /// Drops a served connection whose caller showed a revoked
+    /// certificate (D384), saying so in the log.
+    fn refuse_revoked(&self, s: &hyperstor_reactor::net::TcpStream, p: &hyperstor_rpc::tls::Peer) {
+        eprintln!(
+            "hyperstor-meta: {} at {} shows the revoked certificate {}: connection dropped",
+            p.who.uri(),
+            s.peer_addr().map_or("?".into(), |a| a.to_string()),
+            p.serial
+        );
+        let _ = s.shutdown();
     }
 
     /// Gives this member its identity on the data path (D373).
@@ -4903,6 +5079,10 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
             let s = Rc::new(s);
             let (tx, rx) = hyperstor_reactor::chan::channel::<hyperstor_rpc::Frame>();
             spawn(hyperstor_rpc::writer(s.clone(), rx));
+            // Who the caller proved to be (D373), and the map epoch its
+            // certificate was last checked against the revoked list at.
+            let mut peer: Option<hyperstor_rpc::tls::Peer> = None;
+            let mut checked = 0;
             loop {
                 let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
                 if r.is_err() {
@@ -4927,14 +5107,38 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                         detail: "the map service doesn't start TLS: it has no identity, or the cluster's mode is off".into(),
                     };
                     let tls = meta.answering_tls();
-                    if hyperstor_rpc::answer_start_tls(&s, &tx, h.req, &tls, no)
-                        .await
-                        .is_err()
-                    {
-                        let _ = s.shutdown();
-                        return;
+                    match hyperstor_rpc::answer_start_tls(&s, &tx, h.req, &tls, no).await {
+                        // A revoked certificate is refused at the
+                        // handshake (D384).
+                        Ok(Some(p))
+                            if hyperstor_client::cert_revoked(&meta.published.borrow(), &p) =>
+                        {
+                            meta.refuse_revoked(&s, &p);
+                            return;
+                        }
+                        Ok(who) => {
+                            checked = meta.published.borrow().epoch;
+                            peer = who;
+                        }
+                        Err(_) => {
+                            let _ = s.shutdown();
+                            return;
+                        }
                     }
                     continue;
+                }
+                // And once it is revoked later: dropped at its next
+                // request, checked once a map.
+                if let Some(p) = &peer {
+                    let map = meta.published.borrow();
+                    if map.epoch != checked {
+                        checked = map.epoch;
+                        if hyperstor_client::cert_revoked(&map, p) {
+                            drop(map);
+                            meta.refuse_revoked(&s, p);
+                            return;
+                        }
+                    }
                 }
                 // Answered later, from a task of its own: it waits for the
                 // map to reach every node.

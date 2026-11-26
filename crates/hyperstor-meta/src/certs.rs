@@ -261,6 +261,27 @@ impl Certs {
             .is_some_and(|r| r.until_unix > now && issued <= r.revoked_unix)
     }
 
+    /// The revocations alone, from this member's copy: what the cluster
+    /// map mirrors (D384), read every second by the leader.
+    pub fn revoked(&self) -> Result<Vec<Revoked>, Error> {
+        match &self.0 {
+            Kind::Memory(m) => Ok(lock(m).1.clone()),
+            Kind::Replicated(db) => {
+                let txn = db.begin_read().map_err(|e| Error::Store(e.to_string()))?;
+                let mut revoked = Vec::new();
+                if let Ok(t) = txn.open_table(definition::<store::MapSchema>(Table::Revoked)) {
+                    for row in t.iter().map_err(|e| Error::Store(e.to_string()))? {
+                        let (k, v) = row.map_err(|e| Error::Store(e.to_string()))?;
+                        if let Ok(r) = dec_revoked(k.value(), v.value()) {
+                            revoked.push(r);
+                        }
+                    }
+                }
+                Ok(revoked)
+            }
+        }
+    }
+
     /// The certificates recorded and the revocations, from this member's
     /// copy (any member answers).
     pub fn list(&self) -> Result<(Vec<Issued>, Vec<Revoked>), Error> {

@@ -157,7 +157,7 @@ struct Inner {
     version: Cell<u16>,
     /// Who the peer proved to be in the TLS handshake ([`Conn::open`]);
     /// None on a connection that didn't authenticate.
-    peer: RefCell<Option<hyperstor_pki::Identity>>,
+    peer: RefCell<Option<tls::Peer>>,
 }
 
 /// What a caller with an identity does about TLS on a new connection
@@ -228,7 +228,7 @@ pub async fn answer_start_tls(
     req: u64,
     tls: &AnswererTls,
     refusal: Msg,
-) -> Result<Option<hyperstor_pki::Identity>, RpcError> {
+) -> Result<Option<tls::Peer>, RpcError> {
     let Some(config) = tls else {
         let _ = tx.send(Frame::new(req, &refusal, &[]));
         return Ok(None);
@@ -565,7 +565,18 @@ impl Conn {
     /// Who the peer proved to be, on a connection [`Conn::open`]
     /// authenticated.
     pub fn peer(&self) -> Option<hyperstor_pki::Identity> {
-        self.inner.peer.borrow().clone()
+        self.inner.peer.borrow().as_ref().map(|p| p.who.clone())
+    }
+
+    /// Whether the peer authenticated with a certificate `revoked` says
+    /// is revoked (D384): given its serial, its identity's URI and when
+    /// it was issued. False on an unauthenticated connection.
+    pub fn peer_revoked(&self, revoked: impl FnOnce(&str, &str, u64) -> bool) -> bool {
+        self.inner
+            .peer
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| revoked(&p.serial, &p.who.uri(), p.issued_unix))
     }
 
     /// Starts the connection's tasks on a connected socket.
