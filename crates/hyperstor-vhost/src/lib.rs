@@ -529,7 +529,14 @@ async fn control_conn(svc: Rc<Service>, mut s: UnixStream, peer: (u32, u32)) {
 impl Service {
     async fn handle(self: &Rc<Self>, id: u64, req: Request, peer: (u32, u32)) -> Reply {
         match req {
-            Request::Hello => Reply::ok(id, control::hello()),
+            Request::Hello => Reply::ok(
+                id,
+                control::hello(
+                    hyperstor_client::process_identity()
+                        .map(|t| t.who.uri())
+                        .as_deref(),
+                ),
+            ),
             Request::List => Reply::ok(id, control::list(self.list().await)),
             Request::Attach {
                 volume,
