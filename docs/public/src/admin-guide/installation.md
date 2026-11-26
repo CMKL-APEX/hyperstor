@@ -621,6 +621,18 @@ hyperstorctl realm list                                  # Client glidex acts in
 hyperstorctl realm client --client glidex --realm any    # unbound again
 ```
 
+A bound client makes no join tokens. To let glidex's servers join their
+VM hosts themselves, allow it tokens for hosts, and nothing else:
+
+```bash
+hyperstorctl realm client-tokens --client glidex --role host
+hyperstorctl realm list                                  # Client glidex may make join tokens for: host
+hyperstorctl realm client-tokens --client glidex --role none   # no longer
+```
+
+The client chooses the host name each token carries, so allow this only
+for a client you trust to name its own hosts.
+
 A realm a client is bound to can't be deleted. No client acts for a person or reads mgmt's own records: only
 hyperstor-mgmt itself, so a `mgmt` token can't be named `dashboard` or
 `web`.

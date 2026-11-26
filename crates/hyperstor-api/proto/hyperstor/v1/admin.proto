@@ -93,6 +93,12 @@ service RealmService {
   // (D311): it then acts only in them, as a person with roles there; none
   // unbinds it. Write.
   rpc SetClientRealms(SetClientRealmsRequest) returns (SetClientRealmsResponse);
+
+  // Lets a management client make join tokens for the roles given while
+  // it is bound to realms (D382): `host` alone, so that glidex's servers
+  // can join their VM hosts; none takes that away. An unbound client makes
+  // any token, as an administrator does. Write.
+  rpc SetClientTokenRoles(SetClientTokenRolesRequest) returns (SetClientTokenRolesResponse);
 }
 
 // Certificates (04-decisions.md D53, D56).
@@ -766,7 +772,10 @@ message Realm {
 message RealmClient {
   // The name in its `mgmt` certificate.
   string client = 1;
+  // None: unbound, and listed for its token roles.
   repeated string realms = 2;
+  // The roles it may make join tokens for while bound (D382).
+  repeated string token_roles = 3 [json_name = "token_roles"];
 }
 
 message CreateRealmRequest {
@@ -835,6 +844,15 @@ message SetClientRealmsRequest {
 }
 
 message SetClientRealmsResponse {}
+
+message SetClientTokenRolesRequest {
+  // A `mgmt` identity's name, as in SetClientRealms.
+  string client = 1;
+  // "host" or nothing.
+  repeated string roles = 2;
+}
+
+message SetClientTokenRolesResponse {}
 
 message GetClusterKeyRequest {}
 

@@ -12,6 +12,8 @@
 //! - `crealm/<client>`: the realms a management client is bound to (D311,
 //!   I397), by the name in its `mgmt` certificate (glidex's datastore
 //!   driver, D122); a client without a row is unbound.
+//! - `ctoken/<client>`: the roles a management client may make join
+//!   tokens for while it is bound to realms (D382): `host` alone today.
 //!
 //! "default" is realm 0 and has no row. What one row needs of the others
 //! (a realm deleted only when nothing names it, a pool taken from a realm
@@ -31,6 +33,11 @@ const TENANT: &str = "trealm/";
 const POOL: &str = "prealm/";
 const HOST: &str = "hrealm/";
 const CLIENT: &str = "crealm/";
+const CLIENT_TOKENS: &str = "ctoken/";
+
+/// The roles a bound management client may be let make tokens for (D382):
+/// a VM host's alone. Any other role's certificate reaches past a realm.
+pub const CLIENT_TOKEN_ROLES: [&str; 1] = ["host"];
 
 /// The realm every tenant is in until put in another.
 pub const DEFAULT_REALM: &str = "default";
@@ -89,6 +96,9 @@ pub struct Realms {
     /// Management clients bound to realms (D311), by their certificate's
     /// name.
     pub clients: BTreeMap<String, Client>,
+    /// The roles each management client may make tokens for while bound
+    /// (D382); never empty in a stored row.
+    pub client_tokens: BTreeMap<String, Vec<String>>,
 }
 
 /// A management client's binding (D311, I397).
@@ -153,6 +163,14 @@ impl Realms {
             .map(|c| c.realms.iter().map(|&r| self.name(r)).collect())
     }
 
+    /// Whether management client `client` may make a join token for
+    /// `role` while it is bound to realms (D382).
+    pub fn client_may_token(&self, client: &str, role: &str) -> bool {
+        self.client_tokens
+            .get(client)
+            .is_some_and(|l| l.iter().any(|r| r == role))
+    }
+
     /// Whether `realm` may use `pool` (D249): it's on the pool's list, or
     /// the pool has none.
     pub fn may_use(&self, realm: u32, pool: u32) -> bool {
@@ -215,6 +233,15 @@ fn read(t: &impl ReadableTable<&'static str, &'static [u8]>) -> Result<Realms, E
         let row = format!("{CLIENT}{client}");
         let realms = ids(&v).map_err(|e| bad(&row, e.to_string()))?;
         out.clients.insert(client, Client { realms });
+    }
+    for (client, v) in scan(t, CLIENT_TOKENS)? {
+        let row = format!("{CLIENT_TOKENS}{client}");
+        let mut d = Dec::new(&v);
+        let roles = d
+            .seq(4, |d| d.str().map(str::to_string))
+            .and_then(|l| d.finish().map(|()| l))
+            .map_err(|e| bad(&row, e.to_string()))?;
+        out.client_tokens.insert(client, roles);
     }
     Ok(out)
 }
@@ -357,6 +384,29 @@ pub fn set_client(db: &Db, client: &str, realms: &[u32]) -> Result<(), Error> {
             let mut e = Enc::new();
             e.seq(&l, |e, r| {
                 e.u32(*r);
+            });
+            t.insert(row.as_str(), e.into_vec().as_slice())
+                .map_err(StoreError::from)?;
+        }
+        Ok(())
+    })
+}
+
+/// Lets management client `client` make join tokens for `roles` while it
+/// is bound to realms (D382), each one of [`CLIENT_TOKEN_ROLES`]; none
+/// takes that away.
+pub fn set_client_tokens(db: &Db, client: &str, roles: &[String]) -> Result<(), Error> {
+    write(db, |t, _| {
+        let row = format!("{CLIENT_TOKENS}{client}");
+        if roles.is_empty() {
+            t.remove(row.as_str()).map_err(StoreError::from)?;
+        } else {
+            let mut l = roles.to_vec();
+            l.sort_unstable();
+            l.dedup();
+            let mut e = Enc::new();
+            e.seq(&l, |e, r| {
+                e.str(r);
             });
             t.insert(row.as_str(), e.into_vec().as_slice())
                 .map_err(StoreError::from)?;
@@ -784,5 +834,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// D382: the roles a client may make tokens for are kept apart from
+    /// its realms, through failovers, and a row that isn't one is no
+    /// grant.
+    #[test]
+    fn a_clients_token_roles_are_kept_apart_from_its_realms() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("map.redb");
+        let mut db = Db::create(&path).unwrap();
+        let host = vec!["host".to_string()];
+        assert!(!load(&db).unwrap().client_may_token("glidex", "host"));
+        set_client_tokens(&db, "glidex", &[host[0].clone(), host[0].clone()]).unwrap();
+        set_client(&db, "glidex", &[0]).unwrap();
+        set_client(&db, "gx-b", &[0]).unwrap();
+        drop(db);
+        db = Db::create(&path).unwrap();
+        let now = load(&db).unwrap();
+        assert_eq!(now.client_tokens.get("glidex"), Some(&host));
+        assert!(now.client_may_token("glidex", "host"));
+        // No other role, and no other client.
+        assert!(!now.client_may_token("glidex", "meta"));
+        assert!(!now.client_may_token("gx-b", "host"));
+        assert!(!now.client_may_token("glide", "host"));
+        // Unbinding leaves the grant, and taking it leaves the binding.
+        set_client(&db, "glidex", &[]).unwrap();
+        assert!(load(&db).unwrap().client_may_token("glidex", "host"));
+        set_client(&db, "glidex", &[0]).unwrap();
+        set_client_tokens(&db, "glidex", &[]).unwrap();
+        let now = load(&db).unwrap();
+        assert!(!now.client_may_token("glidex", "host"));
+        assert_eq!(now.client_realms("glidex"), Some(vec!["default".into()]));
+        assert!(now.client_tokens.is_empty());
     }
 }

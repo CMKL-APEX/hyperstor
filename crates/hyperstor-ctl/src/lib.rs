@@ -1142,6 +1142,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("RealmService.SetTenantRealm", "realm tenant"),
     ("RealmService.SetHostRealms", "realm host"),
     ("RealmService.SetClientRealms", "realm client"),
+    ("RealmService.SetClientTokenRoles", "realm client-tokens"),
     ("RealmService.SetPoolRealms", "realm pool"),
     ("TenantService.CreateTenant", "tenant create"),
     ("TenantService.ListTenants", "tenant list"),
@@ -1733,7 +1734,18 @@ pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
     );
     // Management clients bound to realms (D311).
     for c in &r.clients {
-        let _ = writeln!(o, "Client {} acts in: {}", c.client, c.realms.join(","));
+        // Unbound, a client is listed for its token roles alone (D382).
+        if !c.realms.is_empty() {
+            let _ = writeln!(o, "Client {} acts in: {}", c.client, c.realms.join(","));
+        }
+        if !c.token_roles.is_empty() {
+            let _ = writeln!(
+                o,
+                "Client {} may make join tokens for: {}",
+                c.client,
+                c.token_roles.join(",")
+            );
+        }
     }
     o
 }
