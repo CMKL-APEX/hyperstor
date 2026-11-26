@@ -305,6 +305,9 @@ message Token {
   string created_by = 6 [json_name = "created_by"];
   // "mgmt" and "s3": the identity it enrolls.
   string name = 7;
+  // "host", made by a management client bound to realms: the realms the
+  // join binds the host to (D383). Empty otherwise.
+  repeated string bind_realms = 8 [json_name = "bind_realms"];
 }
 
 message ListTokensRequest {}

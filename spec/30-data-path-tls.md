@@ -5,8 +5,8 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380 and D382 are settled with the owner
-(05-decision-log.md points 335–345, 2026-11-25 and 26). Host checks G67–G69 are
+Status: **design.** D372–D380 and D382–D384 are settled with the owner
+(05-decision-log.md points 335–347, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`, and nothing is refused yet (`require` is T2). It delivers D25, which stays the rule.
@@ -110,6 +110,10 @@ Once a connection is authenticated, and for every connection in
 - **The host a client names (`Host`, D261) must be its certificate's.**
   Realm bindings (D259) and a capability's host (D363) are then checked
   against a name the client can't choose.
+- **Revoked certificates** (§23.8) are refused at the handshake, and a
+  connection whose certificate is revoked later is dropped. The list
+  reaches nodes and clients in the cluster map (D384), so a revocation
+  answers once every node that is up holds it.
 - In `allow`, an unauthenticated connection is served as today, and its
   node-to-node messages too: `allow` is a migration state, not a
   boundary.
@@ -137,6 +141,14 @@ Once a connection is authenticated, and for every connection in
 - **Why a grant, not every bound client:** the client chooses the name
   in the token, and a `host` certificate opens volumes under that name
   (D377). An administrator gives that power to one client knowingly.
+- **A host such a client joins is bound to the client's realms** (D383,
+  I449): the token carries them, and the join binds the name before the
+  certificate is signed. A name bound already keeps its binding, and
+  gets a token only if all its realms are the client's; a name that
+  joined before and is bound to no realm gets none.
+- **Why bound:** an unbound host attaches volumes of any realm (D251),
+  so a certificate under a new name would reach past the client's
+  realms, whatever limited the names it may ask for.
 - **Why a token for VM hosts:** the same path storage hosts use, with no
   dependency on glidex for a standalone host.
 

@@ -355,6 +355,79 @@ pub fn set_host(db: &Db, host: &str, realms: &[u32]) -> Result<(), Error> {
     })
 }
 
+impl Realms {
+    /// Whether `host` may join with a token made by a management client
+    /// bound to `realms` (D383): what the host is bound to already, if
+    /// anything, or why not. Bound, its realms must all be among the
+    /// client's. Unbound and `known` (a certificate was issued under the
+    /// name before), it is a host an administrator joined for every
+    /// realm, and no client narrows it.
+    pub fn joined_host(
+        &self,
+        host: &str,
+        realms: &[u32],
+        known: bool,
+    ) -> Result<Option<Vec<u32>>, Error> {
+        if let Some(bound) = self.hosts.get(host) {
+            if let Some(out) = bound.iter().find(|r| !realms.contains(r)) {
+                return Err(refused(
+                    "outside_realm",
+                    format!(
+                        "host {host} is bound to realm {}, which the token's maker doesn't act in",
+                        self.name(*out)
+                    ),
+                ));
+            }
+            return Ok(Some(bound.clone()));
+        }
+        if known {
+            return Err(refused(
+                "outside_realm",
+                format!(
+                    "host {host} joined before and is bound to no realm, so it serves every realm's volumes: an administrator binds it (hyperstorctl realm host) or makes its token"
+                ),
+            ));
+        }
+        Ok(None)
+    }
+}
+
+/// Binds `host`, joining with a token a management client bound to
+/// `realms` made, to those realms (D383), unless it is bound already
+/// ([`Realms::joined_host`]). The realms it is bound to afterwards.
+pub fn bind_joined_host(
+    db: &Db,
+    host: &str,
+    realms: &[u32],
+    known: bool,
+) -> Result<Vec<u32>, Error> {
+    write(db, |t, now| {
+        if let Some(bound) = now.joined_host(host, realms, known)? {
+            return Ok(bound);
+        }
+        let mut keep = Vec::new();
+        for &r in realms {
+            // A realm deleted since the token was made binds nothing.
+            if (r == 0 || now.realms.iter().any(|x| x.id == r)) && !keep.contains(&r) {
+                keep.push(r);
+            }
+        }
+        if keep.is_empty() {
+            return Err(refused(
+                "outside_realm",
+                format!("none of the realms the token would bind host {host} to exists"),
+            ));
+        }
+        let mut e = Enc::new();
+        e.seq(&keep, |e, r| {
+            e.u32(*r);
+        });
+        t.insert(format!("{HOST}{host}").as_str(), e.into_vec().as_slice())
+            .map_err(StoreError::from)?;
+        Ok(keep)
+    })
+}
+
 /// Whether `client` may name a management client: as a `mgmt` token's
 /// name (1-32 of a-z, 0-9 and -), and not hyperstor-mgmt's own.
 pub fn valid_client(client: &str) -> bool {
@@ -839,6 +912,61 @@ mod tests {
     /// D382: the roles a client may make tokens for are kept apart from
     /// its realms, through failovers, and a row that isn't one is no
     /// grant.
+    /// D383: a host joining with a bound client's token is bound to the
+    /// client's realms, never past what it was bound to before.
+    #[test]
+    fn a_host_joined_by_a_bound_client_is_bound_to_its_realms() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("map.redb")).unwrap();
+        let a = create(&db, &realm("a")).unwrap();
+        let b = create(&db, &realm("b")).unwrap();
+        // A new name: bound to the client's realms.
+        assert_eq!(bind_joined_host(&db, "vm1", &[a], false).unwrap(), vec![a]);
+        assert_eq!(load(&db).unwrap().hosts["vm1"], vec![a]);
+        // Joining again changes nothing, also for a client in more realms.
+        assert_eq!(bind_joined_host(&db, "vm1", &[a], true).unwrap(), vec![a]);
+        assert_eq!(
+            bind_joined_host(&db, "vm1", &[b, a], true).unwrap(),
+            vec![a]
+        );
+        // A client in another realm doesn't take the name.
+        let e = bind_joined_host(&db, "vm1", &[b], true).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                Error::Refused {
+                    reason: "outside_realm",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        // Nor one bound to more than the client acts in.
+        set_host(&db, "vm2", &[a, b]).unwrap();
+        assert!(bind_joined_host(&db, "vm2", &[a], true).is_err());
+        assert_eq!(load(&db).unwrap().hosts["vm2"], vec![a, b]);
+        // A host an administrator joined for every realm stays so.
+        let e = bind_joined_host(&db, "shared", &[a], true).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                Error::Refused {
+                    reason: "outside_realm",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert!(!load(&db).unwrap().hosts.contains_key("shared"));
+        // Realms deleted since the token was made bind nothing.
+        assert_eq!(
+            bind_joined_host(&db, "vm3", &[9, b], false).unwrap(),
+            vec![b]
+        );
+        assert!(bind_joined_host(&db, "vm4", &[9], false).is_err());
+        assert!(!load(&db).unwrap().hosts.contains_key("vm4"));
+    }
+
     #[test]
     fn a_clients_token_roles_are_kept_apart_from_its_realms() {
         let dir = tempfile::tempdir().unwrap();

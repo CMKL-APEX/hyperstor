@@ -331,6 +331,7 @@ covered by tests that run on every change.
 | A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523) | Done |
 | glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311) | Done |
 | A bound management client makes VM hosts' join tokens once an administrator lets it (realm client-tokens), so that glidex's servers can join their nodes (D382) | Done |
+| A host that joins with a bound management client's token is bound to that client's realms, so its certificate opens no other realm's volumes (D383) | Done |
 
 ## AD4: A tenant's storage in glidex's UI
 

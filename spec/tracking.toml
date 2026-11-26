@@ -2205,6 +2205,15 @@ tests = [
     "directory_ui::a_bound_client_makes_host_tokens_once_let",
 ]
 
+[[milestone.item]]
+what = "A host that joins with a bound management client's token is bound to that client's realms, so its certificate opens no other realm's volumes (D383)"
+spec = ["30-data-path-tls.md §33.6", "D383", "I449"]
+status = "done"
+tests = [
+    "hyperstor_meta::realms::tests::a_host_joined_by_a_bound_client_is_bound_to_its_realms",
+    "install::a_host_a_bound_client_joins_is_bound_to_its_realms",
+]
+
 [[milestone]]
 id = "AD4"
 title = "A tenant's storage in glidex's UI"
