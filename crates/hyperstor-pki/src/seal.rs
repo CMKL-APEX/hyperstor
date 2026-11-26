@@ -340,26 +340,30 @@ mod tests {
             SealingKey::new(2, [9; 32]),
         ]);
         let (ping, pong) = (b"HSK?", b"HSK!");
-        let mac = keys.ping_mac(2, ping, 42, 3).unwrap();
-        assert!(keys.ping_verify(2, ping, 42, 3, &mac));
+        // A nonce of this run's, as a ping's is random.
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |d| d.as_nanos() as u64 | 1);
+        let mac = keys.ping_mac(2, ping, n, 3).unwrap();
+        assert!(keys.ping_verify(2, ping, n, 3, &mac));
         // Not as an answer, for another nonce or node, or under the
         // other key; nor cut short or changed.
-        assert!(!keys.ping_verify(2, pong, 42, 3, &mac));
-        assert!(!keys.ping_verify(2, ping, 43, 3, &mac));
-        assert!(!keys.ping_verify(2, ping, 42, 4, &mac));
-        assert!(!keys.ping_verify(1, ping, 42, 3, &mac));
-        assert!(!keys.ping_verify(2, ping, 42, 3, &mac[..15]));
+        assert!(!keys.ping_verify(2, pong, n, 3, &mac));
+        assert!(!keys.ping_verify(2, ping, n + 1, 3, &mac));
+        assert!(!keys.ping_verify(2, ping, n, 4, &mac));
+        assert!(!keys.ping_verify(1, ping, n, 3, &mac));
+        assert!(!keys.ping_verify(2, ping, n, 3, &mac[..15]));
         let mut bad = mac;
         bad[0] ^= 1;
-        assert!(!keys.ping_verify(2, ping, 42, 3, &bad));
+        assert!(!keys.ping_verify(2, ping, n, 3, &bad));
         // The key before the newest still makes and verifies them.
-        let old = keys.ping_mac(1, ping, 42, 3).unwrap();
-        assert!(old != mac && keys.ping_verify(1, ping, 42, 3, &old));
+        let old = keys.ping_mac(1, ping, n, 3).unwrap();
+        assert!(old != mac && keys.ping_verify(1, ping, n, 3, &old));
         // A key not held, and another cluster's under the same id.
-        assert!(keys.ping_mac(3, ping, 42, 3).is_none());
+        assert!(keys.ping_mac(3, ping, n, 3).is_none());
         let other = SealingKeys::new(vec![SealingKey::new(2, [8; 32])]);
-        assert!(!other.ping_verify(2, ping, 42, 3, &mac));
-        assert!(!SealingKeys::default().ping_verify(2, ping, 42, 3, &mac));
+        assert!(!other.ping_verify(2, ping, n, 3, &mac));
+        assert!(!SealingKeys::default().ping_verify(2, ping, n, 3, &mac));
     }
 
     fn cap() -> Capability {
