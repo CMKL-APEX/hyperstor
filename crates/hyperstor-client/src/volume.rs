@@ -34,6 +34,9 @@ const HDR: &[u8] = b"hdr";
 const BY: &[u8] = b"by";
 /// The lease holder's attribute: [`encode_holder`].
 pub const LEASE_ATTR: &[u8] = b"lease";
+/// How long a standby delegate's writes wait for its promotion before
+/// they fail (D381): above glidex's own limits for a migration's switch.
+pub const STANDBY_HOLD: Duration = Duration::from_secs(30);
 /// The lease's delegates (D33, D151): [`encode_delegates`]. Kept apart
 /// from [`LEASE_ATTR`], which stays the same for the lease's life, so a
 /// holder can assert it holds the lease whatever its delegates.
@@ -781,6 +784,8 @@ pub struct Attached {
     /// A delegate waiting to be promoted, a live migration's target
     /// (D350): it writes nothing until [`Attached::promote`].
     standby: Cell<bool>,
+    /// How long a write waits for that promotion before it fails (D381).
+    standby_hold: Cell<Duration>,
     /// The identities a promotion fences (D351), kept from the first try
     /// so that a promotion tried again still knows the old holder (I421).
     promote_fence: RefCell<Vec<u64>>,
@@ -870,6 +875,38 @@ impl Attached {
         Ok(())
     }
 
+    /// How long a write to a standby delegate waits for its promotion
+    /// before it fails (D381; [`STANDBY_HOLD`] unless set; zero: at once,
+    /// as before D381).
+    pub fn set_standby_hold(&self, hold: Duration) {
+        self.standby_hold.set(hold);
+    }
+
+    /// Holds a write while this handle is a standby delegate (D381): a
+    /// live migration's guest resumes on the target before glidex promotes
+    /// it, and its writes run once it is promoted. Fails once the hold
+    /// runs out or the handle is lost; the write is then refused as before
+    /// D381, so no write ever goes out before the promotion (D350).
+    async fn wait_promoted(&self, id: u128) -> Result<(), ClientError> {
+        if !self.standby.get() {
+            return Ok(());
+        }
+        let until = Instant::now() + self.standby_hold.get();
+        while self.standby.get() {
+            if self.lost.get() {
+                return Err(ClientError::LeaseLost(id));
+            }
+            if Instant::now() >= until {
+                return Err(ClientError::BadVolume(format!(
+                    "volume {id:032x}: a delegate waiting for promotion doesn't write (not promoted within {} s)",
+                    self.standby_hold.get().as_secs_f64()
+                )));
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+        Ok(())
+    }
+
     /// The `lease` attribute this handle's header has while it holds the
     /// lease: what an operation that needs the lease asserts.
     pub(crate) fn holder_attr(&self) -> Vec<u8> {
@@ -921,13 +958,10 @@ impl Attached {
         }
         let v = self.usable(off, data.len() as u64)?;
         // A migration's target writes nothing before it holds the lease
-        // (D350): two writers on one volume are never possible.
-        if self.standby.get() {
-            return Err(ClientError::BadVolume(format!(
-                "volume {:032x}: a delegate waiting for promotion doesn't write",
-                v.id
-            )));
-        }
+        // (D350): two writers on one volume are never possible. Its writes
+        // wait for the promotion (D381).
+        self.wait_promoted(v.id).await?;
+        let v = self.usable(off, data.len() as u64)?;
         self.wait_fenced().await?;
         self.inflight.set(self.inflight.get() + 1);
         self.writes.set(self.writes.get() + 1);
@@ -964,12 +998,8 @@ impl Attached {
             sleep(Duration::from_millis(1)).await;
         }
         let v = self.usable(off, len)?;
-        if self.standby.get() {
-            return Err(ClientError::BadVolume(format!(
-                "volume {:032x}: a delegate waiting for promotion doesn't write",
-                v.id
-            )));
-        }
+        self.wait_promoted(v.id).await?;
+        let v = self.usable(off, len)?;
         self.wait_fenced().await?;
         self.inflight.set(self.inflight.get() + 1);
         self.writes.set(self.writes.get() + 1);
@@ -1488,6 +1518,7 @@ impl Client {
             lease,
             delegate: Cell::new(false),
             standby: Cell::new(false),
+            standby_hold: Cell::new(STANDBY_HOLD),
             promote_fence: RefCell::new(Vec::new()),
             fencing: RefCell::new(Vec::new()),
             delegates: RefCell::new(delegates),
@@ -1545,6 +1576,7 @@ impl Client {
             lease,
             delegate: Cell::new(true),
             standby: Cell::new(false),
+            standby_hold: Cell::new(STANDBY_HOLD),
             promote_fence: RefCell::new(Vec::new()),
             fencing: RefCell::new(Vec::new()),
             delegates: RefCell::new(Vec::new()),
@@ -1678,6 +1710,7 @@ impl Client {
             lease,
             delegate: Cell::new(false),
             standby: Cell::new(false),
+            standby_hold: Cell::new(STANDBY_HOLD),
             promote_fence: RefCell::new(Vec::new()),
             fencing: RefCell::new(Vec::new()),
             delegates: RefCell::new(Vec::new()),

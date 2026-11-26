@@ -1,4 +1,4 @@
-//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N]`
+//! `hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--hold-standby SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N]`
 //! `hyperstor-vhost ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID`
 //!
 //! `serve` runs the service (11-frontends.md §11.1) until SIGINT or SIGTERM,
@@ -10,7 +10,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
+const USAGE: &str = "usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--hold-standby SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID";
 const DIR: &str = "/run/hyperstor/vhost";
 
 fn usage() -> ! {
@@ -67,6 +67,15 @@ fn main() {
                     .filter(|s| *s <= 86_400)
                     .unwrap_or_else(|| usage()),
             };
+            // D381: 30 s unless set, at most an hour.
+            let hold_standby = match get("--hold-standby") {
+                None => 30,
+                Some(s) => s
+                    .parse()
+                    .ok()
+                    .filter(|s| *s <= 3600)
+                    .unwrap_or_else(|| usage()),
+            };
             // D290: a reactor on each CPU listed (`0,64`, `0-1`); by
             // default the first CPU of each NUMA node.
             let cpus = get("--cpus").map(|l| {
@@ -106,6 +115,7 @@ fn main() {
                     queues,
                     hold_full: std::time::Duration::from_secs(hold_full),
                     hold_outage: std::time::Duration::from_secs(hold_outage),
+                    hold_standby: std::time::Duration::from_secs(hold_standby),
                     networks: get("--networks")
                         .map(|s| {
                             s.split(',')
