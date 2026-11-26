@@ -4891,8 +4891,17 @@ fn a_delegate_is_promoted_and_the_old_holder_fenced() {
         let td = t.delegate(v, d).await.unwrap();
         assert!(va.set_standby().is_err(), "a holder doesn't stand by");
         td.set_standby().unwrap();
+        // Its writes wait for the promotion (D381), and fail, unsent, once
+        // the hold runs out.
+        td.set_standby_hold(Duration::from_millis(300));
+        let t0 = std::time::Instant::now();
         let r = td.write(0, pattern(9, 4096)).await;
         assert!(matches!(r, Err(ClientError::BadVolume(_))), "{r:?}");
+        assert!(
+            t0.elapsed() >= Duration::from_millis(300),
+            "{:?}",
+            t0.elapsed()
+        );
         assert_eq!(td.read(0, 4096).await.unwrap(), pattern(1, 4096));
         td.check_promote().await.unwrap();
         assert!(va.promote("x").await.is_err(), "a holder isn't promoted");
@@ -4944,6 +4953,71 @@ fn a_delegate_is_promoted_and_the_old_holder_fenced() {
 /// first was (I421): the client's own resend, and a promotion tried again
 /// by its caller after it gave up, both end with the target holding the
 /// lease and the old holder fenced.
+/// A migration's guest may resume on the target before glidex promotes
+/// it (Cloud Hypervisor resumes it at the source's last state, #437):
+/// its writes wait, unsent, and run once the delegate is promoted
+/// (D381); the source's data stays as it was until then. A standby
+/// detached meanwhile (a cancelled migration) fails the writes it holds.
+#[test]
+fn a_standbys_writes_wait_for_its_promotion() {
+    use hyperstor_client::ClientError;
+    use hyperstor_reactor::time::sleep;
+    use std::time::Duration;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    with_client(meta, 1, move |a| async move {
+        let v = a
+            .create_volume(POOL, CHUNK as u64, None, "v")
+            .await
+            .unwrap()
+            .id;
+        let va = a.attach(v).await.unwrap();
+        va.write(0, pattern(1, 4096)).await.unwrap();
+        let d = va.add_delegate().await.unwrap();
+        let t = Client::connect(meta, 2).await.unwrap();
+        let td = t.delegate(v, d).await.unwrap();
+        td.set_standby().unwrap();
+        // The guest resumes on the target and writes before the switch.
+        let writers: Vec<_> = (0..4u64)
+            .map(|i| {
+                let td = td.clone();
+                hyperstor_reactor::spawn(
+                    async move { td.write(i * 4096, pattern(10 + i, 4096)).await },
+                )
+            })
+            .collect();
+        sleep(Duration::from_millis(500)).await;
+        assert!(writers.iter().all(|w| !w.is_finished()), "held");
+        assert_eq!(va.read(0, 4096).await.unwrap(), pattern(1, 4096));
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(1, 4096));
+        // The switch: the writes run.
+        td.promote("vhost:target").await.unwrap();
+        for w in writers {
+            w.await.unwrap();
+        }
+        for i in 0..4u64 {
+            let got = td.read(i * 4096, 4096).await.unwrap();
+            assert_eq!(got, pattern(10 + i, 4096), "block {i}");
+        }
+        // A cancelled migration: the standby's held write fails when it is
+        // detached.
+        let d2 = td.add_delegate().await.unwrap();
+        let o = Client::connect(meta, 3).await.unwrap();
+        let g = o.delegate(v, d2).await.unwrap();
+        g.set_standby().unwrap();
+        let held = {
+            let g = g.clone();
+            hyperstor_reactor::spawn(async move { g.write(0, pattern(30, 4096)).await })
+        };
+        sleep(Duration::from_millis(200)).await;
+        assert!(!held.is_finished());
+        g.detach().await.unwrap();
+        let r = held.await;
+        assert!(matches!(r, Err(ClientError::LeaseLost(_))), "{r:?}");
+        assert_eq!(td.read(0, 4096).await.unwrap(), pattern(10, 4096));
+    });
+}
+
 #[test]
 fn a_promotion_sent_again_after_a_lost_reply_succeeds() {
     use hyperstor_proto::{Msg, Target, WireKey};

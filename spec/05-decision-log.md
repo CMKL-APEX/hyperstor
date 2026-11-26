@@ -1890,3 +1890,16 @@ the command should be `hsfs`, and whether it stripes across clusters.
 | 341 | Storage nodes on member hosts: their own `node` certificate with the member's as fallback (recommended); keep the member's; or their own with no fallback | Their own, member's as fallback | D378 |
 | 342 | UDP pings: authenticate later (recommended) or now in stage T2; and keyed by the sealing key (recommended) or a key per pair's TLS session | Now, in T2, with the sealing key | D379 |
 | 343 | Starting mode: `off` after an upgrade and `allow` on a new install (recommended); always `off`; or `require` on a new install | `off` after an upgrade, `allow` when new | D380 |
+
+## A target's writes before its promotion (2026-11-26)
+
+glidex's live-migration check M4 (#437) found the guest's writes failing
+at the switch: Cloud Hypervisor resumes the guest on the target before
+glidex can promote the delegate there, and the standby refused the
+writes (D350). Asked how long the target holds them (30 s fixed,
+recommended; 30 s with an option; or `--hold-outage`'s hour) and
+whether reads wait too, the owner chose:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 344 | How long a standby target holds a guest's writes before its promotion: 30 s fixed (recommended), 30 s with an option, or `--hold-outage`; and whether reads wait as well (no, recommended) | 30 s with an option (`--hold-standby`); reads go through | D381 |

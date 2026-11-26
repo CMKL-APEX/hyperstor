@@ -7,7 +7,7 @@ serves every VM on it. glidex attaches and detaches volumes through its
 control socket; operators can do the same with `ctl`.
 
 ```text
-usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
+usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]... [--group GID] [--queues N] [--hold-full SECS] [--hold-outage SECS] [--hold-standby SECS] [--networks NAME[,NAME...]] [--host NAME] [--identity DIR] [--cpus LIST] [--poll-us N] | ctl [--dir DIR] hello | list | attach ID [--serial S] [--take-over | --preempt | --delegate D] [--holder NAME] [--poll] [--for USER] | detach ID [--force] | delegate ID | undelegate ID D | promote ID
 ```
 
 | Command | Does |
@@ -31,6 +31,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--queues N` | 1 | `serve`: queues each disk offers (1–64) |
 | `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/pools-and-devices.md#full-devices) |
 | `--hold-outage SECS` | 3600 | `serve`: how long a read or write is held while the cluster can't serve it (no primary for its data, the map service without a leader, storage nodes unreachable), tried again every second, before the guest sees an I/O error (0–86400; 0: after the client's own tries, about 30 s). See [Outages](#outages) |
+| `--hold-standby SECS` | 30 | `serve`: how long a live migration's target holds a guest's writes before it is promoted, then fails them (0–3600; 0: at once). See [Live migration](#live-migration) |
 | `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
 | `--identity DIR` | none | `serve`: The host's identity on the storage network: `host.crt` and `host.key` in `DIR` (a host joined with `hyperstor-install --role vhost --join`), else `node.crt` or `api.crt` (a storage or map service host), with `root.crt`. With it, each connection to a storage node or the map service starts TLS where the cluster's mode allows. `hyperstor-install` sets it where the host has an identity |
 | `--networks NAME[,NAME...]` | none | `serve`: the data networks this host reaches storage nodes on, in order: a device's endpoint on the first network it has one on (see the [cluster file](cluster-file.md#endpoint)), else its address |
@@ -161,8 +162,8 @@ target's, which never writes before it holds it:
    answers its identity, `{"delegate": "<16 hex digits>"}`.
 2. **On the target,** `attach` with `"delegate"` set to it (and
    `"holder"`) attaches the volume as that delegate, standing by: the
-   receiving hypervisor connects to its socket, reads work, writes are
-   refused. It is checked with the cluster first: a cluster whose
+   receiving hypervisor connects to its socket, reads work, and writes
+   wait for the promotion. It is checked with the cluster first: a cluster whose
    storage nodes can't hand a lease over (older builds) refuses it
    (`invalid`), before any memory is copied. `list` shows it as
    `"role": "delegate"`, which glidex's clean-up of stale holds leaves
@@ -175,6 +176,13 @@ target's, which never writes before it holds it:
    (one blocklist round). The source's renewals fail from then on, and
    detaching it there fences nothing of the target's. A `promote` sent
    again after a lost answer succeeds.
+
+   A hypervisor may resume the guest before `promote` arrives (Cloud
+   Hypervisor resumes it as soon as the source sends its last state).
+   Its writes before then are held, never sent, and run once the disk is
+   promoted. They fail as I/O errors if it isn't promoted within
+   `--hold-standby` (30 s), or when the target is detached (a cancelled
+   migration, step 4).
 4. **A cancelled migration:** `detach` the target (with `force`, its
    hypervisor connected) and `undelegate` it on the source, which fences
    it. The source's VM goes on throughout.
