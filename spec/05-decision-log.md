@@ -1926,3 +1926,16 @@ new name, and an unbound host attaches volumes of any realm (D251).
 |---|---|---|---|
 | 346 | How T2 closes the gap in D382's grant: bind hosts joined with a bound client's token to that client's realms (recommended); a name pattern on the grant, which a new matching name still gets past; or leave it as a cluster-wide power an administrator gives knowingly | Bind joined hosts to the client's realms | D383 |
 | 347 | How the revocation list reaches storage nodes, which must refuse revoked certificates once connections are authorized by them: in the cluster map, as the blocklist and realm bindings are (recommended); or polled from the cluster API every 30 s with the sealing keys | In the cluster map | D384 |
+
+## A standby hold glidex can see (2026-11-26)
+
+glidex's migration check passed with D381 built (glidex#674), but found
+that it can't tell a `hyperstor-vhost` that holds a standby's writes
+from an older one that fails them: both answer `hello` with protocol 4
+and `live_migration`. Asked whether to show it (a `standby_hold`
+feature in `hello`, recommended; protocol 5; or nothing, relying on
+every host being upgraded), the owner chose:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 348 | How glidex tells a target that holds a standby's writes from one that fails them: a `standby_hold` feature in `hello` (recommended), protocol 5, or nothing | A `standby_hold` feature | D381 (amended) |

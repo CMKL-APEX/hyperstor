@@ -1016,10 +1016,9 @@ fn a_disk_is_handed_to_a_migrations_target() {
     };
     let hello = ctl(&src, "hello", serde_json::json!({}));
     assert_eq!(hello["ok"]["protocol"], 4, "{hello}");
-    assert!(
-        hello["ok"]["features"]
-            .to_string()
-            .contains("live_migration"),
+    assert_eq!(
+        hello["ok"]["features"],
+        serde_json::json!(["live_migration", "standby_hold"]),
         "{hello}"
     );
     let attached = ctl(
