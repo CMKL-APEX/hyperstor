@@ -384,7 +384,7 @@ tests = [
 
 [[milestone.item]]
 what = "Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate)"
-spec = ["D350", "D351", "D352", "D381", "I421", "I446", "11-frontends.md §11.4"]
+spec = ["D350", "D351", "D352", "D381", "I421", "I446", "I449", "11-frontends.md §11.4"]
 status = "done"
 tests = [
     "cluster::a_delegate_is_promoted_and_the_old_holder_fenced",

@@ -1914,3 +1914,16 @@ chose:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 345 | How glidex's servers make `host` tokens for VM nodes when their identity is bound to realms (2026-11-26; glidex #665): every bound client may make `host` tokens (recommended); a separate grant an administrator sets on the client; or no change, an administrator makes each token | A separate grant on the identity | D382 |
+
+## A standby hold glidex can see (2026-11-26)
+
+glidex's migration check passed with D381 built (glidex#674), but found
+that it can't tell a `hyperstor-vhost` that holds a standby's writes
+from an older one that fails them: both answer `hello` with protocol 4
+and `live_migration`. Asked whether to show it (a `standby_hold`
+feature in `hello`, recommended; protocol 5; or nothing, relying on
+every host being upgraded), the owner chose:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 346 | How glidex tells a target that holds a standby's writes from one that fails them: a `standby_hold` feature in `hello` (recommended), protocol 5, or nothing | A `standby_hold` feature | D381 (amended) |
