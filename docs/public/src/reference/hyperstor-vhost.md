@@ -101,7 +101,9 @@ one line:
 Errors are `{"id": N, "error": {"code": C, "message": M}}`, with codes
 `invalid`, `denied`, `held`, `not_found`, `not_attached`, `busy`,
 `unavailable` and `internal`. `hello` answers the protocol version
-(3) and its features (`live_migration`). An `attach` may name who asks, `"holder": "<name>"` (up
+(4), its features (`live_migration`) and `identity`: the name in the
+certificate it shows storage nodes (`hyperstor://<cluster>/host/<name>`),
+or `null` when it runs without `--identity`. An `attach` may name who asks, `"holder": "<name>"` (up
 to 58 printable characters; glidex gives its node's name): the lease is
 labelled `vhost:<name>` (`vhost` without one). A `held` error names the
 label of whoever holds the volume, `"holder"`: `vhost:<name>` for

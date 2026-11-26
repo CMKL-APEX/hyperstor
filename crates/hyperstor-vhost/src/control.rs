@@ -26,6 +26,10 @@
 //! which makes it the lease's holder. A cancelled migration detaches the
 //! target and has the source `undelegate` it, which fences it.
 //!
+//! `hello` answers `{"protocol": N, "features": […], "identity": "…"}`:
+//! the identity is the URI in the certificate the service shows storage
+//! nodes (`--identity`), or null without one.
+//!
 //! Each gets `{"id": N, "ok": {…}}` or `{"id": N, "error": {"code": "…",
 //! "message": "…"}}`. Codes: `invalid`, `denied`, `held` (another client
 //! holds the lease: preempt, or wait), `not_found`, `not_attached`, `busy`
@@ -244,8 +248,13 @@ impl Reply {
     }
 }
 
-pub fn hello() -> Value {
-    json!({"protocol": PROTOCOL, "features": FEATURES})
+/// `hello`'s answer. `identity` is who this service's certificate says
+/// it is on the storage network (D373), null when it runs without one:
+/// glidex warns about such a node before the cluster requires
+/// authenticated connections (glidex #665). Only the name: the
+/// certificate is public and its key never leaves the service.
+pub fn hello(identity: Option<&str>) -> Value {
+    json!({"protocol": PROTOCOL, "features": FEATURES, "identity": identity})
 }
 
 /// A delegate's identity, as `delegate` answers it.
@@ -414,10 +423,17 @@ mod tests {
                 delegate: 0xff
             }
         );
-        let h = hello().to_string();
+        let h = hello(None).to_string();
         assert!(
             h.contains(r#""protocol":4"#) && h.contains("live_migration"),
             "{h}"
+        );
+        // The field is always there, so that a client tells "none" from
+        // a service too old to say.
+        assert_eq!(hello(None)["identity"], Value::Null);
+        assert_eq!(
+            hello(Some("hyperstor://c/host/vm-1"))["identity"],
+            "hyperstor://c/host/vm-1"
         );
         assert_eq!(
             parse(br#"{"op": "detach", "args": {"volume": "ff"}}"#)

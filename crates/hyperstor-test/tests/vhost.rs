@@ -31,10 +31,24 @@ fn a_volume_is_served_over_vhost_user_blk() {
         String::from_utf8_lossy(&o.stderr)
     );
     let svc = Service::start(&c, "vhost-a", &[]);
-    assert_eq!(
-        svc.ctl(serde_json::json!({"id": 9, "op": "hello"}))["ok"]["protocol"],
-        4
+    let hello = svc.ctl(serde_json::json!({"id": 9, "op": "hello"}));
+    assert_eq!(hello["ok"]["protocol"], 4);
+    // Without a certificate it says so; with one, whose (glidex #665).
+    assert!(
+        hello["ok"].get("identity").is_some_and(|i| i.is_null()),
+        "{hello}"
     );
+    {
+        let pki = c.pki();
+        let with = Service::start(&c, "vhost-id", &["--identity", pki.to_str().unwrap()]);
+        let hello = with.ctl(serde_json::json!({"id": 9, "op": "hello"}));
+        assert!(
+            hello["ok"]["identity"]
+                .as_str()
+                .is_some_and(|i| i.starts_with(&format!("hyperstor://{}/", c.cluster_id))),
+            "{hello}"
+        );
+    }
     let r = svc.attach(&id, "attach");
     let socket = PathBuf::from(r["ok"]["socket"].as_str().unwrap_or_else(|| panic!("{r}")));
     assert_eq!(r["ok"]["size"], 64 << 20);
