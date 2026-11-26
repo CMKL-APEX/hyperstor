@@ -1903,3 +1903,14 @@ whether reads wait too, the owner chose:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 344 | How long a standby target holds a guest's writes before its promotion: 30 s fixed (recommended), 30 s with an option, or `--hold-outage`; and whether reads wait as well (no, recommended) | 30 s with an option (`--hold-standby`); reads go through | D381 |
+
+## Host tokens from a bound management client (2026-11-26)
+
+glidex's servers are to make `host` join tokens for their VM nodes
+(glidex #665), and `CreateToken` refused a management client bound to
+realms (D311). Asked how such a client gets to make them, the owner
+chose:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 345 | How glidex's servers make `host` tokens for VM nodes when their identity is bound to realms (2026-11-26; glidex #665): every bound client may make `host` tokens (recommended); a separate grant an administrator sets on the client; or no change, an administrator makes each token | A separate grant on the identity | D382 |

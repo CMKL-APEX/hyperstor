@@ -172,6 +172,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     // Where a management client acts, and which UIs may call mgmt with a
     // person's directory token (D310, D311).
     ("RealmService.SetClientRealms", Group::Secure, true),
+    ("RealmService.SetClientTokenRoles", Group::Secure, true),
     ("CaService.ListCertificates", Group::Secure, false),
     ("CaService.RevokeCertificate", Group::Secure, true),
     // The keys that seal NFS stateids and dataset capabilities (D133,
@@ -559,6 +560,7 @@ mod tests {
             "ClusterService.GetStatus",
             "RealmService.SetHostRealms",
             "RealmService.SetClientRealms",
+            "RealmService.SetClientTokenRoles",
             "RealmService.SetTenantRealm",
             "OperationService.CancelOperation",
             "Dashboard.Read",
