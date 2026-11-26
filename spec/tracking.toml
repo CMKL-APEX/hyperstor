@@ -384,7 +384,7 @@ tests = [
 
 [[milestone.item]]
 what = "Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate)"
-spec = ["D350", "D351", "D352", "D381", "I421", "I446", "11-frontends.md §11.4"]
+spec = ["D350", "D351", "D352", "D381", "I421", "I446", "I452", "11-frontends.md §11.4"]
 status = "done"
 tests = [
     "cluster::a_delegate_is_promoted_and_the_old_holder_fenced",
@@ -1627,7 +1627,7 @@ tests = [
 
 [[milestone.item]]
 what = "T2: UDP pings keyed with the sealing key (protocol version 11), plain ones ignored in `require`; the TCP ping fallback authenticated"
-spec = ["30-data-path-tls.md §33.7", "D379", "I452"]
+spec = ["30-data-path-tls.md §33.7", "D379", "I453"]
 status = "done"
 tests = [
     "hyperstor_pki::seal::tests::a_pings_mac_is_of_its_kind_nonce_and_node",

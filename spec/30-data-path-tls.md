@@ -6,12 +6,12 @@ sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
 Status: **design.** D372–D380 and D382–D385 are settled with the owner
-(05-decision-log.md points 335–348, 2026-11-25 and 26). Host checks G67–G69 are
+(05-decision-log.md points 335–347 and 349, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
 connections are served by their certificate's role and `require` can be
-set (D377, I451), and pings are keyed (D379, I452); the list of
+set (D377, I451), and pings are keyed (D379, I453); the list of
 unauthenticated peers is still to build. It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
@@ -178,7 +178,7 @@ answer could make a dead node look alive.
   `allow` it is accepted, so nodes from before it keep their peers.
 - A node that hasn't fetched the keys yet answers no keyed ping. Its
   peers still find it over the TCP fallback, on an authenticated
-  connection (I452); in `require` it reports nobody silent until it
+  connection (I453); in `require` it reports nobody silent until it
   has them: seconds after its start.
 - **Why the sealing key and not a key per pair:** a key from two nodes'
   TLS session would make pings depend on the TCP connection they exist

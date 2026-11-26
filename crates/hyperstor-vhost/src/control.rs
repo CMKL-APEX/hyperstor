@@ -51,8 +51,10 @@ pub use serde_json::Value;
 pub const PROTOCOL: u64 = 4;
 
 /// What `hello` lists besides the version: `live_migration`, dirty-page
-/// logging (#397) and delegate handover (D350–D352).
-pub const FEATURES: &[&str] = &["live_migration"];
+/// logging (#397) and delegate handover (D350–D352); `standby_hold`, a
+/// standby delegate holds the guest's writes until its promotion instead
+/// of failing them (D381), so that glidex can refuse a target too old to.
+pub const FEATURES: &[&str] = &["live_migration", "standby_hold"];
 
 /// How to take a volume's lease (06-metadata.md §9; D79 for glidex's use of
 /// `preempt`).
@@ -425,7 +427,9 @@ mod tests {
         );
         let h = hello(None).to_string();
         assert!(
-            h.contains(r#""protocol":4"#) && h.contains("live_migration"),
+            h.contains(r#""protocol":4"#)
+                && h.contains("live_migration")
+                && h.contains("standby_hold"),
             "{h}"
         );
         // The field is always there, so that a client tells "none" from

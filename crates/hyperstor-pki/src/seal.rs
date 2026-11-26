@@ -343,7 +343,8 @@ mod tests {
         // A nonce of this run's, as a ping's is random.
         let n = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(1, |d| d.as_nanos() as u64 | 1);
+            .expect("a clock past 1970")
+            .as_nanos() as u64;
         let mac = keys.ping_mac(2, ping, n, 3).unwrap();
         assert!(keys.ping_verify(2, ping, n, 3, &mac));
         // Not as an answer, for another nonce or node, or under the
