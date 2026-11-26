@@ -3603,7 +3603,13 @@ impl Meta {
                     self.reply_published(reply, self.set_network(&name, def), |e| e);
                 }
                 Admin::SetDataTls { mode, reply } => {
-                    self.reply_published(reply, self.set_data_tls(mode), |e| e);
+                    // `require` asks every node first: in a task of its
+                    // own, so other requests go on.
+                    let me = self.clone();
+                    hyperstor_reactor::spawn(async move {
+                        let r = me.set_data_tls(mode).await;
+                        me.reply_published(reply, r, |e| e);
+                    });
                 }
                 Admin::SetLending {
                     port,
@@ -4449,6 +4455,9 @@ impl Meta {
         if hyperstor_client::peer_revoked(&self.published.borrow(), &c) {
             return Err(hyperstor_client::refuse_revoked(&c, addr));
         }
+        // And whoever answered must be the node the map has there, or
+        // the member (D377).
+        hyperstor_client::expected_peer(&self.published.borrow(), addr, &c)?;
         self.conns.borrow_mut().insert(addr, c.clone());
         Ok(c)
     }
@@ -4587,20 +4596,113 @@ impl Meta {
             .map(|t| t.answerer.clone())
     }
 
+    /// Whether the cluster may go to mode `require` (D373, D377), or
+    /// why not. This member and every storage node that is up must hold
+    /// a certificate and run a build that refuses by it: a node that
+    /// didn't would be cut off by its peers, or would go on serving
+    /// anyone.
+    ///
+    /// Each node is asked now, on a new connection: `Hello` gives its
+    /// build, and the handshake shows whether it holds a certificate. A
+    /// kept connection wouldn't say: one opened as the mode turned to
+    /// `allow` may have reached a node still in `off`, which refused TLS.
+    /// The new connections replace the kept ones, so maps are pushed
+    /// authenticated from here on.
+    async fn may_require(self: &Rc<Self>) -> Result<(), String> {
+        let Some(tls) = self.tls.borrow().as_ref().map(|t| t.calling(false)) else {
+            return Err("this map service member holds no certificate for the data path".into());
+        };
+        let targets: Vec<(u32, SocketAddr)> = {
+            let map = self.published.borrow();
+            if map.data_tls == DataTls::Off || self.map.borrow().data_tls == DataTls::Off {
+                return Err(
+                    "set the mode to allow first: nodes authenticate each other there, and `require` is refused until all do"
+                        .into(),
+                );
+            }
+            map.devices
+                .values()
+                .filter(|d| map.nodes.get(&d.node).is_some_and(|n| n.up))
+                .map(|d| (d.node, d.addr))
+                .collect()
+        };
+        let asked: Vec<_> = targets
+            .into_iter()
+            .map(|(node, addr)| {
+                let (me, tls) = (self.clone(), tls.clone());
+                let task = hyperstor_reactor::spawn(async move {
+                    let hello = hyperstor_proto::Msg::Hello {
+                        min_version: hyperstor_proto::OLDEST_VERSION,
+                        max_version: hyperstor_proto::VERSION,
+                        id: 0,
+                        instance: 0,
+                    };
+                    let (c, _) = hyperstor_rpc::Conn::open(
+                        addr,
+                        hyperstor_rpc::CONNECT_TIMEOUT,
+                        &hello,
+                        Some(&tls),
+                    )
+                    .await
+                    .ok()?;
+                    hyperstor_client::expected_peer(&me.published.borrow(), addr, &c).ok()?;
+                    let state = (c.version(), c.peer().is_some());
+                    if let Some(old) = me.conns.borrow_mut().insert(addr, c) {
+                        old.kill();
+                    }
+                    Some(state)
+                });
+                (node, task)
+            })
+            .collect();
+        let (mut silent, mut old, mut bare) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        for (node, task) in asked {
+            match task.await {
+                None => silent.insert(node),
+                Some((v, _)) if v < hyperstor_proto::AUTHZ_VERSION => old.insert(node),
+                Some((_, false)) => bare.insert(node),
+                Some(_) => false,
+            };
+        }
+        let list = |s: &BTreeSet<u32>| {
+            s.iter()
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        if !old.is_empty() {
+            return Err(format!(
+                "storage node(s) {} run a build from before `require`: upgrade them first",
+                list(&old)
+            ));
+        }
+        if !bare.is_empty() {
+            return Err(format!(
+                "storage node(s) {} hold no certificate (hyperstord --identity): they would be cut off",
+                list(&bare)
+            ));
+        }
+        if !silent.is_empty() {
+            return Err(format!(
+                "storage node(s) {} are up and didn't answer, or showed another's certificate: try again once they answer",
+                list(&silent)
+            ));
+        }
+        Ok(())
+    }
+
     /// Sets the data path's TLS mode (D373; 30-data-path-tls.md §33.4):
     /// the working map's epoch, and the mode before. Connections already
     /// open stay as they are; each new one follows the mode.
-    pub fn set_data_tls(&self, mode: DataTls) -> Result<(u64, DataTls), String> {
+    pub async fn set_data_tls(self: &Rc<Self>, mode: DataTls) -> Result<(u64, DataTls), String> {
         if !self.leads() {
             return Err(self.not_leader());
         }
-        if mode == DataTls::Require {
-            // T2 (D377): nothing is refused by role yet, so `require`
-            // would promise a boundary that isn't there.
-            return Err(
-                "require isn't built yet: authorization by certificate role comes with it (30-data-path-tls.md §33.9, stage T2)"
-                    .into(),
-            );
+        if mode == DataTls::Require && self.map.borrow().data_tls != DataTls::Require {
+            self.may_require().await?;
+            if !self.leads() {
+                return Err(self.not_leader());
+            }
         }
         let mut map = self.map.borrow_mut();
         let was = map.data_tls;
@@ -5083,6 +5185,8 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
             // certificate was last checked against the revoked list at.
             let mut peer: Option<hyperstor_rpc::tls::Peer> = None;
             let mut checked = 0;
+            // Logged once it is refused something (D377).
+            let mut refused = false;
             loop {
                 let (r, hb) = s.read_exact(vec![0; HEADER_LEN]).await;
                 if r.is_err() {
@@ -5138,6 +5242,35 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                             meta.refuse_revoked(&s, p);
                             return;
                         }
+                    }
+                }
+                // By the caller's certificate (D377), and in `require`
+                // only what a connection starts with before one is shown.
+                if let Ok(m) = &msg {
+                    let map = meta.published.borrow();
+                    if let Err(why) = hyperstor_client::may_send(
+                        map.data_tls == DataTls::Require,
+                        peer.as_ref().map(|p| &p.who),
+                        m,
+                        &map,
+                    ) {
+                        if !refused {
+                            refused = true;
+                            eprintln!(
+                                "hyperstor-meta: {} refused: {why}",
+                                s.peer_addr().map_or("?".into(), |a| a.to_string())
+                            );
+                        }
+                        let no = Msg::Error {
+                            code: hyperstor_proto::Code::Denied,
+                            map_epoch: map.epoch,
+                            detail: why,
+                        };
+                        drop(map);
+                        if tx.send(encode_frame(h.req, &no, &[]).into()).is_err() {
+                            return;
+                        }
+                        continue;
                     }
                 }
                 // Answered later, from a task of its own: it waits for the

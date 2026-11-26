@@ -256,7 +256,8 @@ covered by tests that run on every change.
 | T0: certificates on every host: `node` certificates on member hosts, `host` tokens and `--role vhost --join` | Done |
 | T1: `--identity` on every data-path binary; the TLS 1.3 handshake after `Hello` (`StartTls`, protocol version 8) in rustls on the reactor, the turn back to plaintext, modes `off` and `allow`, identities kept with connections, unauthenticated connections counted | Done |
 | T2: revoked certificates in the cluster map (format 24, protocol version 9): refused by storage nodes, the map service's data port and callers, at the handshake and once revoked; `cert revoke` answers once nodes hold the map | Done |
-| T2: `require`, refused while a node has no identity; authorization by certificate role; a node's id and a client's host name from the certificate; UDP pings keyed with the sealing key | Planned |
+| T2: authorization by certificate role on storage nodes and the map service (protocol version 10): clients', nodes' and the map service's messages, a node's reports only as itself, a host's name from its certificate, callers checking who answered; `require`, set only once every node that is up holds a certificate and refuses by it | Done |
+| T2: UDP pings keyed with the sealing key; the unauthenticated peers by address in `data-tls status`; a `host` certificate for hyperstor-vhost on storage hosts; `hyperstorctl --identity` for the volume commands | Planned |
 | T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
 
 ## AD0: Administration API, identities and CLI

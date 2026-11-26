@@ -14,6 +14,8 @@ pub mod tls;
 
 /// A data-path peer's identity, from its certificate.
 pub use hyperstor_pki::Identity;
+/// What a certificate lets its holder do.
+pub use hyperstor_pki::Role;
 
 use hyperstor_codec::{AlignedBuf, IoBuf};
 use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame, encode_head};
@@ -787,6 +789,19 @@ impl Pool {
     /// there is none.
     pub async fn get(&self, addr: SocketAddr) -> Result<Conn, RpcError> {
         self.get_with(addr, Conn::connect).await
+    }
+
+    /// Closes the connection kept for `addr` if `stale` says so: the next
+    /// [`Pool::get_with`] makes a new one. For a connection made before
+    /// the cluster required authentication, which is refused everything
+    /// now (D377).
+    pub fn close_if(&self, addr: SocketAddr, stale: impl FnOnce(&Conn) -> bool) {
+        if let Some(c) = self.conns.borrow().get(&addr)
+            && !c.is_dead()
+            && stale(c)
+        {
+            c.kill();
+        }
     }
 
     /// [`Pool::get`] with `connect` making a new connection (and saying
