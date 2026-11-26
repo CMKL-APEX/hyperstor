@@ -309,6 +309,140 @@ pub fn refuse_revoked(c: &Conn, addr: std::net::SocketAddr) -> RpcError {
     RpcError::Protocol(format!("{addr} shows a revoked certificate"))
 }
 
+/// Whether `peer` may send `msg` (D377; 30-data-path-tls.md §33.5), or
+/// why not. `peer` is who the connection's caller proved to be, None if
+/// it didn't; `require` is the cluster's mode.
+///
+/// - Before the handshake: `Hello`, `Ping` and `StartTls`, and in mode
+///   `allow` everything, as before authentication (a migration state).
+/// - `host`, `s3`, `admin` and `mgmt` certificates send clients'
+///   messages only. `mgmt` because a management client moves volume
+///   data with its own certificate today (`hyperstorctl write-volume`,
+///   glidex's image import); see I451.
+/// - A `node` certificate sends those and nodes' messages, its reports
+///   only as its own node: a report's node, or its device's node by
+///   `map`, must be the certificate's.
+/// - A `meta` certificate sends everything: the map service's messages,
+///   and a node's, for a member's storage node that still shows the
+///   member's certificate (D378).
+/// - The host a `host` certificate names (`Host`, D261) must be its own.
+/// - `metrics` and `orchestrator` certificates have no business on the
+///   data path.
+pub fn may_send(
+    require: bool,
+    peer: Option<&rpc::Identity>,
+    msg: &Msg,
+    map: &ClusterMap,
+) -> Result<(), String> {
+    use hyperstor_proto::{Claim, Sender};
+    use rpc::Role;
+    let sender = msg.sender();
+    if sender == Sender::Any {
+        return Ok(());
+    }
+    let Some(who) = peer else {
+        return if require {
+            Err("the cluster requires authenticated connections (data-tls require): this one showed no certificate".into())
+        } else {
+            Ok(())
+        };
+    };
+    let allowed = match sender {
+        Sender::Any => true,
+        Sender::Client => matches!(
+            who.role,
+            Role::Host | Role::S3 | Role::Admin | Role::Mgmt | Role::Node | Role::Meta
+        ),
+        Sender::Node | Sender::NodeOrMeta => matches!(who.role, Role::Node | Role::Meta),
+        Sender::Meta => who.role == Role::Meta,
+    };
+    if !allowed {
+        return Err(format!(
+            "a {} certificate ({}) may not send this",
+            who.role.as_str(),
+            who.uri()
+        ));
+    }
+    if who.role == Role::Node
+        && let Some(claim) = msg.claim()
+    {
+        let node = match claim {
+            Claim::Node(n) => Some(n),
+            // A device the map doesn't know belongs to no node yet:
+            // whatever is said of it changes nothing.
+            Claim::Device(d) => match map.devices.get(&d) {
+                Some(d) => Some(d.node),
+                None => return Ok(()),
+            },
+        };
+        if node.map(|n| n.to_string()).as_deref() != Some(who.id.as_str()) {
+            return Err(format!(
+                "{} may not report as node {}",
+                who.uri(),
+                node.map_or("?".into(), |n| n.to_string())
+            ));
+        }
+    }
+    if who.role == Role::Host
+        && let Msg::Host { name } = msg
+        && *name != who.id
+    {
+        return Err(format!(
+            "{} may not name itself host {name:?}: a host's name is its certificate's",
+            who.uri()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether the peer a caller reached at `addr` is who the map says is
+/// there (D377), or why not: at a device's address its node, elsewhere
+/// the map service. A member's certificate is accepted at a device's
+/// address too, for a member's storage node that still shows it (D378).
+/// A peer that didn't authenticate passes: the mode decides whether it
+/// is used.
+pub fn expected_peer(
+    map: &ClusterMap,
+    addr: std::net::SocketAddr,
+    c: &Conn,
+) -> Result<(), RpcError> {
+    use rpc::Role;
+    let Some(who) = c.peer() else {
+        return Ok(());
+    };
+    let device = map
+        .devices
+        .values()
+        .find(|d| d.addr == addr)
+        .map(|d| d.node)
+        .or_else(|| {
+            map.endpoints.iter().find_map(|(dev, nets)| {
+                nets.iter()
+                    .any(|(_, a)| *a == addr)
+                    .then(|| map.devices.get(dev).map(|d| d.node))
+                    .flatten()
+            })
+        });
+    let ok = match device {
+        Some(node) => {
+            who.role == Role::Meta || (who.role == Role::Node && who.id == node.to_string())
+        }
+        None => who.role == Role::Meta,
+    };
+    if ok {
+        return Ok(());
+    }
+    c.kill();
+    Err(RpcError::Protocol(format!(
+        "{addr} is {}, not {}",
+        who.uri(),
+        match device {
+            Some(node) => format!("storage node {node}"),
+            None => "the map service".into(),
+        }
+    )))
+}
+
 fn wall_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -380,6 +514,20 @@ impl Client {
         id: u64,
         instance: u64,
     ) -> Result<Rc<Client>, ClientError> {
+        Self::connect_members_with(members, id, instance, PROCESS_IDENTITY.get().cloned()).await
+    }
+
+    /// [`Self::connect_members_as`] with `identity` from its first
+    /// connection, the one the map comes over, in place of the process's
+    /// ([`set_process_identity`]): for a storage node, whose certificate
+    /// is its own, and which a cluster in mode `require` gives no map
+    /// without (D377).
+    pub async fn connect_members_with(
+        members: Vec<SocketAddr>,
+        id: u64,
+        instance: u64,
+        identity: Option<rpc::TlsIdentity>,
+    ) -> Result<Rc<Client>, ClientError> {
         assert!(!members.is_empty(), "no map service members");
         assert!(instance != 0, "instance 0 is a storage node's peers'");
         let c = Rc::new(Client {
@@ -398,7 +546,7 @@ impl Client {
             lease_label: RefCell::new(String::new()),
             host: RefCell::new(String::new()),
             capabilities: RefCell::new(HashMap::new()),
-            identity: RefCell::new(PROCESS_IDENTITY.get().cloned()),
+            identity: RefCell::new(identity),
             networks: RefCell::new(Vec::new()),
             rng: RefCell::new(rand::SeedableRng::seed_from_u64(random_u64())),
         });
@@ -706,17 +854,34 @@ impl Client {
         // map does.
         let required = self.map.borrow().data_tls == hyperstor_map::DataTls::Require;
         let tls = self.identity.borrow().as_ref().map(|t| t.calling(required));
+        let map = self.map();
         let c = self
             .conns
             .get_with(addr, |addr| async move {
                 // `Hello`, then TLS where this client has an identity and
                 // the peer starts it (D373).
                 let (c, _) = Conn::open(addr, connect_limit, &hello, tls.as_ref()).await?;
+                // Whoever answered must be who the map says is there
+                // (D377).
+                expected_peer(&map, addr, &c)?;
                 // Only a peer that knows it: older ones refuse what they
                 // can't decode (D261).
                 if c.version() >= 3 && !host.is_empty() {
                     let name = Msg::Host { name: host };
-                    c.call_within(&name, &[], rpc::CALL_TIMEOUT).await?;
+                    // Refused when it isn't the certificate's (D377):
+                    // nothing this host asks would be served.
+                    if let (
+                        Msg::Error {
+                            code: Code::Denied,
+                            detail,
+                            ..
+                        },
+                        _,
+                    ) = c.call_within(&name, &[], rpc::CALL_TIMEOUT).await?
+                    {
+                        c.kill();
+                        return Err(RpcError::Protocol(format!("{addr}: {detail}")));
+                    }
                 }
                 // After the host, which a capability is bound to (D363).
                 if c.version() >= hyperstor_proto::CAPABILITY_VERSION {

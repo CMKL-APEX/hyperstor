@@ -2134,7 +2134,7 @@ impl ClusterService for Api {
             Some(Err(e)) => Err(meta_error(
                 e,
                 ConnectError::failed_precondition,
-                "not_built",
+                "nodes_not_ready",
             )),
             None => Err(ConnectError::unavailable("map service stopped")),
         }

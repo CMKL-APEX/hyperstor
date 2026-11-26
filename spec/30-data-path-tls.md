@@ -9,8 +9,10 @@ Status: **design.** D372–D380 and D382–D384 are settled with the owner
 (05-decision-log.md points 335–347, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
-in mode `allow`. Of T2, revoked certificates are refused (D384, I450);
-nothing is refused by role yet (`require` is the rest of T2). It delivers D25, which stays the rule.
+in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
+connections are served by their certificate's role and `require` can be
+set (D377, I451); keyed pings (D379) and the list of unauthenticated
+peers are still to build. It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 

@@ -28,9 +28,10 @@ data-tls allow
 ```
 
 The mode a new cluster's storage network starts in: `off` (connections
-don't authenticate; the default without the line) or `allow` (they
+don't authenticate; the default without the line), `allow` (they
 authenticate with the cluster's certificates where both ends can, and
-others are still served). `hyperstor-install --all-in-one` writes
+others are still served) or `require` (only authenticated connections
+are served: every node and client needs a certificate from the start). `hyperstor-install --all-in-one` writes
 `allow`. The line is read when the cluster's first map is made; a
 running cluster changes its mode with `hyperstorctl data-tls set`.
 

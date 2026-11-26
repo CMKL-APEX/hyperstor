@@ -14,6 +14,8 @@ pub mod tls;
 
 /// A data-path peer's identity, from its certificate.
 pub use hyperstor_pki::Identity;
+/// What a certificate lets its holder do.
+pub use hyperstor_pki::Role;
 
 use hyperstor_codec::{AlignedBuf, IoBuf};
 use hyperstor_proto::{FrameError, HEADER_LEN, Header, Msg, encode_frame, encode_head};

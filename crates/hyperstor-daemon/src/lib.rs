@@ -547,6 +547,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             defer,
                             blocked.clone(),
                             m,
+                            tls.clone(),
                         )
                         .await?;
                         st.no_digests.set(no_digests);
@@ -1362,13 +1363,25 @@ impl ShardState {
         defer: Option<usize>,
         blocked: Option<Arc<std::sync::atomic::AtomicBool>>,
         metrics: Arc<metrics::ShardMetrics>,
+        tls: Option<hyperstor_client::rpc::TlsIdentity>,
     ) -> Result<Rc<Self>, String> {
         // The map first: its cluster is written into a new device's
         // superblock, and a device of another device or cluster (a drive
         // moved here, a wrong path) is refused, never served (I203).
         let mut client = None;
         for _ in 0..100 {
-            match Client::connect_members(meta.clone(), node as u64).await {
+            // As this node, from the first connection: its heartbeats
+            // and reports are a node's by its certificate, and a cluster
+            // in `require` gives no map without one (D377).
+            let identity = tls.clone().or_else(hyperstor_client::process_identity);
+            match Client::connect_members_with(
+                meta.clone(),
+                node as u64,
+                hyperstor_client::random_u64().max(1),
+                identity,
+            )
+            .await
+            {
                 Ok(c) => {
                     client = Some(c);
                     break;
@@ -2148,6 +2161,7 @@ impl ShardState {
         // And TLS right after it, where the peer has it and the cluster
         // isn't `off` (D373).
         let tls = self.calling_tls();
+        let map = self.map();
         let c = self
             .peers
             .get_with(addr, |addr| async move {
@@ -2158,6 +2172,8 @@ impl ShardState {
                     tls.as_ref(),
                 )
                 .await?;
+                // The node the map has there, and no other (D377).
+                hyperstor_client::expected_peer(&map, addr, &c)?;
                 Ok(c)
             })
             .await?;
@@ -2318,6 +2334,8 @@ impl ShardState {
         let mut checked = 0;
         // Counted once it asks for something unauthenticated.
         let mut counted = false;
+        // Counted and logged once it is refused something (D377).
+        let mut refused = false;
         let counter = counter_of(&s);
         loop {
             let Ok((h, msg, payload)) = read_request(&s, counter.as_deref()).await else {
@@ -2346,6 +2364,29 @@ impl ShardState {
                         self.refuse_revoked(&s, p);
                         return;
                     }
+                }
+            }
+            // By the caller's certificate (D377), and in `require` only
+            // what a connection starts with before one is shown.
+            {
+                let map = self.map();
+                if let Err(why) = hyperstor_client::may_send(
+                    map.data_tls == hyperstor_meta::DataTls::Require,
+                    peer.as_ref().map(|p| &p.who),
+                    &msg,
+                    &map,
+                ) {
+                    if !refused {
+                        refused = true;
+                        metrics::ShardMetrics::add(&self.metrics.refused, 1);
+                        eprintln!(
+                            "hyperstord: node {}: {} refused: {why}",
+                            self.me,
+                            s.peer_addr().map_or("?".into(), |a| a.to_string())
+                        );
+                    }
+                    reply(&err(Code::Denied, &map, &why), &[]);
+                    continue;
                 }
             }
             if let Msg::Hello { instance: i, .. } = msg {

@@ -2681,7 +2681,7 @@ where
             refused_or(r, |r| {
                 let r = r.into_owned();
                 println!(
-                    "data path TLS: {mode}, was {} (map epoch {}); connections open now stay as they are",
+                    "data path TLS: {mode}, was {} (map epoch {}); connections open now stay open, and are served by the new mode",
                     r.was, r.map_epoch
                 )
             })?
