@@ -630,8 +630,13 @@ hyperstorctl realm list                                  # Client glidex may mak
 hyperstorctl realm client-tokens --client glidex --role none   # no longer
 ```
 
-The client chooses the host name each token carries, so allow this only
-for a client you trust to name its own hosts.
+A host that joins with such a token is bound to the client's realms, as
+`hyperstorctl realm host` would bind it, so it attaches only their
+volumes; `hyperstorctl token list` shows what each token binds. The
+client gets no token for a host bound to a realm it doesn't act in, nor
+for one that joined before and is bound to no realm: bind that host
+yourself, or make its token yourself. An administrator's own tokens bind
+nothing.
 
 A realm a client is bound to can't be deleted. No client acts for a person or reads mgmt's own records: only
 hyperstor-mgmt itself, so a `mgmt` token can't be named `dashboard` or

@@ -40,6 +40,9 @@ pub struct Record {
     /// `mgmt`: the identity it enrolls (D122); empty otherwise, and in
     /// records written before.
     pub name: String,
+    /// `host`, made by a management client bound to realms (D383): the
+    /// realms the join binds the host to. Empty otherwise.
+    pub realms: Vec<u32>,
 }
 
 impl Record {
@@ -52,6 +55,13 @@ impl Record {
             .bool(self.revoked)
             .str(&self.created_by)
             .str(&self.name);
+        // Only when there are some: every other row stays as members from
+        // before read it.
+        if !self.realms.is_empty() {
+            e.seq(&self.realms, |e, r| {
+                e.u32(*r);
+            });
+        }
         e.into_vec()
     }
 
@@ -69,6 +79,11 @@ impl Record {
                 d.str()?.to_string()
             } else {
                 String::new()
+            },
+            realms: if d.remaining() > 0 {
+                d.seq(4, |d| d.u32())?
+            } else {
+                Vec::new()
             },
         };
         d.finish()?;
@@ -155,6 +170,8 @@ impl Ledger {
                     revoked: revoked == "1",
                     created_by: by.into(),
                     name: name.into(),
+                    // The first member's file holds only `meta` tokens.
+                    realms: Vec::new(),
                 })
             })
             .collect()
@@ -408,6 +425,7 @@ mod tests {
             revoked: false,
             created_by: "test".into(),
             name: String::new(),
+            realms: Vec::new(),
         }
     }
 

@@ -1838,9 +1838,16 @@ pub fn tokens_text(r: &pb::ListTokensResponse) -> String {
         } else {
             "valid"
         };
+        // A host a bound management client joins is bound to its
+        // realms (D383).
+        let binds = if t.bind_realms.is_empty() {
+            String::new()
+        } else {
+            format!(" (binds host {} to {})", t.name, t.bind_realms.join(","))
+        };
         let _ = writeln!(
             o,
-            "{:<12}  {:<5} {:<16}  {:<8} {}",
+            "{:<12}  {:<5} {:<16}  {:<8} {}{binds}",
             t.id,
             t.role,
             utc(t.expires_unix),

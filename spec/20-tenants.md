@@ -213,7 +213,9 @@ strict multi-tenancy without a cluster per customer.
   default (D261). A change to a binding is answered once every storage
   node that is up holds it, or can no longer serve by an older map, as a
   blocklist is (06-metadata.md §9), so every attach after the answer is
-  decided by the new binding (I412). Built (I302). Why: shared compute stays the default,
+  decided by the new binding (I412). A host that joins with a token
+  made by a management client bound to realms is bound to that client's
+  realms at the join (D383). Built (I302). Why: shared compute stays the default,
   and strict separation is one setting per host for those who need it.
 - **Administration (D252).** Roles (19-administration.md §23.9.2) can be
   granted on a realm, as `role@realm` beside cluster-wide roles (D263);
