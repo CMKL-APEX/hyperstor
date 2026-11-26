@@ -160,6 +160,12 @@ impl std::fmt::Display for CapabilityError {
 
 impl std::error::Error for CapabilityError {}
 
+/// How much of its HMAC-SHA256 a ping carries (D379): 128 bits, which a
+/// forger gets one try at per nonce.
+pub const PING_MAC_LEN: usize = 16;
+/// A ping's MAC.
+pub type PingMac = [u8; PING_MAC_LEN];
+
 /// The sealing keys a process holds: the newest seals, any opens.
 #[derive(Debug, Clone, Default)]
 pub struct SealingKeys {
@@ -185,6 +191,37 @@ impl SealingKeys {
     /// The id new statements are sealed under.
     pub fn current(&self) -> Option<u8> {
         self.keys.last().map(|k| k.id)
+    }
+
+    /// The MAC of a liveness ping or its answer (D379; 30-data-path-tls.md
+    /// §33.7) under key `id`: over which of the two it is (`kind`), the
+    /// ping's nonce, and the node pinged, whose answer it is. None
+    /// without that key.
+    ///
+    /// Why the node: an answer a live node gave can't then be shown for a
+    /// dead one. Why the label: the keys also seal capabilities, whose
+    /// bodies never start with it.
+    pub fn ping_mac(&self, id: u8, kind: &[u8; 4], nonce: u64, node: u32) -> Option<PingMac> {
+        let key = self.keys.iter().find(|k| k.id == id)?;
+        let k = hmac::Key::new(hmac::HMAC_SHA256, &key.key);
+        let mut c = hmac::Context::with_key(&k);
+        c.update(b"hyperstor ping 1\0");
+        c.update(kind);
+        c.update(&nonce.to_le_bytes());
+        c.update(&node.to_le_bytes());
+        let tag = c.sign();
+        let mut out = [0u8; PING_MAC_LEN];
+        out.copy_from_slice(&tag.as_ref()[..PING_MAC_LEN]);
+        Some(out)
+    }
+
+    /// Whether `mac` is [`Self::ping_mac`] of the rest, compared in
+    /// constant time.
+    pub fn ping_verify(&self, id: u8, kind: &[u8; 4], nonce: u64, node: u32, mac: &[u8]) -> bool {
+        let Some(want) = self.ping_mac(id, kind, nonce, node) else {
+            return false;
+        };
+        mac.len() == PING_MAC_LEN && want.iter().zip(mac).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0
     }
 
     /// `cap` sealed under the newest key; None with no key, or a host
@@ -293,6 +330,37 @@ impl Reader<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D379: a ping's MAC is of its kind, nonce and node, under a key
+    /// held; the key before still verifies, another cluster's doesn't.
+    #[test]
+    fn a_pings_mac_is_of_its_kind_nonce_and_node() {
+        let keys = SealingKeys::new(vec![
+            SealingKey::new(1, [7; 32]),
+            SealingKey::new(2, [9; 32]),
+        ]);
+        let (ping, pong) = (b"HSK?", b"HSK!");
+        let mac = keys.ping_mac(2, ping, 42, 3).unwrap();
+        assert!(keys.ping_verify(2, ping, 42, 3, &mac));
+        // Not as an answer, for another nonce or node, or under the
+        // other key; nor cut short or changed.
+        assert!(!keys.ping_verify(2, pong, 42, 3, &mac));
+        assert!(!keys.ping_verify(2, ping, 43, 3, &mac));
+        assert!(!keys.ping_verify(2, ping, 42, 4, &mac));
+        assert!(!keys.ping_verify(1, ping, 42, 3, &mac));
+        assert!(!keys.ping_verify(2, ping, 42, 3, &mac[..15]));
+        let mut bad = mac;
+        bad[0] ^= 1;
+        assert!(!keys.ping_verify(2, ping, 42, 3, &bad));
+        // The key before the newest still makes and verifies them.
+        let old = keys.ping_mac(1, ping, 42, 3).unwrap();
+        assert!(old != mac && keys.ping_verify(1, ping, 42, 3, &old));
+        // A key not held, and another cluster's under the same id.
+        assert!(keys.ping_mac(3, ping, 42, 3).is_none());
+        let other = SealingKeys::new(vec![SealingKey::new(2, [8; 32])]);
+        assert!(!other.ping_verify(2, ping, 42, 3, &mac));
+        assert!(!SealingKeys::default().ping_verify(2, ping, 42, 3, &mac));
+    }
 
     fn cap() -> Capability {
         Capability {

@@ -320,6 +320,49 @@ const PING_WAIT: Duration = Duration::from_millis(200);
 /// ping's nonce (8 bytes, little-endian), which the answer echoes.
 const UDP_PING: [u8; 4] = *b"HSP?";
 const UDP_PONG: [u8; 4] = *b"HSP!";
+/// A keyed UDP ping and its answer (D379; 30-data-path-tls.md §33.7):
+/// which of the two, the nonce, the node pinged (whose answer it is),
+/// the sealing key's id, and the MAC of the rest under that key
+/// (`SealingKeys::ping_mac`). The nonce does a counter's work: an answer
+/// is taken once, for a ping sent within [`PING_WAIT`].
+const UDP_KEYED_PING: [u8; 4] = *b"HSK?";
+const UDP_KEYED_PONG: [u8; 4] = *b"HSK!";
+const UDP_PLAIN_LEN: usize = 12;
+const UDP_KEYED_LEN: usize = 17 + hyperstor_pki::seal::PING_MAC_LEN;
+
+/// A keyed ping or answer.
+fn keyed_ping(
+    keys: &hyperstor_pki::seal::SealingKeys,
+    id: u8,
+    kind: [u8; 4],
+    nonce: u64,
+    node: u32,
+) -> Option<[u8; UDP_KEYED_LEN]> {
+    let mac = keys.ping_mac(id, &kind, nonce, node)?;
+    let mut d = [0u8; UDP_KEYED_LEN];
+    d[..4].copy_from_slice(&kind);
+    d[4..12].copy_from_slice(&nonce.to_le_bytes());
+    d[12..16].copy_from_slice(&node.to_le_bytes());
+    d[16] = id;
+    d[17..].copy_from_slice(&mac);
+    Some(d)
+}
+
+/// The nonce and node of a keyed ping or answer of `kind` whose MAC
+/// holds under a key of `keys`, with that key's id.
+fn open_keyed_ping(
+    keys: &hyperstor_pki::seal::SealingKeys,
+    kind: [u8; 4],
+    d: &[u8],
+) -> Option<(u64, u32, u8)> {
+    if d.len() != UDP_KEYED_LEN || d[..4] != kind {
+        return None;
+    }
+    let nonce = u64::from_le_bytes(d[4..12].try_into().unwrap());
+    let node = u32::from_le_bytes(d[12..16].try_into().unwrap());
+    keys.ping_verify(d[16], &kind, nonce, node, &d[17..])
+        .then_some((nonce, node, d[16]))
+}
 /// A peer that answers over TCP and not over UDP for this long is logged
 /// once (an older build, or a firewall that drops UDP).
 const TCP_ONLY_AFTER: Duration = Duration::from_secs(5);
@@ -575,7 +618,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             Ok(u) => {
                                 let u = Rc::new(u);
                                 *st.udp.borrow_mut() = Some(u.clone());
-                                spawn(st.clone().udp_pings(u));
+                                spawn(st.clone().udp_pings(u, node));
                             }
                             Err(e) => eprintln!(
                                 "hyperstord: device {}: no UDP for pings ({e}); peers ping it over TCP",
@@ -618,7 +661,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             if !no_udp
                                 && let Ok(u) = l.local_addr().and_then(UdpSocket::bind)
                             {
-                                spawn(st.clone().udp_pings(Rc::new(u)));
+                                spawn(st.clone().udp_pings(Rc::new(u), node));
                             }
                             spawn(st.clone().accept(TcpListener::from_std(l)));
                         }
@@ -708,8 +751,9 @@ struct ShardState {
     /// number; none if it couldn't be bound, and peers then ping it over
     /// TCP only.
     udp: RefCell<Option<Rc<UdpSocket>>>,
-    /// This device's UDP pings in flight: nonce -> (path pinged, sent).
-    udp_pings: RefCell<HashMap<u64, (SocketAddr, std::time::Instant)>>,
+    /// This device's UDP pings in flight: nonce -> (path pinged, sent,
+    /// the node there).
+    udp_pings: RefCell<HashMap<u64, (SocketAddr, std::time::Instant, u32)>>,
     /// When each path last answered one of them in time.
     udp_pongs: RefCell<HashMap<SocketAddr, std::time::Instant>>,
     batches: Cell<u64>,
@@ -2234,9 +2278,46 @@ impl ShardState {
     }
 
     /// The connection to `addr` that carries only pings (I187).
+    ///
+    /// Authenticated like any other where this node calls with its
+    /// certificate (D373, D377): a `Pong` over it then comes from the
+    /// node the map has there, which in `require` is the only kind that
+    /// counts. Why not leave it bare: `Ping` is answered to anyone, so
+    /// only the caller can know who answered.
     async fn ping_peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
         self.partitioned(addr)?;
-        Ok(self.pings.get(addr).await?)
+        let Some(tls) = self.calling_tls() else {
+            return Ok(self.pings.get(addr).await?);
+        };
+        let hello = Msg::Hello {
+            min_version: hyperstor_proto::OLDEST_VERSION,
+            max_version: VERSION,
+            id: self.me as u64,
+            instance: 0,
+        };
+        let map = self.map();
+        // One kept bare from before `require` is made again (D377).
+        if tls.required {
+            self.pings.close_if(addr, |c| c.peer().is_none());
+        }
+        let c = self
+            .pings
+            .get_with(addr, |addr| async move {
+                let (c, _) = Conn::open(
+                    addr,
+                    hyperstor_client::rpc::CONNECT_TIMEOUT,
+                    &hello,
+                    Some(&tls),
+                )
+                .await?;
+                hyperstor_client::expected_peer(&map, addr, &c)?;
+                Ok(c)
+            })
+            .await?;
+        if hyperstor_client::peer_revoked(&self.map(), &c) {
+            return Err(hyperstor_client::refuse_revoked(&c, addr).into());
+        }
+        Ok(c)
     }
 
     /// Where to reach `device` for one request: among its endpoints on
@@ -4907,9 +4988,29 @@ impl ShardState {
             .is_some_and(|b| b.load(std::sync::atomic::Ordering::Relaxed))
     }
 
+    /// The sealing keys this node holds, which key its pings (D379).
+    fn ping_keys(&self) -> Option<Arc<hyperstor_pki::seal::SealingKeys>> {
+        self.sealing
+            .borrow()
+            .as_ref()
+            .map(|s| s.keys())
+            .filter(|k| !k.is_empty())
+    }
+
+    /// Whether only keyed pings count: the cluster's mode is `require`.
+    fn pings_keyed_only(&self) -> bool {
+        self.map().data_tls == hyperstor_meta::DataTls::Require
+    }
+
     /// Answers peers' UDP pings with the nonce each carries, and notes
     /// which peer answered each of this device's own in time (D185).
-    async fn udp_pings(self: Rc<Self>, sock: Rc<UdpSocket>) {
+    ///
+    /// A keyed ping (D379) is answered when its MAC holds and it is for
+    /// this node, with a keyed answer under the same key; a keyed answer
+    /// counts when its MAC holds for the node that was pinged. One
+    /// without a key is answered and counted as before, except in mode
+    /// `require`, where it is ignored.
+    async fn udp_pings(self: Rc<Self>, sock: Rc<UdpSocket>, node: u32) {
         let mut buf = [0u8; 64];
         loop {
             let (n, from) = match sock.recv_from(&mut buf).await {
@@ -4919,7 +5020,41 @@ impl ShardState {
                     continue;
                 }
             };
-            if n != 12 {
+            let answered = |nonce: u64, from_node: Option<u32>| {
+                let mut pings = self.udp_pings.borrow_mut();
+                // An answer for another node than was pinged takes
+                // nothing: the ping still waits for its own.
+                if let Some((_, _, pinged)) = pings.get(&nonce)
+                    && from_node.is_some_and(|n| n != *pinged)
+                {
+                    return;
+                }
+                if let Some((path, sent, _)) = pings.remove(&nonce)
+                    && sent.elapsed() <= PING_WAIT
+                {
+                    self.udp_pongs
+                        .borrow_mut()
+                        .insert(path, std::time::Instant::now());
+                }
+            };
+            if n == UDP_KEYED_LEN {
+                let Some(keys) = self.ping_keys() else {
+                    continue;
+                };
+                if let Some((nonce, to, id)) = open_keyed_ping(&keys, UDP_KEYED_PING, &buf[..n]) {
+                    if to == node
+                        && let Some(pong) = keyed_ping(&keys, id, UDP_KEYED_PONG, nonce, node)
+                    {
+                        let _ = sock.send_to(&pong, from);
+                    }
+                } else if let Some((nonce, of, _)) =
+                    open_keyed_ping(&keys, UDP_KEYED_PONG, &buf[..n])
+                {
+                    answered(nonce, Some(of));
+                }
+                continue;
+            }
+            if n != UDP_PLAIN_LEN || self.pings_keyed_only() {
                 continue;
             }
             let kind: [u8; 4] = buf[..4].try_into().unwrap();
@@ -4927,15 +5062,7 @@ impl ShardState {
                 buf[..4].copy_from_slice(&UDP_PONG);
                 let _ = sock.send_to(&buf[..12], from);
             } else if kind == UDP_PONG {
-                let nonce = u64::from_le_bytes(buf[4..12].try_into().unwrap());
-                let sent = self.udp_pings.borrow_mut().remove(&nonce);
-                if let Some((path, sent)) = sent
-                    && sent.elapsed() <= PING_WAIT
-                {
-                    self.udp_pongs
-                        .borrow_mut()
-                        .insert(path, std::time::Instant::now());
-                }
+                answered(u64::from_le_bytes(buf[4..12].try_into().unwrap()), None);
             }
         }
     }
@@ -4969,7 +5096,13 @@ impl ShardState {
             // every other node, as a primary digesting a large table did.
             let late = ticked.elapsed() >= TICK + STALL;
             ticked = std::time::Instant::now();
-            if late {
+            // In `require` only keyed pings count (D379), and a node
+            // that hasn't fetched the keys yet (seconds after its start)
+            // can send none: it can't tell a dead peer from its own lack
+            // of a key, so it counts no silence and reports nobody.
+            let keys = self.ping_keys();
+            let keyed_only = self.pings_keyed_only();
+            if late || (keyed_only && keys.is_none()) {
                 for t in last_ok.borrow_mut().values_mut() {
                     *t = ticked;
                 }
@@ -5018,7 +5151,7 @@ impl ShardState {
             tcp_only.retain(|a| all.contains(a));
             self.udp_pings
                 .borrow_mut()
-                .retain(|_, (_, sent)| now.duration_since(*sent) <= PING_WAIT);
+                .retain(|_, (_, sent, _)| now.duration_since(*sent) <= PING_WAIT);
             // Answers over UDP since the last tick. One older than the
             // path's entry (a peer that just came back, a tick counted
             // afresh) changes nothing.
@@ -5087,12 +5220,24 @@ impl ShardState {
                     if let Some(u) = &udp
                         && self.partitioned(addr).is_ok()
                     {
+                        // Keyed where this node holds the keys (D379),
+                        // and without a key too unless the mode is
+                        // `require`: a peer from before keys answers
+                        // that one. One nonce: either answer counts.
                         let nonce = hyperstor_client::random_u64();
-                        self.udp_pings.borrow_mut().insert(nonce, (addr, now));
-                        let mut d = [0u8; 12];
-                        d[..4].copy_from_slice(&UDP_PING);
-                        d[4..].copy_from_slice(&nonce.to_le_bytes());
-                        let _ = u.send_to(&d, addr);
+                        self.udp_pings.borrow_mut().insert(nonce, (addr, now, peer));
+                        if let Some(keys) = &keys
+                            && let Some(id) = keys.current()
+                            && let Some(d) = keyed_ping(keys, id, UDP_KEYED_PING, nonce, peer)
+                        {
+                            let _ = u.send_to(&d, addr);
+                        }
+                        if !keyed_only {
+                            let mut d = [0u8; UDP_PLAIN_LEN];
+                            d[..4].copy_from_slice(&UDP_PING);
+                            d[4..].copy_from_slice(&nonce.to_le_bytes());
+                            let _ = u.send_to(&d, addr);
+                        }
                     }
                     if udp.is_some() && udp_seen.contains(&addr) {
                         continue;

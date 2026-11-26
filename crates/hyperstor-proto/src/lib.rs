@@ -27,11 +27,13 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
 /// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
 /// (D363, D371). 8: [`Msg::StartTls`] (D25, D373).
-pub const VERSION: u16 = 10;
+pub const VERSION: u16 = 11;
 /// The version whose storage nodes refuse by certificate role, and
-/// everything unauthenticated in mode `require` (D377): what the map
-/// service wants of every node before it sets that mode.
-pub const AUTHZ_VERSION: u16 = 10;
+/// everything unauthenticated in mode `require` (D377), and key their
+/// pings (D379): what the map service wants of every node before it sets
+/// that mode. 10 refused by role and pinged without a key, which a node
+/// of 11 ignores in `require`.
+pub const AUTHZ_VERSION: u16 = 11;
 /// The version whose storage nodes and clients read a map with revoked
 /// certificates (format 24; D384) and refuse them.
 pub const REVOKED_VERSION: u16 = 9;
