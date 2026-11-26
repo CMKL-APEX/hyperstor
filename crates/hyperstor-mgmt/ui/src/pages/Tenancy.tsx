@@ -91,7 +91,8 @@ type RealmDialog =
   | { kind: "delete"; realm: Realm }
   | { kind: "pool"; pool: number; name: string; realms: string[] }
   | { kind: "host"; host: string; realms: string[]; isNew: boolean }
-  | { kind: "client"; client: string; realms: string[]; isNew: boolean };
+  | { kind: "client"; client: string; realms: string[]; isNew: boolean }
+  | { kind: "clientTokens"; client: string; allow: boolean };
 
 function RealmsTab() {
   const can = useCan();
@@ -206,14 +207,22 @@ function RealmsTab() {
         title="Management clients"
         actions={can("secure") && <Button onClick={() => open({ kind: "client", client: "", realms: [], isNew: true })}>Bind a client</Button>}
       >
-        <Table head={["Client", "Realms", ""]} empty="No management client is bound: each acts in the whole cluster.">
+        <Table head={["Client", "Realms", "Join tokens", ""]} empty="No management client is bound: each acts in the whole cluster.">
           {clients.map((c) => (
             <tr key={c.client} data-testid={`tenancy-client-${c.client}`}>
               <td className={td}>{c.client}</td>
-              <td className={td}>{c.realms.join(", ")}</td>
+              <td className={td}>{c.realms.join(", ") || "unbound"}</td>
+              <td className={td} data-testid={`tenancy-client-tokens-${c.client}`}>
+                {c.tokenRoles.join(", ") || "–"}
+              </td>
               <td className={`${td} flex gap-2`}>
                 {can("secure") && (
                   <>
+                    <Button
+                      onClick={() => open({ kind: "clientTokens", client: c.client, allow: !c.tokenRoles.includes("host") })}
+                    >
+                      {c.tokenRoles.includes("host") ? "No host tokens" : "Allow host tokens"}
+                    </Button>
                     <Button onClick={() => open({ kind: "client", client: c.client, realms: c.realms, isNew: false })}>Change</Button>
                     <Button onClick={() => open({ kind: "client", client: c.client, realms: [], isNew: false })}>Unbind</Button>
                   </>
@@ -224,7 +233,8 @@ function RealmsTab() {
         </Table>
         <p className="text-xs text-slate-500 mt-2">
           A management client (a mgmt identity such as glidex&apos;s datastore driver, by its certificate&apos;s name) bound to
-          realms acts only in them.
+          realms acts only in them. Bound, it makes join tokens only for VM hosts, and only once allowed here; unbound,
+          it makes any token.
         </p>
       </Card>
       {dialog?.kind === "create" && (
@@ -297,6 +307,22 @@ function RealmsTab() {
             </Field>
           )}
           <RealmBoxes all={names} picked={picked} onChange={setPicked} none="unbound, the whole cluster" />
+          <p className="text-xs text-slate-500">This needs a login of the last 10 minutes.</p>
+        </ActionDialog>
+      )}
+      {dialog?.kind === "clientTokens" && (
+        <ActionDialog
+          title={`Host tokens of client ${dialog.client}`}
+          submit={dialog.allow ? "Allow" : "Take away"}
+          cli={`realm client-tokens --client ${dialog.client} --role ${dialog.allow ? "host" : "none"}`}
+          run={() => realms.setClientTokenRoles({ client: dialog.client, roles: dialog.allow ? ["host"] : [] })}
+          onClose={close}
+        >
+          <p className="text-sm">
+            {dialog.allow
+              ? "While bound to realms, this client may then make join tokens for VM hosts, each giving a host a certificate under the name the client chose. It makes no other token."
+              : "While bound to realms, this client then makes no join token. Tokens it made stay valid until used, revoked or expired."}
+          </p>
           <p className="text-xs text-slate-500">This needs a login of the last 10 minutes.</p>
         </ActionDialog>
       )}

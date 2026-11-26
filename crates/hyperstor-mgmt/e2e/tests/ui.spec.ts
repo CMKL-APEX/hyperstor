@@ -621,6 +621,19 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
     const row = page.getByTestId(`tenancy-${what}-${name}`);
     await expect(row).toContainText("ui-realm");
     await expect(realm).toContainText(name);
+    if (what === "client") {
+      // Let make VM hosts' join tokens, then no longer (D381).
+      const tokens = page.getByTestId(`tenancy-client-tokens-${name}`);
+      await expect(tokens).toHaveText("–");
+      await row.getByRole("button", { name: "Allow host tokens" }).click();
+      await expect(page.getByRole("dialog")).toContainText(`hyperstorctl realm client-tokens --client ${name} --role host`);
+      await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+      await expect(tokens).toHaveText("host");
+      await row.getByRole("button", { name: "No host tokens" }).click();
+      await expect(page.getByRole("dialog")).toContainText(`--role none`);
+      await page.getByRole("dialog").getByRole("button", { name: "Take away" }).click();
+      await expect(tokens).toHaveText("–");
+    }
     await row.getByRole("button", { name: "Unbind" }).click();
     await expect(page.getByRole("dialog")).toContainText(`--realm any`);
     await page.getByRole("dialog").getByRole("button", { name: "Unbind" }).click();
@@ -776,7 +789,7 @@ test("tenancy: a viewer sees realms and tenants with no actions", async ({ page 
   await tenancy(page, "Realms");
   await expect(page.getByTestId("tenancy-realm-acme")).toBeVisible();
   await expect(page.getByRole("tab", { name: "Directories" })).toHaveCount(0);
-  for (const b of ["Create realm", "Delete", "Change", "Unbind", "Bind a host", "Bind a client"])
+  for (const b of ["Create realm", "Delete", "Change", "Unbind", "Bind a host", "Bind a client", "Allow host tokens"])
     await expect(page.getByRole("button", { name: b, exact: true })).toHaveCount(0);
   await page.getByRole("tab", { name: "Tenants & projects" }).click();
   await expect(page.getByTestId("tree-tenant-lab")).toBeVisible();

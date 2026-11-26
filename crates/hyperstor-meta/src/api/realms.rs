@@ -580,11 +580,19 @@ impl RealmService for Api {
         out.retain(|r| scope.realm(r.id));
         // Bindings name other realms too: the cluster's callers only.
         let clients = if scope.whole() {
-            all.clients
-                .iter()
-                .map(|(n, c)| pb::RealmClient {
+            // Bound clients, and unbound ones that hold token roles (D381).
+            let names: std::collections::BTreeSet<&String> =
+                all.clients.keys().chain(all.client_tokens.keys()).collect();
+            names
+                .into_iter()
+                .map(|n| pb::RealmClient {
                     client: n.clone(),
-                    realms: c.realms.iter().map(|&r| all.name(r)).collect(),
+                    realms: all
+                        .clients
+                        .get(n)
+                        .map(|c| c.realms.iter().map(|&r| all.name(r)).collect())
+                        .unwrap_or_default(),
+                    token_roles: all.client_tokens.get(n).cloned().unwrap_or_default(),
                     ..Default::default()
                 })
                 .collect()
@@ -761,6 +769,39 @@ impl RealmService for Api {
         Self::audited(&who, "SetClientRealms", &target, r)?;
         Ok(pb::SetClientRealmsResponse::default().into())
     }
+
+    async fn set_client_token_roles(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::SetClientTokenRolesRequest>,
+    ) -> ServiceResult<pb::SetClientTokenRolesResponse> {
+        let roles: Vec<String> = req.roles.iter().map(|r| r.to_string()).collect();
+        let target = format!("client {}: token roles {}", req.client, roles.join(","));
+        let who = self.authorize(&ctx, "SetClientTokenRoles", &target, true)?;
+        let r = async {
+            let client = req.client.to_string();
+            if !realms::valid_client(&client) {
+                return Err(invalid(
+                    "a client is the name in its mgmt certificate: 1-32 of a-z, 0-9 and -, not hyperstor-mgmt's own (dashboard, web)",
+                ));
+            }
+            if let Some(r) = roles
+                .iter()
+                .find(|r| !realms::CLIENT_TOKEN_ROLES.contains(&r.as_str()))
+            {
+                return Err(invalid(format!(
+                    "{r:?}: a bound client may be let make tokens for role host alone"
+                )));
+            }
+            self.realm_rows("such client", move |db| {
+                realms::set_client_tokens(db, &client, &roles)
+            })
+            .await
+        }
+        .await;
+        Self::audited(&who, "SetClientTokenRoles", &target, r)?;
+        Ok(pb::SetClientTokenRolesResponse::default().into())
+    }
 }
 
 impl Api {
@@ -777,6 +818,16 @@ impl Api {
                 Some(Vec::new())
             }
         }
+    }
+
+    /// Whether management client `client`, bound to realms, may make a
+    /// join token for `role` (D381). Read as [`Api::client_reach`] is; a
+    /// copy that can't be read grants nothing.
+    pub(super) fn client_may_token(&self, client: &str, role: &str) -> bool {
+        self.s3_store()
+            .ok()
+            .and_then(|db| realms::load(&db).ok())
+            .is_some_and(|r| r.client_may_token(client, role))
     }
 }
 

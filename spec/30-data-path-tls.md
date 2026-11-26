@@ -5,8 +5,8 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380 are settled with the owner
-(05-decision-log.md points 335–343, 2026-11-25). Host checks G67–G69 are
+Status: **design.** D372–D381 are settled with the owner
+(05-decision-log.md points 335–344, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`, and nothing is refused yet (`require` is T2). It delivers D25, which stays the rule.
@@ -129,8 +129,14 @@ Once a connection is authenticated, and for every connection in
 - Renewed by the daily timer, as node certificates are (D56).
 - `hyperstord`, `hyperstor-vhost`, `hyperstor-ublk` and `hyperstor-s3`
   take `--identity DIR` (`hyperstord` has it since D370).
-- **glidex's driver** installs VM hosts: its flow gains the token step.
-  That is a glidex change, to file when this stage is built.
+- **glidex's driver** installs VM hosts: its flow gains the token step
+  (glidex #665). Its servers make each node's `host` token with their
+  `mgmt` identity: an unbound one may already; one bound to realms (D311)
+  only once an administrator lets it, with
+  `hyperstorctl realm client-tokens --client C --role host` (D381, I446).
+- **Why a grant, not every bound client:** the client chooses the name
+  in the token, and a `host` certificate opens volumes under that name
+  (D377). An administrator gives that power to one client knowingly.
 - **Why a token for VM hosts:** the same path storage hosts use, with no
   dependency on glidex for a standalone host.
 

@@ -247,6 +247,141 @@ fn a_bound_client_acts_only_in_its_realms() {
     );
 }
 
+/// D381: a management client bound to realms makes no join token until
+/// an administrator lets it make a VM host's; then a host's and no other
+/// role's, named in the token and the audit as its maker. The grant is
+/// listed, taken away again, and only `host` can be granted.
+#[test]
+fn a_bound_client_makes_host_tokens_once_let() {
+    let c = Cluster::all_in_one("dstokens", 1);
+    let gx = c.identity(Role::Mgmt, "glidex", false);
+    c.ctl(&["realm", "create", "--name", "acme"]).ok();
+    let make = |role: &str, name: &str| {
+        c.ctl_via(
+            Via::Tls(&gx),
+            &["token", "create", "--role", role, "--name", name],
+        )
+    };
+    let grant = |role: &str| {
+        c.ctl(&[
+            "realm",
+            "client-tokens",
+            "--client",
+            "glidex",
+            "--role",
+            role,
+        ])
+    };
+    // Unbound, it administers the cluster, tokens too, as before.
+    make("host", "vm-0").ok();
+    // Bound: no token, and the refusal says how.
+    c.ctl(&["realm", "client", "--client", "glidex", "--realm", "acme"])
+        .ok();
+    let r = make("host", "vm-1");
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert!(
+        r.has("acts only in realms acme") && r.has("realm client-tokens"),
+        "{}",
+        r.out
+    );
+    // Only a host's tokens can be granted, and only to a client's name.
+    for role in ["meta", "node", "mgmt", "admin"] {
+        let r = grant(role).expect(1);
+        assert!(r.has("role host alone"), "{}", r.out);
+    }
+    c.ctl(&[
+        "realm",
+        "client-tokens",
+        "--client",
+        "dashboard",
+        "--role",
+        "host",
+    ])
+    .expect(1);
+    // Nor by the client itself.
+    let r = c.ctl_via(
+        Via::Tls(&gx),
+        &[
+            "realm",
+            "client-tokens",
+            "--client",
+            "glidex",
+            "--role",
+            "host",
+        ],
+    );
+    assert_ne!(r.code, 0, "{}", r.out);
+    assert_ne!(make("host", "vm-1").code, 0);
+
+    // Let: a host's token, and no other role's.
+    let r = grant("host").ok();
+    assert!(r.has("may make host join tokens"), "{}", r.out);
+    let listed = c.ctl(&["realm", "list"]).ok();
+    assert!(
+        listed.has("Client glidex acts in: acme")
+            && listed.has("Client glidex may make join tokens for: host"),
+        "{}",
+        listed.out
+    );
+    let t = make("host", "vm-1").ok();
+    assert!(t.out.starts_with("hsj1-"), "{}", t.out);
+    for (role, name) in [("meta", ""), ("node", ""), ("mgmt", "other"), ("s3", "gw")] {
+        let r = if name.is_empty() {
+            c.ctl_via(Via::Tls(&gx), &["token", "create", "--role", role])
+        } else {
+            make(role, name)
+        };
+        assert_ne!(r.code, 0, "{role}: {}", r.out);
+        assert!(r.has("acts only in realms acme"), "{role}: {}", r.out);
+    }
+    // It still reads and revokes no token, and changes nothing else.
+    assert_ne!(c.ctl_via(Via::Tls(&gx), &["token", "list"]).code, 0);
+    // The token names the host and who made it.
+    let tokens = json(&c.ctl(&["token", "list", "--json"]).ok().out);
+    let mine = tokens["tokens"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "vm-1")
+        .unwrap_or_else(|| panic!("{tokens}"));
+    assert_eq!(mine["role"], "host", "{mine}");
+    assert!(
+        mine["created_by"]
+            .as_str()
+            .is_some_and(|w| w.ends_with("/mgmt/glidex")),
+        "{mine}"
+    );
+    let audit = c.audit();
+    assert!(
+        audit
+            .iter()
+            .any(|l| l.contains("\"op\":\"SetClientTokenRoles\"")),
+    );
+    assert!(audit.iter().any(|l| l.contains("\"op\":\"CreateToken\"")
+        && l.contains("/mgmt/glidex")
+        && l.contains("acts only in realms")),);
+
+    // Another bound client gets nothing from glidex's grant.
+    let other = c.identity(Role::Mgmt, "script", false);
+    c.ctl(&["realm", "client", "--client", "script", "--realm", "acme"])
+        .ok();
+    let r = c.ctl_via(
+        Via::Tls(&other),
+        &["token", "create", "--role", "host", "--name", "vm-2"],
+    );
+    assert_ne!(r.code, 0, "{}", r.out);
+    // Taken away: none again; the binding stays.
+    let r = grant("none").ok();
+    assert!(r.has("makes no join tokens"), "{}", r.out);
+    assert_ne!(make("host", "vm-3").code, 0);
+    let listed = c.ctl(&["realm", "list"]).ok();
+    assert!(
+        listed.has("Client glidex acts in: acme") && !listed.has("may make join tokens"),
+        "{}",
+        listed.out
+    );
+}
+
 /// D310, D314, I399: glidex's server relays its UI's reads to mgmt with a
 /// person's directory access token, server to server (no `Origin`, no
 /// cookie), and reads what their links reach; a browser's request from

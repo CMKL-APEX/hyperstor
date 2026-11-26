@@ -102,6 +102,9 @@
 //!   the audit log, newest first (AGO as `30m`, `2h`, `7d`; default the
 //!   last 100 records); `audit settings [--retention-days N]` shows or sets
 //!   how long it is kept (0: forever; D112, D113);
+//! - `realm client-tokens --client C --role host|none`: lets a management
+//!   client bound to realms make `host` join tokens, for its VM hosts
+//!   (D381), or no longer;
 //! - `io-test`: writes N MiB (default 16) of random data to a new volume
 //!   of pool P (default the first pool) through the client library,
 //!   reads it back and compares, and says which networks it used;
@@ -242,7 +245,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -482,8 +485,8 @@ struct Args {
     realm: Option<String>,
     /// `realm host`: the host, as it names itself (D261).
     host: Option<String>,
-    /// `realm client`: a management client, by the name in its `mgmt`
-    /// certificate (D311).
+    /// `realm client`, `realm client-tokens`: a management client, by the
+    /// name in its `mgmt` certificate (D311, D381).
     client: Option<String>,
     description: Option<String>,
     /// `s3 placement set`: pool names.
@@ -917,6 +920,7 @@ fn main() {
                                     | "pool"
                                     | "host"
                                     | "client"
+                                    | "client-tokens"
                             )
                         )
                     }
@@ -1234,7 +1238,7 @@ fn main() {
             "realm tenant" | "realm pool" | "realm host" | "realm client"
         ) && a.realm.is_none())
         || ((cmd == "realm host") != a.host.is_some())
-        || ((cmd == "realm client") != a.client.is_some())
+        || (matches!(cmd.as_str(), "realm client" | "realm client-tokens") != a.client.is_some())
         || (!realm_given && a.realm.is_some())
         || (matches!(cmd.as_str(), "realm create" | "realm delete") && a.name.is_empty())
         || (cmd == "realm pool" && a.pool.is_none())
@@ -1359,7 +1363,10 @@ fn main() {
             volume_io(map, &cmd, &a, networks).await
         }));
     }
-    if (cmd == "token create" || cmd == "port role") != a.role.is_some()
+    if matches!(
+        cmd.as_str(),
+        "token create" | "port role" | "realm client-tokens"
+    ) != a.role.is_some()
         || (a.dry_run
             && !matches!(
                 cmd.as_str(),
@@ -1708,6 +1715,7 @@ const LEADER_ONLY: &[&str] = &[
     "realm pool",
     "realm host",
     "realm client",
+    "realm client-tokens",
 ];
 
 /// Where the API calls go.
@@ -4032,6 +4040,30 @@ where
                 println!(
                     "host {host}: attaches only volumes of realm(s) {}",
                     realms.join(", ")
+                );
+            }
+        }
+        "realm client-tokens" => {
+            let c = a.client.clone().expect("checked with the arguments");
+            let role = a.role.clone().expect("checked with the arguments");
+            let roles: Vec<String> = if role == "none" {
+                Vec::new()
+            } else {
+                vec![role]
+            };
+            client
+                .set_client_token_roles(pb::SetClientTokenRolesRequest {
+                    client: c.clone(),
+                    roles: roles.clone(),
+                    ..Default::default()
+                })
+                .await?;
+            if roles.is_empty() {
+                println!("client {c}: makes no join tokens while it is bound to realms");
+            } else {
+                println!(
+                    "client {c}: may make {} join tokens while it is bound to realms",
+                    roles.join(", ")
                 );
             }
         }

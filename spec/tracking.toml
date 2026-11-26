@@ -2195,6 +2195,15 @@ tests = [
     "directory_ui::a_bound_client_acts_only_in_its_realms",
 ]
 
+[[milestone.item]]
+what = "A bound management client makes VM hosts' join tokens once an administrator lets it (realm client-tokens), so that glidex's servers can join their nodes (D381)"
+spec = ["30-data-path-tls.md §33.6", "D381", "I446"]
+status = "done"
+tests = [
+    "hyperstor_meta::realms::tests::a_clients_token_roles_are_kept_apart_from_its_realms",
+    "directory_ui::a_bound_client_makes_host_tokens_once_let",
+]
+
 [[milestone]]
 id = "AD4"
 title = "A tenant's storage in glidex's UI"

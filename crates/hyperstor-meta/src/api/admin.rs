@@ -22,7 +22,7 @@
 //!   until none still lives on the node and none is moving. Any member
 //!   answers for them; `WatchOperation` streams one's changes.
 
-use super::{Api, Need, audit, meta_error, with_reason};
+use super::{Api, Need, audit, meta_error, refused, with_reason};
 use crate::Admin;
 use crate::sealkeys::{self, SealKeyRow};
 use crate::tokens::{Record, TokenError};
@@ -364,7 +364,26 @@ impl TokenService for Api {
         req: ServiceRequest<'_, pb::CreateTokenRequest>,
     ) -> ServiceResult<pb::CreateTokenResponse> {
         let target = format!("role {}", req.role);
-        let who = self.authorize(&ctx, "CreateToken", &target, true)?;
+        let (who, reach) = self.authorize_reach(&ctx, "CreateToken", &target, Need::Write)?;
+        // A token reaches the cluster as a whole, so whoever acts only in
+        // realms makes none; but a management client an administrator let
+        // make a VM host's (D381).
+        if let Some(realms) = reach {
+            let granted = Identity::parse(&who)
+                .filter(|i| i.is_mgmt_client())
+                .is_some_and(|i| self.client_may_token(&i.id, req.role));
+            if !granted {
+                let e = with_reason(
+                    ConnectError::permission_denied(format!(
+                        "CreateToken reaches the cluster as a whole, and {who} acts only in realms {}: a management client makes host tokens once an administrator lets it (hyperstorctl realm client-tokens)",
+                        realms.join(", ")
+                    )),
+                    "outside_realm",
+                );
+                refused(&who, "CreateToken", &target, &e);
+                return Err(e);
+            }
+        }
         let (_, root) = self.signing()?;
         if !matches!(
             req.role,
