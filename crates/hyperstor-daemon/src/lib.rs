@@ -2162,6 +2162,10 @@ impl ShardState {
         // isn't `off` (D373).
         let tls = self.calling_tls();
         let map = self.map();
+        // One kept bare from before `require` is made again (D377).
+        if tls.as_ref().is_some_and(|t| t.required) {
+            self.peers.close_if(addr, |c| c.peer().is_none());
+        }
         let c = self
             .peers
             .get_with(addr, |addr| async move {

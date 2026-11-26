@@ -855,6 +855,13 @@ impl Client {
         let required = self.map.borrow().data_tls == hyperstor_map::DataTls::Require;
         let tls = self.identity.borrow().as_ref().map(|t| t.calling(required));
         let map = self.map();
+        // A connection kept from before the mode was `require` may be
+        // bare (its peer was in `off` then, and refused TLS), and is
+        // refused everything now: with a certificate to show, it is made
+        // again (D377).
+        if required && tls.is_some() {
+            self.conns.close_if(addr, |c| c.peer().is_none());
+        }
         let c = self
             .conns
             .get_with(addr, |addr| async move {

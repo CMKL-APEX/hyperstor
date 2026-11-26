@@ -791,6 +791,19 @@ impl Pool {
         self.get_with(addr, Conn::connect).await
     }
 
+    /// Closes the connection kept for `addr` if `stale` says so: the next
+    /// [`Pool::get_with`] makes a new one. For a connection made before
+    /// the cluster required authentication, which is refused everything
+    /// now (D377).
+    pub fn close_if(&self, addr: SocketAddr, stale: impl FnOnce(&Conn) -> bool) {
+        if let Some(c) = self.conns.borrow().get(&addr)
+            && !c.is_dead()
+            && stale(c)
+        {
+            c.kill();
+        }
+    }
+
     /// [`Pool::get`] with `connect` making a new connection (and saying
     /// whatever it must say first). Only one runs per address at a time;
     /// other callers wait for its result.

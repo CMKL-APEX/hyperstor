@@ -10946,6 +10946,11 @@ fn a_connection_is_served_by_its_certificates_role() {
                 );
             }
             "restart" => {
+                // Heartbeats and pings went on through the change: over
+                // connections made again where they were bare.
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let map = c.published();
+                assert!(map.nodes.values().all(|n| n.up), "{:?}", map.nodes);
                 c.kill(2);
                 c.restart(2);
             }
