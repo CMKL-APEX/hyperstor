@@ -2391,6 +2391,11 @@ fn main() {
             // on the engine's real block maps (D43, point 99)
             layout::suite();
         }
+        Some("lookup") => {
+            // hyperstor-bench lookup: a page table against swizzled
+            // pointers on each step down the index (M6)
+            layout::lookup_suite();
+        }
         Some("adminload") => {
             // hyperstor-bench adminload (G17)
             adminload_suite(secs);

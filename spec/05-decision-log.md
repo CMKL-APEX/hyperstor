@@ -2000,8 +2000,8 @@ layout`). Open for the owner:
 | # | Point | Data so far | Recommendation |
 |---|---|---|---|
 | 365 | Leaf format: per-block entries (D43, point 99's a); range keys; range keys with packed leaves | Ranges + packed 1.1–2.6 GiB per TiB on every workload measured, 40–74% less than per-block (4.3); plain ranges reach 6.9 on fragmented VM disks | Ranges with packed leaves, after a trace check (MSR, Tencent) |
-| 366 | Checksums: in the leaves; pages of their own (point 99's b); NVMe protection information where formatted (c) | With ranges, CRC pages are 1.11 of 1.1–2.6 GiB per TiB; the cost of a cold read is not measured yet (M3) | (b), with (c) where drives support it (G40, M7) |
+| 366 | Checksums: in the leaves; pages of their own (point 99's b); NVMe protection information where formatted (c); inline in packed entries and in pages of their own for ranges | With ranges, CRC pages are 1.11 of 1.1–2.6 GiB per TiB. A separate page costs 5% per read one at a time and halves the reads a saturated drive serves (2026-11-28, M3) | Inline in packed entries, pages of their own for ranges; (c) where drives support it (G40, M7) |
 | 367 | Checkpoints as a copy-on-write tree over the log (D43, point 12) | Ranges + packed write −22% to +17% of today's paged checkpoints at 1.6–25% density, less when sparser | As D43, with ranges + packed |
-| 368 | A buffer pool: a page table first, swizzling only if lookups show in profiles | Inner nodes at most 14 MiB per TiB; lookup cost not measured yet (M6) | Page table first |
+| 368 | A buffer pool: a page table first, swizzling only if lookups show in profiles | Inner nodes at most 14 MiB per TiB. A page table costs 0.18–0.47 µs more per lookup than swizzled pointers, about 0.25–0.3% of a request's CPU (2026-11-28, M6) | Page table first |
 | 369 | Free space at open: walked from the tree (today's rebuild); bitmap pages written at checkpoint; a tree of free extents | Open time not measured yet (M4) | Bitmap pages |
 | 370 | 64-bit physical addresses in the same incompatible step | Range entries carry 64-bit already; packed leaves keep 32-bit offsets from a 64-bit base | Yes |

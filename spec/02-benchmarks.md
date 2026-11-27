@@ -2910,3 +2910,56 @@ Not covered: snapshots and clones (ranges shared between versions),
 real traces (MSR Cambridge and Tencent's on SNIA IOTTA need their
 license accepted; `HS_TRACE` reads MSR's format), the read cost of
 separate CRC pages (M3) and open time (M4).
+
+## 2026-11-28: A page table against swizzled pointers, and cold reads of separate CRC pages (M6, M3)
+
+### Lookup cost (M6)
+
+`hyperstor-bench lookup` (`HS_FRAMES=262144`, then `4194304`), pinned to
+one idle CPU of a 2× AMD EPYC 7742 host: a tree of real 4 KiB frames,
+119 entries per node, two million random lookups from the root, each
+level a binary search in its node. Swizzled: the child pointer is the
+frame. Page table: the child's page number is looked up in a hash table
+of page number to frame, as a pool that can evict any page needs.
+
+| Frames | Depth | Swizzled, ns per lookup | Page table, multiplicative hash | Page table, SipHash |
+|---|---|---|---|---|
+| 262,164 (1 GiB) | 4 | 492 | 669 | 730 |
+| 4,194,602 (16 GiB) | 5 | 831 | 1,304 | 1,386 |
+
+A page table costs 0.18–0.47 µs more per lookup, out of caches. A 4 KiB
+read costs about 190 µs of CPU end to end and a replicated write about
+520 µs (memory devices, the bench's `cluster mem`, 2026-11-27): one
+lookup per copy is about 0.25–0.3% of that. Swizzling isn't worth its
+complexity until profiles say otherwise.
+
+### Cold reads with checksums elsewhere (M3)
+
+fio 3.36, `io_uring`, `O_DIRECT`, random reads over a 16 GiB file on ext4
+on two Samsung PM983 (1.92 TB) NVMe drives in RAID 1, 30 s per job, two
+rounds (within 1%); medians. "Adjacent": the checksum page next to the
+data, read as one 8 KiB read. "Separate": two 4 KiB reads at random
+places, submitted and completed together. A request is one 4 KiB of
+data with its checksums.
+
+| Job | Reads/s | Requests/s | Per request at QD1 | p99, µs |
+|---|---|---|---|---|
+| One 4 KiB read, QD1 | 5,312 | 5,312 | 188 µs | 197 |
+| Adjacent (8 KiB), QD1 | 5,157 | 5,157 | 194 µs | 199 |
+| Separate (2 × 4 KiB), QD1 | 10,085 | 5,042 | 198 µs | 198 |
+| One 4 KiB read, QD32 | 155,200 | 155,200 | | 297 |
+| Adjacent (8 KiB), QD32 | 143,206 | 143,206 | | 322 |
+| Separate (2 × 4 KiB), QD32 | 163,545 | 81,772 | | 471 |
+
+1. **One request at a time, a separate checksum page costs 5%** (two
+   reads in parallel wait for the slower); adjacent, 3%.
+2. **When the drives are the limit, a separate page halves the
+   requests a device serves** (155,200 to 81,772 a second); adjacent
+   costs 8%.
+3. So separate CRC pages suit large ranges, where one page serves 4 MiB
+   of reads, and cost most on small random reads of fragmented data,
+   exactly where packed leaves are used. Keeping CRCs inline in packed
+   entries (8 bytes a block, as today's dense maps) and in their own
+   pages for ranges avoids the extra read where it hurts: on the
+   fragmented workloads of 2026-11-27 that is about 2.9 GiB per TiB
+   instead of 2.6.

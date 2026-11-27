@@ -517,3 +517,134 @@ pub fn suite() {
         cow.print(name, *log);
     }
 }
+
+/// M6: what a buffer pool's page table costs on each step down the tree,
+/// against swizzled pointers (a child pointer that is the frame itself).
+/// A tree of real 4 KiB frames, `HS_FRAMES` of them (default 262,144, 1
+/// GiB), 119 entries per node as above; each lookup descends from the
+/// root by binary search in each node. The page-table variants map a
+/// child's page number to its frame through a hash table, as a pool that
+/// may evict any leaf would.
+pub fn lookup_suite() {
+    use std::collections::HashMap;
+    use std::hash::{BuildHasherDefault, Hasher};
+    use std::time::Instant;
+
+    /// A multiplicative hash for u64 page numbers (Fibonacci hashing).
+    #[derive(Default)]
+    struct Mul(u64);
+    impl Hasher for Mul {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, _: &[u8]) {
+            unreachable!("u64 keys only")
+        }
+        fn write_u64(&mut self, x: u64) {
+            self.0 = x.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+
+    let frames: usize = std::env::var("HS_FRAMES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(262_144);
+    let fan = (NODE * FILL / INNER_ENTRY).floor() as usize; // 119
+    const PAGE: usize = 4096;
+    // A node: count (u64), then `fan` keys (u64) and `fan` children (u64).
+    let mut mem = vec![0u64; frames * PAGE / 8];
+    let words = PAGE / 8;
+    // Page numbers are scattered (as on a device); frame = slot in `mem`.
+    let page_of = |frame: usize| (frame as u64).wrapping_mul(2_654_435_761) ^ 0x5555;
+    // Build bottom-up: leaves hold keys 0.. in order.
+    let mut next = 0usize;
+    let mut level: Vec<(u64, usize)> = Vec::new(); // (first key, frame)
+    let leaves = frames * fan / (fan + 1);
+    for l in 0..leaves {
+        let f = next;
+        next += 1;
+        mem[f * words] = fan as u64;
+        for i in 0..fan {
+            mem[f * words + 1 + i] = (l * fan + i) as u64;
+        }
+        level.push(((l * fan) as u64, f));
+    }
+    let mut depth = 1;
+    while level.len() > 1 {
+        let mut up = Vec::new();
+        for group in level.chunks(fan) {
+            if next >= frames {
+                mem.resize((next + 1) * words, 0);
+            }
+            let f = next;
+            next += 1;
+            mem[f * words] = group.len() as u64;
+            for (i, (k, child)) in group.iter().enumerate() {
+                mem[f * words + 1 + i] = *k;
+                mem[f * words + 1 + fan + i] = *child as u64;
+            }
+            up.push((group[0].0, f));
+        }
+        level = up;
+        depth += 1;
+    }
+    let root = level[0].1;
+    let keys = (leaves * fan) as u64;
+    let mut sip: HashMap<u64, usize> = HashMap::with_capacity(next);
+    let mut mul: HashMap<u64, usize, BuildHasherDefault<Mul>> = HashMap::default();
+    for f in 0..next {
+        sip.insert(page_of(f), f);
+        mul.insert(page_of(f), f);
+    }
+    // One descent; `resolve` turns a stored child into a frame.
+    let descend = |key: u64, resolve: &dyn Fn(u64) -> usize, swizzled: bool| -> u64 {
+        let mut f = root;
+        for _ in 1..depth {
+            let n = mem[f * words] as usize;
+            let ks = &mem[f * words + 1..f * words + 1 + n];
+            let i = ks.partition_point(|&k| k <= key).saturating_sub(1);
+            let child = mem[f * words + 1 + fan + i];
+            f = if swizzled {
+                child as usize
+            } else {
+                resolve(page_of(child as usize))
+            };
+        }
+        let n = mem[f * words] as usize;
+        let ks = &mem[f * words + 1..f * words + 1 + n];
+        ks.partition_point(|&k| k < key) as u64
+    };
+    let mut rng = SmallRng::seed_from_u64(6);
+    let probes: Vec<u64> = (0..2_000_000).map(|_| rng.random_range(0..keys)).collect();
+    println!(
+        "{next} frames of 4 KiB ({} MiB), depth {depth}, {fan} entries per node; {} random lookups each",
+        (next * PAGE) >> 20,
+        probes.len()
+    );
+    println!();
+    println!("| Child pointers | ns per lookup | ns per level |");
+    println!("|---|---|---|");
+    let id = |c: u64| c as usize;
+    let by_sip = |p: u64| sip[&p];
+    let by_mul = |p: u64| mul[&p];
+    type Resolve<'a> = &'a dyn Fn(u64) -> usize;
+    let variants: [(&str, Resolve, bool); 3] = [
+        ("swizzled (the frame itself)", &id, true),
+        ("page table, multiplicative hash", &by_mul, false),
+        ("page table, SipHash (std)", &by_sip, false),
+    ];
+    for round in 0..2 {
+        for (name, resolve, swizzled) in &variants {
+            let t = Instant::now();
+            let mut sum = 0u64;
+            for &k in &probes {
+                sum = sum.wrapping_add(descend(k, *resolve, *swizzled));
+            }
+            let ns = t.elapsed().as_nanos() as f64 / probes.len() as f64;
+            std::hint::black_box(sum);
+            if round == 1 {
+                println!("| {name} | {ns:.0} | {:.0} |", ns / depth as f64);
+            }
+        }
+    }
+}
