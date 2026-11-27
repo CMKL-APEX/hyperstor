@@ -12,6 +12,7 @@
 //! don't allocate filesystem blocks.
 
 mod cpus;
+mod layout;
 
 use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
@@ -2384,6 +2385,11 @@ fn main() {
             let where_ = args.get(2).cloned().unwrap_or_else(|| "mem".into());
             let reactors: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             cluster_suite(&where_, reactors, secs);
+        }
+        Some("layout") => {
+            // hyperstor-bench layout: the on-device index's leaf formats
+            // on the engine's real block maps (D43, point 99)
+            layout::suite();
         }
         Some("adminload") => {
             // hyperstor-bench adminload (G17)
