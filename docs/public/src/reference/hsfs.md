@@ -1,8 +1,9 @@
 # hsfs
 
-Datasets and their properties, in the order `zfs` users type them: the
-same binary as [hyperstorctl](hyperstorctl.md), installed as `hsfs`,
-whose commands are `hyperstorctl dataset`'s. See [datasets and their
+Datasets and their properties, in the order `zfs` users type them:
+[hyperstorctl](hyperstorctl.md) run by the name `hsfs` (the installer
+puts `/usr/local/bin/hsfs` as a link to it), whose commands are
+`hyperstorctl dataset`'s. See [datasets and their
 properties](../admin-guide/managing.md#datasets-and-their-properties).
 Run with no command, it prints the usage line, on standard error, with
 status 2.

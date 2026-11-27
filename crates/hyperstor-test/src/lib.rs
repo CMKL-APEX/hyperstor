@@ -29,12 +29,11 @@ use std::process::{Child, Command, Output};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
-pub const BINARIES: [&str; 8] = [
+pub const BINARIES: [&str; 7] = [
     "hyperstor-install",
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
-    "hsfs",
     "hyperstor-mgmt",
     "hyperstor-authd",
     "hyperstor-s3",
@@ -1198,9 +1197,12 @@ impl Cluster {
         self.ctl_via(Via::Tls(&self.pki()), args)
     }
 
-    /// `hsfs` (D361) as the administrator, over mutual TLS.
+    /// `hsfs` (D361) as the administrator, over mutual TLS: hyperstorctl
+    /// run by that name, as the installer's link runs it.
     pub fn hsfs(&self, args: &[&str]) -> Run {
-        let mut c = Command::new(self.bin.join("hsfs"));
+        use std::os::unix::process::CommandExt;
+        let mut c = Command::new(self.bin.join("hyperstorctl"));
+        c.arg0("hsfs");
         c.args(["--api", &self.api, "--tls", self.pki().to_str().unwrap()]);
         run_ctl(c, args)
     }

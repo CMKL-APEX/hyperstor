@@ -84,18 +84,20 @@ use std::process::Command;
 
 const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format-device [--all-in-one] [--cluster FILE] [--join API] [--token-file F] [--token T] [--address IP] [--reactors N] [--rack R] [--role R] [--node N] [--map ADDR] [--members LIST] [--member-id N] [--raft-port P] [--force] [--nodes N] [--size-gib G] [--data-dir DIR] [--api-port P] [--map-port P] [--node-port P] [--admin-port P] [--mgmt-port P] [--root DIR] [--no-start] [--json] [--out FILE] [--in FILE] [--passphrase-file F] [--remove-key] [--ui DIR] [--libblkid-deb DIR] [--mgmt-listen all|loopback] [--endpoints auto|off] [--client-networks auto|none|NAME,...] [--web-tls DIR] [--mgmt-hosts NAME,...] [--mgmt-proxy-ca FILE] [--mgmt-trusted-proxies CIDR,...] [--mgmt-proxy-only on|off] [--tailscale-cert] [--no-tailscale-cert] [--vhost] [--no-vhost] [--vhost-user NAME]... [--vhost-cpus auto|LIST] [--s3] [--no-s3] [--s3-port P] [--s3-tls DIR] [--s3-realm NAME] [--s3-domain NAME] [--device PATH]... [--device-address IP:PORT] [--remove-device ID]... [--path P] [--id D] [--force-format]";
 
-const BINARIES: [&str; 9] = [
+const BINARIES: [&str; 8] = [
     "hyperstor-meta",
     "hyperstord",
     "hyperstorctl",
-    // hyperstorctl again, for datasets (D361).
-    "hsfs",
     "hyperstor-mgmt",
     "hyperstor-authd",
     "hyperstor-vhost",
     "hyperstor-smart",
     "hyperstor-s3",
 ];
+
+/// `hsfs`: a link to hyperstorctl, which reads the name it is run by
+/// (29-hsfs.md §32.4, D361).
+const HSFS: &str = "/usr/local/bin/hsfs";
 
 /// Where `hyperstor-vhost`'s sockets and state file are (its unit's
 /// runtime directory).
@@ -4433,6 +4435,15 @@ fn install(
         }
     }
     drop(binaries);
+    // `hsfs` is hyperstorctl by another name (D361, D389).
+    let hsfs = under(root, HSFS);
+    if fs::read_link(&hsfs).ok().as_deref() != Some(Path::new("hyperstorctl")) {
+        let _ = fs::remove_file(&hsfs);
+        if let Err(e) = std::os::unix::fs::symlink("hyperstorctl", &hsfs) {
+            fail(&format!("{HSFS}: {e}"));
+        }
+        changed.push(HSFS.to_string());
+    }
 
     // 1b. The patched libblkid (D332), when asked for; a host installed
     // into a scratch root has no packages to change.
@@ -5807,6 +5818,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         "/etc/systemd/system/hyperstor-renew.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),
+        HSFS.to_string(),
         UDEV_RULES.to_string(),
         OLD_UDEV_RULES.to_string(),
     ]

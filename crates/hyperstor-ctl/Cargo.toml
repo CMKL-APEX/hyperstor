@@ -10,13 +10,6 @@ repository.workspace = true
 name = "hyperstorctl"
 path = "src/main.rs"
 
-# hyperstorctl again, as `hsfs` (29-hsfs.md §32.4, D361): it reads the
-# name it was run by. Its tests are hyperstorctl's.
-[[bin]]
-name = "hsfs"
-path = "src/hsfs.rs"
-test = false
-
 [dependencies]
 hyperstor-api = { path = "../hyperstor-api", features = ["client"] }
 hyperstor-client = { path = "../hyperstor-client" }
