@@ -1959,3 +1959,20 @@ its node's certificate, whose host name isn't checked (I454).
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 350 | How such a host gets a `host` certificate: the installer asks the cluster API with the node's certificate, for the host name that node reports (recommended); a `host` token as VM hosts use, a manual step on every storage host; or leave it showing the node's | The node asks the API | D386 |
+
+## A Kubernetes CSI driver (31-csi.md, 2026-11-27)
+
+Asked to plan CSI support, with what is built (ublk, leases, management
+clients bound to realms, data-path certificates) and what isn't (the
+NVMe-oF gateway, glidex's hot-plug of disks, the filesystem), the owner
+settled each choice as recommended:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 354 | Which Kubernetes clusters first: both, nodes on the storage network through ublk first (recommended); only Kubernetes on glidex VMs; only storage-network nodes | Both, ublk first | D390 |
+| 355 | The driver's language: Rust (recommended); Go | Rust | D391 |
+| 356 | Access modes in the first release: RWO, RWOP and ROX (recommended); RWO and RWOP only; also RWX raw block | RWO, RWOP and ROX | D392 |
+| 357 | A Kubernetes cluster's identity and where its volumes go: a management client bound to realms, the StorageClass naming the project (recommended); one project per cluster | A bound management client | D393 |
+| 358 | Where a node's ublk devices are served: in the plugin, with ublk user recovery (recommended); a host service the plugin drives | In the plugin, with recovery | D394 |
+| 359 | ReadOnlyMany: a read-only snapshot attachment with no lease (recommended); a clone per node | Read-only snapshot attachment | D395 |
+| 360 | Packaging: an image and a Helm chart (recommended); an image and plain manifests | Image and Helm chart | D396 |

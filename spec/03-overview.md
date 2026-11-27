@@ -76,8 +76,9 @@ D7`) refer to those documents.
     without RDMA verbs (D30);
   - Mellanox dynamically connected (DC) queue pairs (13-protocol.md §13.2), required by
     the S3-over-RDMA milestone (D36);
-  - a CSI driver for Kubernetes clusters running on glidex VMs, with
-    disks hot-plugged as vhost-user-blk (11-frontends.md §11.4);
+  - a CSI driver for Kubernetes: on nodes of the storage network through
+    ublk, then on glidex VMs with disks hot-plugged as vhost-user-blk
+    (31-csi.md §34, D390);
   - NVMe emulation for guests over vfio-user (11-frontends.md §11.4);
   - the vhost client on a DPU (11-frontends.md §11.4);
   - lease hand-over during live migration (11-frontends.md §11.4);
