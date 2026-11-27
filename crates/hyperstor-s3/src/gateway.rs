@@ -1933,6 +1933,12 @@ async fn create_bucket(
     let r = state
         .reactors
         .call(move |s3| async move {
+            // A pool made since this reactor's map (a placement's or the
+            // `pool` property's) is in a newer one: asked for once.
+            let unknown = |p: &Pool| matches!(p, Pool::Id(id) if !s3.client().map().pools.contains_key(id));
+            if unknown(&data) || unknown(&index) {
+                let _ = s3.client().refresh_map().await;
+            }
             let map = s3.client().map();
             let id = |p: &Pool| match p {
                 Pool::Id(id) => map.pools.contains_key(id).then_some(*id),
