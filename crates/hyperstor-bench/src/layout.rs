@@ -293,8 +293,8 @@ impl CowTally {
             per(log_blocks as f64 * BLOCK as f64),
             per(today),
         );
-        for f in 0..4 {
-            print!(" {:.1} |", per(self.cow_pages[f] as f64 * NODE));
+        for pages in self.cow_pages {
+            print!(" {:.1} |", per(pages as f64 * NODE));
         }
         println!();
     }
