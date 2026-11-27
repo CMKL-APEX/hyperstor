@@ -2863,6 +2863,13 @@ Findings:
   it would in plaintext. A storage fabric that only the cluster reaches
   should be marked trusted; encryption is for networks shared with
   others, where the cost buys what D25 asks.
-- Not measured: NIC TLS offload (`tls-hw-tx-offload`, which ConnectX-6
-  Dx and later offer; the pilot's adapters weren't checked), several
-  connections per core, and the full data path (engine, replication).
+- **No NIC offload on the pilot** (checked 2026-11-28, `ethtool -k`):
+  `fast` runs on two 100 Gb/s ConnectX-6 ports (PCI `15b3:101b`, not
+  the Dx) in an 802.3ad bond, under a VLAN and a bridge on prism2 and a
+  bridge on prism1. Every port and device shows `tls-hw-tx-offload` and
+  `tls-hw-rx-offload` `off [fixed]`, the BlueField-3's ConnectX-7 port
+  too (its crypto firmware wasn't checked). Even on cards that offer it
+  the bridge would likely stand between the socket and the card;
+  untested. So on the pilot the numbers above are encryption's cost.
+- Not measured: several connections per core, and the full data path
+  (engine, replication).
