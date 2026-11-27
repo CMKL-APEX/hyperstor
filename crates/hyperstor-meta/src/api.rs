@@ -3556,7 +3556,7 @@ impl ClusterService for Api {
             },
             p => p,
         };
-        // A dataset's name is unique in its project (D360, I458).
+        // A dataset's name is unique in its project (D360, I459).
         self.name_free(tenant, project, req.name, &who, "CreateVolume", &target)
             .await?;
         // Only in a pool the tenant's realm may use (D249, D258).
@@ -3923,7 +3923,7 @@ impl ClusterService for Api {
             refuse(F::Exists, format!("volume {new_id:032x} exists"))?;
         }
         // The copy is a dataset of the volume's project: its name is
-        // unique there, so one named by none is `NAME-copy` (D360, I458).
+        // unique there, so one named by none is `NAME-copy` (D360, I459).
         let name = if req.name.is_empty() {
             self.free_name(v.tenant, v.project, &v.name, "copy").await?
         } else {
@@ -4300,7 +4300,7 @@ impl Api {
                 .await?;
         }
         // A clone is a dataset of its project: its name is unique there
-        // (D360, I458).
+        // (D360, I459).
         if let crate::SnapOp::Clone {
             id, name, owner, ..
         } = &op

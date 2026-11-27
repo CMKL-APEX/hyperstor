@@ -86,7 +86,7 @@ impl Api {
     }
 
     /// Refuses a new dataset of `tenant`'s `project` named `name` when
-    /// another live one there has it (D360, I458), audited as `op`.
+    /// another live one there has it (D360, I459), audited as `op`.
     pub(super) async fn name_free(
         &self,
         tenant: u32,

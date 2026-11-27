@@ -671,6 +671,23 @@ pub fn pin_to_cpu(cpu: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// The CPUs the calling thread may run on (its affinity, as `taskset` or
+/// a cgroup's cpuset leave it), in ascending order.
+pub fn allowed_cpus() -> io::Result<Vec<usize>> {
+    // SAFETY: cpu_set_t is plain data; sched_getaffinity writes at most
+    // its size, and CPU_ISSET reads within it for indices below
+    // CPU_SETSIZE.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((0..libc::CPU_SETSIZE as usize)
+            .filter(|&c| libc::CPU_ISSET(c, &set))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

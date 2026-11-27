@@ -1202,7 +1202,7 @@ tests = [
 
 [[milestone.item]]
 what = "hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hyperstorctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet"
-spec = ["29-hsfs.md §32.2", "29-hsfs.md §32.3", "29-hsfs.md §32.4", "D360", "D361", "D387", "D388", "D389", "I458"]
+spec = ["29-hsfs.md §32.2", "29-hsfs.md §32.3", "29-hsfs.md §32.4", "D360", "D361", "D387", "D388", "D389", "I459"]
 status = "partial"
 tests = [
     "datasets::datasets_are_named_in_projects_and_inherit_properties",
