@@ -3021,3 +3021,139 @@ Findings:
   untested. So on the pilot the numbers above are encryption's cost.
 - Not measured: several connections per core, and the full data path
   (engine, replication).
+
+## 2026-11-28: The on-device index's open questions: open time, snapshots, metadata, protection information (M4, M7; #299)
+
+The questions 08-engine.md §7.6 left open, measured on a 2× AMD EPYC
+7742 host, each run pinned to idle CPUs. Points 374–377 in
+05-decision-log.md.
+
+### Open time today (M4)
+
+`hyperstor-bench open` (`HS_GIBS=4,16,64`; with `HS_OPEN_DIR`, on a file
+with `O_DIRECT` through io_uring on ext4 on two Samsung PM983 in RAID 1).
+One shard filled with 4 MiB objects; "random" then overwrites as much
+again 4 KiB at a time at random; "log ¼ full" then writes one-block
+records until a quarter of the log is used (just under where a fuzzy
+checkpoint starts) and drops the shard, as a crash would. Times from
+`Shard::open_times` (new), in ms.
+
+| GiB | Device | Case | Runs (k) | Checkpoint MiB | Records | Checkpoint | Log scan | Replay | Allocator | Open | Bitmap KiB (D412) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 4 | memory | random, clean | 907 | 8.1 | 0 | 5 | 43 | 0 | 654 | 702 | 300 |
+| 4 | memory | random, log ¼ | 1,036 | 8.1 | 19,660 | 6 | 442 | 649 | 781 | 2,046 | 300 |
+| 16 | memory | sequential, clean | 4 | 16.3 | 0 | 27 | 65 | 0 | 1 | 94 | 1,056 |
+| 16 | memory | random, clean | 3,628 | 32.2 | 0 | 41 | 74 | 0 | 4,039 | 4,153 | 1,056 |
+| 16 | memory | random, log ¼ | 3,978 | 32.2 | 31,457 | 41 | 824 | 1,503 | 4,691 | 7,339 | 1,056 |
+| 64 | memory | sequential, clean | 16 | 65.3 | 0 | 75 | 64 | 0 | 6 | 146 | 4,128 |
+| 64 | memory | random, clean | 14,507 | 129.0 | 0 | 92 | 81 | 0 | 21,131 | 21,305 | 4,128 |
+| 64 | memory | random, log ¼ | 14,991 | 129.0 | 31,457 | 94 | 498 | 2,419 | 23,804 | 27,193 | 4,128 |
+| 4 | NVMe file | random, log ¼ | 1,036 | 8.1 | 19,660 | 11 | 8,178 | 653 | 809 | 9,827 | 300 |
+| 16 | NVMe file | random, clean | 3,628 | 32.2 | 0 | 34 | 331 | 0 | 3,972 | 4,338 | 1,056 |
+| 16 | NVMe file | random, log ¼ | 3,978 | 32.2 | 31,457 | 34 | 13,077 | 1,512 | 4,675 | 19,689 | 1,056 |
+
+1. **Rebuilding the allocator dominates, and grows faster than the
+   data:** 0.65 s at 4 GiB, 4.0 s at 16 and 21 s at 64 GiB of
+   fragmented data (0.7, 1.1 and 1.45 µs per run). Each extent is
+   reserved by splitting a free extent in two ordered maps. A 3.84 TB
+   drive as fragmented would take tens of minutes. Bitmap pages (D412)
+   read 32 KiB per GiB of device: 117 MiB for 3.84 TB, well under a
+   second.
+2. **Scanning the log is slow on a device:** 8–13 s for a quarter of
+   the log on the NVMe file against 0.4–0.8 s in memory. The scan reads
+   one record header at a time, then the record, each a synchronous
+   read. Reading ahead in large reads would bring it near the memory
+   figure. This is independent of the on-device index.
+3. Loading today's checkpoint is fast (under 0.1 s at 64 GiB) and
+   replay is 1.5–2.4 s for a quarter of the log, most of it copying the
+   index for a possible second replay (I188).
+
+### Snapshots: version objects against ranges shared with reference counts
+
+`hyperstor-bench snapshots` (`HS_GIB=4`): 1,024 chunks of 4 MiB written
+whole, then k snapshots; each epoch writes the given share of the blocks
+4 KiB at a time at random into the chunk's version for that epoch (D10,
+as built: a new version object holding only the blocks written). Sizes
+in the packed leaf format (D408), from the engine's real maps.
+"Shared" models the other design: one head map per chunk, and per
+snapshot a copy of every head leaf its later writes changed (a
+copy-on-write tree with reference counts, D44). Reads: 100,000 random
+4 KiB reads at the head, newest version first; "layered" is today's
+`read_layered` through every version, "one object" the same read from
+one object, both in memory.
+
+| Written per epoch | Snapshots | Version objects MiB | Shared: head + leaves kept, MiB | Versions probed (mean / p99) | Leaves touched (mean / p99) | Layered read, ns | One object, ns |
+|---|---|---|---|---|---|---|---|
+| 1% | 1 | 0.2 | 0.9 | 2.0 / 2 | 1.04 / 2 | 1,575 | 1,351 |
+| 1% | 4 | 0.8 | 8.6 | 4.9 / 5 | 1.23 / 2 | 2,645 | 1,399 |
+| 1% | 16 | 3.1 | 96.1 | 15.7 / 17 | 1.97 / 3 | 6,055 | 1,432 |
+| 1% | 64 | 12.2 | 373.7 | 48.1 / 65 | 4.18 / 6 | 22,328 | 1,924 |
+| 10% | 1 | 1.5 | 7.1 | 1.9 / 2 | 1.24 / 2 | 1,532 | 1,346 |
+| 10% | 4 | 6.0 | 27.2 | 4.1 / 5 | 2.49 / 4 | 2,218 | 1,473 |
+| 10% | 16 | 23.7 | 96.5 | 8.6 / 17 | 4.95 / 10 | 4,711 | 1,434 |
+| 10% | 64 | 94.7 | 374.0 | 10.5 / 47 | 5.99 / 25 | 16,479 | 1,618 |
+
+1. **Version objects are 4–30× smaller** than sharing ranges: a shared
+   tree keeps a whole 4 KiB leaf for every leaf a snapshot's later
+   writes touch, while a version holds only the blocks written. They
+   also need no reference counts: each version owns its blocks.
+2. **Their cost is on the read path.** A read at the head probes
+   versions newest first until one holds the block: a mean of 4–5 with
+   4 snapshots, 16 with 16, 48 with 64 when epochs write little. In
+   today's engine a 4 KiB read costs 1.6–1.9× with 4 snapshots, 3–4×
+   with 16, 10–16× with 64. On the device, the versions of a chunk sit
+   next to each other in key order, so probes share leaves: 1–6 leaves
+   touched on average, p99 up to 25 with 64 busy epochs.
+3. A head read needs one probe if each chunk also has a map of its
+   head: for each block, the version holding it. It is derived from the
+   versions, owns nothing (so still no reference counts), costs what
+   the shared design's head costs (4 MiB here) and can be rebuilt from
+   them.
+
+### Metadata: a copy-on-write B+tree against a Bε-tree, over the log (D44, G15)
+
+`hyperstor-bench metadata`. Today's engine logs 192 bytes per key–value
+put (32-byte key, 64-byte value, 64 puts a round). With the largest log
+(1 GiB), a checkpoint starts every 256 MiB of log: about 1.4 million
+puts. The model: entries of 100 bytes, 28 to a leaf; puts to uniformly
+random keys; at each checkpoint, the B+tree writes every leaf changed
+and its ancestors (119 children per inner node), and the Bε-tree every
+node changed (16 children per inner node, a buffer of 33 messages,
+the fullest child flushed when a buffer overflows). Steady state, 5
+intervals after 3.
+
+| Keys | Leaves | Puts per checkpoint | Per leaf | B+tree pages per put | Bε pages per put | B+tree bytes per put | Bε bytes per put | Heights (B+ / Bε) |
+|---|---|---|---|---|---|---|---|---|
+| 1M | 35,714 | 3,571 | 0.10 | 1.04 | 0.22 | 4,244 | 884 | 4 / 5 |
+| 1M | 35,714 | 35,714 | 1.00 | 0.64 | 0.14 | 2,619 | 561 | 4 / 5 |
+| 1M | 35,714 | 1,398,101 (largest log) | 39.1 | 0.026 | 0.006 | 106 | 23 | 4 / 5 |
+| 10M | 357,142 | 35,714 | 0.10 | 1.04 | 0.15 | 4,245 | 604 | 4 / 6 |
+| 10M | 357,142 | 1,398,101 (largest log) | 3.91 | 0.25 | 0.06 | 1,034 | 261 | 4 / 6 |
+| 100M | 3,571,428 | 357,142 | 0.10 | 1.04 | 0.10 | 4,245 | 420 | 5 / 7 |
+| 100M | 3,571,428 | 1,398,101 (largest log) | 0.39 | 0.85 | 0.13 | 3,477 | 526 | 5 / 7 |
+
+1. **The log already batches updates for the tree.** Where a shard has
+   tens of puts per leaf between checkpoints (1 million keys), the
+   B+tree adds 106 bytes per put to the log's 192, and a Bε-tree saves
+   little.
+2. **With more keys than puts per checkpoint, the Bε-tree writes 4–16×
+   less:** at 10 million keys the B+tree adds 5.4× the log's bytes
+   (1,034 per put), at 100 million 18× (3,477); the Bε-tree 1.4× and
+   2.7×. It costs one or two more levels and a search of buffers on
+   each read.
+3. A larger log is the cheaper lever: B+tree pages per put fall with
+   puts per leaf per checkpoint.
+
+### Protection information on the drives at hand (M7, G40)
+
+`nvme id-ns` and `nvme id-ctrl` (nvme-cli). All drives are formatted
+512-byte blocks without metadata today.
+
+| Drive | NVMe | Formats offered | Protection information |
+|---|---|---|---|
+| Samsung PM1733 3.84 TB | 1.3 | 512, 512+8, 4096, 4096+8, 4096+64 | Types 1–3, first or last 8 bytes of metadata; 16-bit CRC guard only (the 64-bit guard needs NVMe 2.0's extended formats) |
+| Samsung PM983 1.92 TB | 1.2 | 512, 4096 | None |
+
+The PM1733's 4096+64 format leaves 56 bytes per block beside the 8 of
+protection information: room for our own CRC32C. Its speed is not
+measured: that needs a drive reformatted, which erases it.

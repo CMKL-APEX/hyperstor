@@ -13,7 +13,9 @@
 
 mod cpus;
 mod layout;
+mod open;
 mod tls;
+mod versions;
 
 use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
@@ -2391,6 +2393,21 @@ fn main() {
             // hyperstor-bench layout: the on-device index's leaf formats
             // on the engine's real block maps (D43, point 99)
             layout::suite();
+        }
+        Some("open") => {
+            // hyperstor-bench open: how long a shard takes to open, phase
+            // by phase (M4)
+            open::suite();
+        }
+        Some("snapshots") => {
+            // hyperstor-bench snapshots: version objects against ranges
+            // shared with reference counts (D10, D44; #299)
+            versions::snapshot_suite();
+        }
+        Some("metadata") => {
+            // hyperstor-bench metadata: pages a copy-on-write B+tree and a
+            // Bε-tree write per update, checkpointed over the log (D44, G15)
+            versions::meta_suite();
         }
         Some("lookup") => {
             // hyperstor-bench lookup: a page table against swizzled

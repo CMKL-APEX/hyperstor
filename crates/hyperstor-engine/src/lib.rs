@@ -25,6 +25,6 @@ pub use device::{
 pub use hyperstor_codec::IoBuf;
 pub use shard::{
     CheckpointLayout, DEFER_MAX, DIGEST_CACHE_MIN, DigestPart, Digesting, IndexStats, MAX_READ,
-    ReadPlan, Region, Round, Shard, ShardStats,
+    OpenTimes, ReadPlan, Region, Round, Shard, ShardStats,
 };
 pub use types::{Committed, EngineError, Namespace, ObjKey, ObjStat, Op, OpError, OpList};

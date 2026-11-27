@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 /// Tree node size, and how full a node is on average (B+tree splits leave
 /// nodes about 70% full).
-const NODE: f64 = 4096.0;
-const FILL: f64 = 0.7;
+pub(crate) const NODE: f64 = 4096.0;
+pub(crate) const FILL: f64 = 0.7;
 /// An inner node's entry: a key (object id and block, 16 bytes) and a
 /// child pointer (8 bytes).
 const INNER_ENTRY: f64 = 24.0;
@@ -31,9 +31,9 @@ const CRCS_PER_PAGE: u64 = 1024;
 
 /// One object's mappings, as maximal runs contiguous both logically and
 /// physically: (first logical block, physical block, blocks).
-type Runs = Vec<(u64, u64, u64)>;
+pub(crate) type Runs = Vec<(u64, u64, u64)>;
 
-fn mappings(sh: &Shard) -> Vec<(ObjKey, Runs)> {
+pub(crate) fn mappings(sh: &Shard) -> Vec<(ObjKey, Runs)> {
     sh.index()
         .objects
         .iter()
@@ -101,17 +101,17 @@ fn tree(leaf_bytes: f64) -> (u64, f64) {
     (leaves, inner as f64 * NODE)
 }
 
-struct Layout {
+pub(crate) struct Layout {
     objects: usize,
     blocks: u64,
     runs: u64,
     /// Per object: its cumulative leaf bytes before it, and its own, for
     /// each format (to place a changed block in a leaf).
-    place: BTreeMap<ObjKey, [(f64, f64); 4]>,
-    total: [f64; 4],
+    pub(crate) place: BTreeMap<ObjKey, [(f64, f64); 4]>,
+    pub(crate) total: [f64; 4],
 }
 
-fn layout(maps: &[(ObjKey, Runs)]) -> Layout {
+pub(crate) fn layout(maps: &[(ObjKey, Runs)]) -> Layout {
     let mut total = [0.0f64; 4];
     let mut place = BTreeMap::new();
     let (mut blocks, mut runs) = (0, 0);
