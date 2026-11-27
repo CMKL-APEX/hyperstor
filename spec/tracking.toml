@@ -1651,8 +1651,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T2: a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity`"
-spec = ["30-data-path-tls.md §33.6", "D375", "D385"]
+what = "T2: `mgmt` certificates refused on the data path once glidex passes `--identity`"
+spec = ["30-data-path-tls.md §33.5", "D385"]
 status = "planned"
 
 [[milestone.item]]
@@ -1781,8 +1781,8 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates"
-spec = ["19-administration.md §23.4.2", "D57", "I275"]
+what = "Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates; a storage host that serves VM disks gets a `host` certificate with its node's (`IssueHostCertificate`)"
+spec = ["19-administration.md §23.4.2", "30-data-path-tls.md §33.6", "D57", "D386", "I275", "I456"]
 status = "done"
 tests = [
     "join::storage_hosts_join_with_tokens",

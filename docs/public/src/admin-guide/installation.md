@@ -279,6 +279,12 @@ The token names the host as it names itself (its host name); a token
 for another name is refused. Later runs need no token and renew the
 certificate.
 
+A host that already runs a hyperstor role needs no token for this.
+`install --vhost` gives it a `host` certificate of its own beside the
+one it has: a map service member issues it itself, and a storage host
+asks the cluster API with its node's certificate. `hyperstor-vhost`
+shows it from its next start.
+
 `--vhost-user glidex` lets glidex's control plane attach volumes and its
 hypervisors open their sockets. Name every user your hypervisors run as:
 each volume's socket is for the user who attached it, and anyone else is

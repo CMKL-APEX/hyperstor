@@ -5,8 +5,8 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380 and D382–D385 are settled with the owner
-(05-decision-log.md points 335–347 and 349, 2026-11-25 and 26). Host checks G67–G69 are
+Status: **design.** D372–D380 and D382–D386 are settled with the owner
+(05-decision-log.md points 335–347, 349 and 350, 2026-11-25 to 27). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
@@ -142,6 +142,7 @@ Once a connection is authenticated, and for every connection in
 |---|---|---|
 | Storage host joined with a token | `node` N | has it (AD1) |
 | Map service member that runs a storage node | `node` N beside its `meta`, in `node-N.crt` | the installer issues one at its next run, from the member's CA; until then its node shows the member's (D370) and is served as `meta` |
+| Storage host that serves VM disks | `host` NAME beside its `node` N | the installer asks the cluster API with the node's certificate (D386, I456) |
 | Map service member's host, as a client | `host` NAME, in `host.crt` | the installer issues one from the member's CA (I454): `hyperstor-vhost` and `hyperstorctl --identity` there show it, not the member's |
 | VM host (`--role vhost`), `hyperstor-ublk` host | `host` NAME, the name it gives as `--host` | `hyperstor-install --role vhost --join API --token-file F`, with a `host` token (D375) |
 | S3 gateway | `s3` | has it (D233) |

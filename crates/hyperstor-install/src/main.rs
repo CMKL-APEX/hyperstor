@@ -769,6 +769,11 @@ fn main() {
                 if let Some(f) = join(&root, real, &mut s, token.as_deref()) {
                     cluster_file = Some(f);
                 }
+                // A storage host that serves VM disks is a client host
+                // too, with a certificate of its own for that (D386).
+                if s.role == "storage" && s.runs_vhost() {
+                    node_host_cert(&root, real, &s);
+                }
                 // A storage host's gateway joins with an s3 token of its
                 // own; one spent on the storage join can't serve.
                 if s.role == "storage"
@@ -3100,6 +3105,54 @@ fn renew_leaf(root: &Path, real: bool, s: &Settings, name: &str) -> bool {
             );
             false
         }
+    }
+}
+
+/// A storage host's own `host` certificate (D386; 30-data-path-tls.md
+/// §33.6), asked of the cluster API with its node's certificate the first
+/// time, renewed with itself by later runs: what `hyperstor-vhost` shows
+/// storage nodes, under the name the host gives them, in place of the
+/// node's. Not fatal: a map service from before it refuses the call, and
+/// `hyperstor-vhost` goes on with the node's certificate.
+fn node_host_cert(root: &Path, real: bool, s: &Settings) {
+    let dir = under(root, "/etc/hyperstor/pki");
+    if dir.join("host.crt").exists() {
+        renew_leaf(root, real, s, "host");
+        return;
+    }
+    let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
+    let node = read("node.crt");
+    if node.is_empty() {
+        return;
+    }
+    let tls = hyperstor_pki::client_config(&node, &read("node.key"), &read("root.crt"))
+        .unwrap_or_else(|e| fail(&format!("{}: {e}", dir.display())));
+    let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
+    let name = client_host_name();
+    let asked = name.clone();
+    let r = api_call(&s.join, tls, |c| async move {
+        hyperstor_api::CaServiceClient::new(c.0, c.1)
+            .issue_host_certificate(hyperstor_api::IssueHostCertificateRequest {
+                csr,
+                name: asked,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+    });
+    match r {
+        Ok(r) => {
+            converge(&dir.join("host.key"), key.as_bytes(), 0o640);
+            converge(&dir.join("host.crt"), r.certificate.as_bytes(), 0o644);
+            if real && !run("chgrp", &["hyperstor", "/etc/hyperstor/pki/host.key"]) {
+                fail("chgrp hyperstor /etc/hyperstor/pki/host.key failed");
+            }
+            println!("This host has its own certificate for VM disks, as host {name}.");
+        }
+        Err(e) => eprintln!(
+            "hyperstor-install: no host certificate through {}: {e}; hyperstor-vhost shows the node's until a later run gets one",
+            s.join
+        ),
     }
 }
 

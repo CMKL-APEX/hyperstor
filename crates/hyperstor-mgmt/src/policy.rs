@@ -192,6 +192,7 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("People.RevokeToken", Group::Own, false),
     ("TokenService.Join", Group::Machine, false),
     ("CaService.RenewCertificate", Group::Machine, false),
+    ("CaService.IssueHostCertificate", Group::Machine, false),
     ("AuditService.AppendAudit", Group::Machine, false),
     ("MgmtStoreService.GetRow", Group::Machine, false),
     ("MgmtStoreService.PutRow", Group::Machine, false),

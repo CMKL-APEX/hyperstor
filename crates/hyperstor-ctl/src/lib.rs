@@ -1092,6 +1092,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TokenService.Join", "hyperstor-install install --join"),
     // Also by hyperstor-install's daily run, for the host's own.
     ("CaService.RenewCertificate", "cert renew"),
+    (
+        "CaService.IssueHostCertificate",
+        "hyperstor-install install --vhost",
+    ),
     ("CaService.ListCertificates", "cert list"),
     ("CaService.RevokeCertificate", "cert revoke"),
     // A member without the cluster key asks another (D162).

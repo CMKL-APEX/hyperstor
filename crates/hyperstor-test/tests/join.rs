@@ -514,6 +514,42 @@ fn storage_hosts_join_with_tokens() {
         short.key,
         "a new key"
     );
+    // D386: a storage host that serves VM disks asks for a certificate
+    // of its own for that, with its node's, as the host its node reports
+    // it runs on; hyperstor-vhost shows it in place of the node's.
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap()
+        .trim()
+        .to_string();
+    let r = install(&host0, &["--vhost"]);
+    assert!(
+        r.has(&format!(
+            "This host has its own certificate for VM disks, as host {name}."
+        )),
+        "{}",
+        r.out
+    );
+    let host =
+        hyperstor_pki::identity_in(&std::fs::read_to_string(h0.join("host.crt")).unwrap()).unwrap();
+    assert_eq!(
+        (host.role, host.id.as_str(), host.cluster.as_str()),
+        (hyperstor_pki::Role::Host, name.as_str(), "11")
+    );
+    let names: Vec<String> = ["host", "node", "api"].map(String::from).into();
+    let (shown, _, _) = hyperstor_pki::identity_files(&h0, &names).unwrap();
+    assert_eq!(
+        hyperstor_pki::identity_in(&shown).unwrap().role,
+        hyperstor_pki::Role::Host
+    );
+    // Listed with the node's that asked, and audited; kept by later runs.
+    let listed = ctl(&bin, &api, &pki, &["cert", "list"]).ok();
+    assert!(
+        listed.has(&format!("/host/{name} ")),
+        "host {name} isn't among the certificates listed"
+    );
+    let kept = std::fs::read_to_string(h0.join("host.crt")).unwrap();
+    install(&host0, &["--vhost"]);
+    assert_eq!(std::fs::read_to_string(h0.join("host.crt")).unwrap(), kept);
     // Every join, refused or not, is audited, without the secret.
     // Both lives of the map service: before and after its restart.
     let log = std::fs::read_to_string(&meta_log).unwrap()

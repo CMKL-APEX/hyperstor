@@ -108,6 +108,13 @@ service CaService {
   // Any identity of the cluster.
   rpc RenewCertificate(RenewCertificateRequest) returns (RenewCertificateResponse);
 
+  // A `host` certificate for the host a storage node runs on
+  // (04-decisions.md D386), for the key in the request: what
+  // hyperstor-vhost and hyperstorctl --identity show storage nodes
+  // there. Asked with that node's certificate, for the host name the
+  // node reports. Storage nodes only; audited.
+  rpc IssueHostCertificate(IssueHostCertificateRequest) returns (IssueHostCertificateResponse);
+
   // Certificates issued through the API, and the revocation list. Read.
   rpc ListCertificates(ListCertificatesRequest) returns (ListCertificatesResponse);
 
@@ -370,6 +377,20 @@ message RenewCertificateRequest {
 }
 
 message RenewCertificateResponse {
+  // Chain, leaf then intermediate, PEM.
+  string certificate = 1;
+  string root = 2;
+}
+
+message IssueHostCertificateRequest {
+  // PEM.
+  string csr = 1;
+  // The host's name, as it names itself to storage nodes: the one the
+  // caller's node reported, where it has reported one.
+  string name = 2;
+}
+
+message IssueHostCertificateResponse {
   // Chain, leaf then intermediate, PEM.
   string certificate = 1;
   string root = 2;

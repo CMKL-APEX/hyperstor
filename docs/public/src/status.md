@@ -260,7 +260,7 @@ covered by tests that run on every change.
 | T2: UDP pings keyed with the sealing key (protocol version 11), plain ones ignored in `require`; the TCP ping fallback authenticated | Done |
 | T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts | Done |
 | T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`) | Done |
-| T2: a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
+| T2: `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
 | T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
 
 ## AD0: Administration API, identities and CLI
@@ -282,7 +282,7 @@ covered by tests that run on every change.
 | One-command trial cluster on one host, with system services, updated in place on later runs (every binary read before any is written; services on replaced binaries restarted, I293) | Done |
 | Installing a cluster across hosts from a shared cluster file | Done |
 | A host's roles changed by the installer: promote a storage host to a member, demote a member to storage, replace a member | Done |
-| Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates | Done |
+| Joining storage hosts and map service members (also running a storage node of the cluster file) with single-use join tokens, and renewing their certificates; a storage host that serves VM disks gets a `host` certificate with its node's (`IssueHostCertificate`) | Done |
 | Backing up the root CA's key, encrypted, and restoring it | Done |
 | Installing storage hosts on whole devices | Planned |
 | Other tools see Hyperstor's devices: a libblkid prober (TYPE hyperstor, the format version, the cluster id as UUID, device-N as label, checked by CRC32C), built into Ubuntu's own libblkid per release by scripts/build-libblkid-deb.sh and installed with hyperstor-install --libblkid-deb as a copy of the library beside Ubuntu's package, removed by an apt hook when Ubuntu updates libblkid1; the host check says whether libblkid knows them, warns once an update replaced the build, and warns on apt's unmet dependencies on libblkid1 | Done |
