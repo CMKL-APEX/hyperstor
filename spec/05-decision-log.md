@@ -2020,7 +2020,8 @@ Proposed refinements to D43 (range keys, checksums out of the leaves,
 the tree as the checkpoint, a buffer pool with swizzling, a persistent
 free-space map, 64-bit addresses) were reviewed, and the first
 measurements taken (02-benchmarks.md, 2026-11-27, `hyperstor-bench
-layout`). Open for the owner:
+layout`, and `hyperstor-bench lookup` and fio for M6 and M3). Settled
+by the owner on 2026-11-28 as recommended: D408–D413, one a point.
 
 | # | Point | Data so far | Recommendation |
 |---|---|---|---|
