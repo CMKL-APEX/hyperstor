@@ -250,3 +250,78 @@ fn datasets_are_named_in_projects_and_inherit_properties() {
     assert!(u.code == 2 && u.has("usage: hsfs"), "{}", u.out);
     c.hsfs(&["destroy", "acme"]).expect(2);
 }
+
+/// `readonly=on` (D390): the volume's primaries refuse clients' writes,
+/// set on it or inherited from its project, while it still reads; the
+/// API refuses expanding and rolling it back; inherited back off, it
+/// takes writes again.
+#[test]
+fn a_read_only_volume_reads_and_refuses_writes() {
+    let c = Cluster::all_in_one("readonly", 3);
+    let acme = made_id(&c.ctl(&["tenant", "create", "--name", "acme"]).ok());
+    let ml = made_id(
+        &c.ctl(&["project", "create", "--tenant", &acme, "--name", "ml"])
+            .ok(),
+    );
+    let v = volume_id(
+        &c.ctl(&[
+            "create-volume",
+            "--size",
+            "4M",
+            "--name",
+            "data",
+            "--project",
+            &ml,
+        ])
+        .ok(),
+    );
+    let image: Vec<u8> = (0..1 << 20).map(|i| (i / 4096 % 251) as u8 + 1).collect();
+    let src = c.scratch.path("image.raw");
+    std::fs::write(&src, &image).unwrap();
+    let write = || c.ctl(&["write-volume", "--id", &v, "--file", src.to_str().unwrap()]);
+    let read = || {
+        let out = c.scratch.path("back.raw");
+        c.ctl(&[
+            "read-volume",
+            "--id",
+            &v,
+            "--size",
+            "1M",
+            "--out",
+            out.to_str().unwrap(),
+        ])
+        .ok();
+        std::fs::read(out).unwrap()
+    };
+    write().ok();
+    c.ctl(&["snapshot", "create", "--id", &v, "--name", "s"])
+        .ok();
+
+    // Inherited from its project.
+    c.hsfs(&["set", "readonly=on", "acme/ml"]).ok();
+    let r = write();
+    assert!(r.code != 0 && r.has("read-only"), "{}", r.out);
+    assert_eq!(read(), image, "it still reads");
+    let r = c.ctl(&["expand-volume", "--id", &v, "--size", "8M"]);
+    assert!(r.code == 1 && r.has("read-only"), "{}", r.out);
+    let r = c.ctl(&["rollback-volume", "--id", &v, "--epoch", "1"]);
+    assert!(r.code == 1 && r.has("read-only"), "{}", r.out);
+    let got = json(
+        &c.hsfs(&["get", "readonly", "acme/ml/data", "--json"])
+            .ok()
+            .out,
+    );
+    assert_eq!(got["properties"][0]["value"], "on");
+    assert_eq!(got["properties"][0]["source"], "acme/ml");
+    assert_eq!(got["properties"][0]["enforced"], true);
+
+    // Set off on the volume itself, below its project's on: it writes.
+    c.hsfs(&["set", "readonly=off", "acme/ml/data"]).ok();
+    write().ok();
+    // Back to its project's, then the project's cleared too.
+    c.hsfs(&["inherit", "readonly", "acme/ml/data"]).ok();
+    assert!(write().code != 0);
+    c.hsfs(&["inherit", "readonly", "acme/ml"]).ok();
+    write().ok();
+    c.ctl(&["expand-volume", "--id", &v, "--size", "8M"]).ok();
+}

@@ -153,6 +153,137 @@ impl Api {
             .and_then(|p| p.parse().ok()))
     }
 
+    /// The volumes whose `readonly` is on, as their chunks are named
+    /// (D390): all but those a running copy or move writes to, which take
+    /// it once it is done.
+    #[allow(clippy::type_complexity)]
+    async fn readonly_volumes(
+        &self,
+    ) -> Result<
+        (
+            std::collections::BTreeSet<(u128, u32)>,
+            std::collections::BTreeSet<(u32, String)>,
+        ),
+        ConnectError,
+    > {
+        use crate::operations::Work;
+        let tenancy = self.tenancy().await?;
+        let props = self.realm_rows("properties", datasets::load).await?;
+        let busy: std::collections::BTreeSet<u128> = self
+            .admin
+            .runner
+            .store(|s| s.list())
+            .await
+            .map_err(|e| ConnectError::unavailable(format!("operations: {e:?}")))?
+            .into_iter()
+            .filter(|o| o.running())
+            .filter_map(|o| match o.work {
+                Work::Copy { new_id, .. } => Some(new_id),
+                Work::Move { volume, .. } => Some(volume),
+                _ => None,
+            })
+            .collect();
+        let mut out = std::collections::BTreeSet::new();
+        let (map, ..) = self.published().await?;
+        for &pool in map.pools.keys().filter(|&&p| p != hyperstor_map::META_POOL) {
+            let (reply, rx) = oneshot();
+            self.tx
+                .send(Admin::ListVolumes {
+                    pool,
+                    trash: false,
+                    reply,
+                })
+                .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+            for v in volume_result(rx.recv().await)? {
+                let tenant = tenancy.tenant_of(v.tenant, v.project);
+                let project = tenancy.project_of(tenant, v.project);
+                let at = datasets::chain(Some(Level::Volume(v.id)), tenant, project);
+                if props.get(&at, "readonly") == Some("on") && !busy.contains(&v.id) {
+                    out.insert((v.lineage, v.branch));
+                }
+            }
+        }
+        // Buckets by the name their gateways know them by.
+        let BucketDone::List(list) = self.bucket_op(BucketOp::List { tenant: None }).await? else {
+            return Err(ConnectError::internal("a bucket list answered otherwise"));
+        };
+        let buckets = list
+            .into_iter()
+            .filter(|b| {
+                let project = tenancy.bucket_project(b.tenant, b.project);
+                let at = datasets::chain(Some(Level::Bucket(b.table)), b.tenant, project);
+                props.get(&at, "readonly") == Some("on")
+            })
+            .map(|b| (b.tenant, b.name))
+            .collect();
+        Ok((out, buckets))
+    }
+
+    /// Puts the read-only volumes in the map (D390), answered once storage
+    /// nodes hold them.
+    pub(super) async fn sync_readonly(&self) -> Result<(), ConnectError> {
+        let (readonly, buckets) = self.readonly_volumes().await?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::SyncReadonly {
+                readonly,
+                buckets,
+                reply,
+            })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        match rx.recv().await {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(ConnectError::unavailable(e)),
+            None => Err(ConnectError::unavailable("map service stopped")),
+        }
+    }
+
+    /// Keeps the map's read-only volumes current on the leader (D390):
+    /// volumes made, cloned, copied or moved in a read-only project, and
+    /// copies and moves that finished, are in it within 30 s.
+    pub(super) async fn readonly_upkeep(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if self.admin.runner.leads().await
+                && let Err(e) = self.sync_readonly().await
+            {
+                eprintln!(
+                    "hyperstor-meta: read-only volumes not updated: {}",
+                    e.message.as_deref().unwrap_or("")
+                );
+            }
+        }
+    }
+
+    /// Refuses `op` on volume `v` while its `readonly` is on (D390), as its
+    /// chunks' primaries refuse its writes: expanding, rolling back or
+    /// flattening it would change what it reads.
+    pub(super) async fn not_readonly(
+        &self,
+        v: &crate::Volume,
+        who: &str,
+        op: &str,
+        target: &str,
+    ) -> Result<(), ConnectError> {
+        let tenancy = self.tenancy().await?;
+        let tenant = tenancy.tenant_of(v.tenant, v.project);
+        let project = tenancy.project_of(tenant, v.project);
+        let props = self.realm_rows("properties", datasets::load).await?;
+        let at = datasets::chain(Some(Level::Volume(v.id)), tenant, project);
+        if props.get(&at, "readonly") != Some("on") {
+            return Ok(());
+        }
+        let e = with_reason(
+            ConnectError::failed_precondition(format!(
+                "volume {:032x} is read-only (readonly=on): set readonly=off first",
+                v.id
+            )),
+            "readonly",
+        );
+        super::refused(who, op, target, &e);
+        Err(e)
+    }
+
     async fn resolve(
         &self,
         scope: &Scope,
@@ -247,6 +378,7 @@ impl Api {
         tenancy: &Tenancy,
         map: &crate::ClusterMap,
         v: &datasets::Value,
+        kind: Option<Kind>,
     ) -> pb::DatasetProperty {
         let value = if v.property.is_pool() && v.set.is_some() {
             pool_name(map, &v.value)
@@ -263,7 +395,7 @@ impl Api {
                 Source::Inherited(Level::Project(p)) => tenancy.project_label(p),
                 Source::Inherited(l) => format!("{l:?}"),
             },
-            enforced: v.property.enforced,
+            enforced: v.property.enforced_for(kind),
             set_by: v.set.as_ref().map(|s| s.set_by.clone()).unwrap_or_default(),
             set_unix: v.set.as_ref().map_or(0, |s| s.set_unix),
             ..Default::default()
@@ -397,7 +529,7 @@ impl DatasetService for Api {
                 .values(&r.chain, kind)
                 .iter()
                 .filter(|v| req.names.is_empty() || req.names.contains(&v.property.name))
-                .map(|v| self.property_pb(&tenancy, &map, v))
+                .map(|v| self.property_pb(&tenancy, &map, v, kind))
                 .collect(),
             ..Default::default()
         }
@@ -415,6 +547,10 @@ impl DatasetService for Api {
         let (tenancy, r) = self
             .reached(&scope, req.dataset, &who, "SetDatasetProperty", &target)
             .await?;
+        let set_kind = match r.path {
+            Path::Dataset(id) => Some(id.kind()),
+            _ => None,
+        };
         let (map, ..) = self.published().await?;
         let r = async {
             let p = datasets::property(req.name).ok_or_else(|| {
@@ -469,8 +605,13 @@ impl DatasetService for Api {
         }
         .await;
         let v = Self::audited(&who, "SetDatasetProperty", &target, r)?;
+        // Storage nodes refuse a read-only volume's writes once they hold
+        // the map that says so (D390): answered then.
+        if req.name == "readonly" {
+            self.sync_readonly().await?;
+        }
         Ok(pb::SetDatasetPropertyResponse {
-            property: buffa::MessageField::some(self.property_pb(&tenancy, &map, &v)),
+            property: buffa::MessageField::some(self.property_pb(&tenancy, &map, &v, set_kind)),
             ..Default::default()
         }
         .into())
@@ -499,6 +640,9 @@ impl DatasetService for Api {
             .realm_rows("dataset", move |db| datasets::inherit(db, level, &name))
             .await;
         let was_set = Self::audited(&who, "InheritDatasetProperty", &target, was)?;
+        if was_set && req.name == "readonly" {
+            self.sync_readonly().await?;
+        }
         Ok(pb::InheritDatasetPropertyResponse {
             was_set,
             ..Default::default()

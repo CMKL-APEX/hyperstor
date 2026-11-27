@@ -136,124 +136,126 @@ pub struct Property {
     /// What a dataset has when nothing above it sets it: `-` for the
     /// pool's or the cluster's own.
     pub default: &'static str,
-    /// Whether anything acts on it yet; others are kept and shown.
-    pub enforced: bool,
+    /// The kinds of dataset anything acts on it for yet; for others it is
+    /// kept and shown.
+    pub enforced: &'static [Kind],
     check: Check,
 }
 
-/// Every property, in §32.3's order. Only `pool` acts in H1: it is the
-/// pool new volumes go to when their creation names none (I458).
+/// Every property, in §32.3's order. Two act on volumes so far: `pool`,
+/// the pool new volumes go to when their creation names none (I458), and
+/// `readonly`, whose volumes' primaries refuse writes (D390).
 pub const PROPERTIES: &[Property] = &[
     Property {
         name: "quota",
         applies: Applies::All,
         default: "none",
-        enforced: false,
+        enforced: &[],
         check: Check::Size,
     },
     Property {
         name: "refquota",
         applies: Applies::All,
         default: "none",
-        enforced: false,
+        enforced: &[],
         check: Check::Size,
     },
     Property {
         name: "reservation",
         applies: Applies::All,
         default: "none",
-        enforced: false,
+        enforced: &[],
         check: Check::Size,
     },
     Property {
         name: "pool",
         applies: Applies::All,
         default: "-",
-        enforced: true,
+        enforced: &[Kind::Volume, Kind::Bucket],
         check: Check::Pool,
     },
     Property {
         name: "chunk",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Chunk,
     },
     Property {
         name: "stripe",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Number(1, 256),
     },
     Property {
         name: "compression",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Words(&["off", "lz4", "zstd"]),
     },
     Property {
         name: "encryption",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Words(&["off", "on"]),
     },
     Property {
         name: "readonly",
         applies: Applies::All,
         default: "off",
-        enforced: false,
+        enforced: &[Kind::Volume, Kind::Bucket],
         check: Check::Words(&["off", "on"]),
     },
     Property {
         name: "reads",
         applies: Applies::All,
         default: "primary",
-        enforced: false,
+        enforced: &[],
         check: Check::Words(&["primary", "any"]),
     },
     Property {
         name: "weight",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Number(1, 10_000),
     },
     Property {
         name: "class",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Words(&["latency", "normal", "bulk"]),
     },
     Property {
         name: "snapdir",
         applies: Applies::Filesystem,
         default: "hidden",
-        enforced: false,
+        enforced: &[],
         check: Check::Words(&["hidden", "visible"]),
     },
     Property {
         name: "nfs",
         applies: Applies::Filesystem,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Text,
     },
     Property {
         name: "s3",
         applies: Applies::Bucket,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Text,
     },
     Property {
         name: "sync",
         applies: Applies::All,
         default: "-",
-        enforced: false,
+        enforced: &[],
         check: Check::Text,
     },
 ];
@@ -329,6 +331,12 @@ impl Property {
     /// Whether a dataset of kind `k` has it.
     pub fn applies_to(&self, k: Kind) -> bool {
         self.applies.to(k)
+    }
+
+    /// Whether anything acts on it for a dataset of kind `k`, or, for a
+    /// tenant or project (`None`), for any dataset below it.
+    pub fn enforced_for(&self, k: Option<Kind>) -> bool {
+        k.map_or(!self.enforced.is_empty(), |k| self.enforced.contains(&k))
     }
 
     /// Whether its value names a pool.

@@ -441,7 +441,7 @@ impl Api {
 
     /// Refuses a call limited to realms: only [`Api::authorize_in`]'s
     /// callers know what is in a realm (D262).
-    fn authorize_as(
+    pub(super) fn authorize_as(
         &self,
         ctx: &RequestContext,
         op: &str,
@@ -3622,6 +3622,8 @@ impl ClusterService for Api {
         let scope = self.scope(reach).await?;
         self.volume_in(&scope, id, &who, "ExpandVolume", &target)
             .await?;
+        self.not_readonly(&self.volume_any(id).await?, &who, "ExpandVolume", &target)
+            .await?;
         let (reply, rx) = oneshot();
         self.tx
             .send(Admin::ExpandVolume {
@@ -3851,6 +3853,8 @@ impl ClusterService for Api {
                 "not_found",
             ));
         }
+        self.not_readonly(&v, &who, "FlattenVolume", &target)
+            .await?;
         let op = self
             .start_op(
                 &who,
@@ -4290,6 +4294,11 @@ impl Api {
                 self.volume_in(&scope, *id, &who, rpc, &target).await?
             }
         }
+        // Rolling back a read-only volume changes what it reads (D390).
+        if let crate::SnapOp::Rollback { id, .. } = &op {
+            self.not_readonly(&self.volume_any(*id).await?, &who, rpc, &target)
+                .await?;
+        }
         // A clone is a dataset of its project: its name is unique there
         // (D360, I458).
         if let crate::SnapOp::Clone {
@@ -4614,6 +4623,7 @@ pub fn spawn(
                 let router = realms::register(api.clone(), router);
                 let router = tenants::register(api.clone(), router);
                 let router = datasets::register(api.clone(), router);
+                tokio::spawn(api.clone().readonly_upkeep());
                 let router = trust::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);

@@ -453,6 +453,14 @@ pub enum Admin {
         revoked: Vec<certs::Revoked>,
         reply: hyperstor_reactor::chan::OneSender<Result<RevokedOn, String>>,
     },
+    /// Sets the read-only volumes (D390), by lineage and branch, and
+    /// buckets, by tenant and name, answered once published. Replies with
+    /// the working map's epoch.
+    SyncReadonly {
+        readonly: std::collections::BTreeSet<(u128, u32)>,
+        buckets: std::collections::BTreeSet<(u32, String)>,
+        reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
+    },
     /// Mirrors the realm rows' host bindings and tenants' realms into the
     /// map (D259), answered once published. Replies with the working
     /// map's epoch.
@@ -3652,6 +3660,31 @@ impl Meta {
                     hyperstor_reactor::spawn(async move {
                         let _ = reply.send(me.revoke_on_data_path(revoked).await);
                     });
+                }
+                Admin::SyncReadonly {
+                    readonly,
+                    buckets,
+                    reply,
+                } => {
+                    if self.leads() {
+                        let (changed, epoch) = {
+                            let mut map = self.map.borrow_mut();
+                            (map.set_readonly(readonly, buckets), map.epoch)
+                        };
+                        // Answered once each storage node holds it, as for
+                        // realm bindings, so no write is decided the old way
+                        // after the answer.
+                        let me = self.clone();
+                        hyperstor_reactor::spawn(async move {
+                            let r = me.published_by(epoch).await;
+                            if r.is_ok() && changed {
+                                me.held_by_nodes(epoch).await;
+                            }
+                            let _ = reply.send(r.map(|()| epoch));
+                        });
+                    } else {
+                        let _ = reply.send(Err(self.not_leader()));
+                    }
                 }
                 Admin::SyncRealms {
                     realms,

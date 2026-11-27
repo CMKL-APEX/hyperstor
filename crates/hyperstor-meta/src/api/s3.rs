@@ -597,6 +597,65 @@ impl S3Service for Api {
                 .filter(|p| p.realm == realm)
                 .map(|p| placement_pb(p, &map, &realms))
                 .collect(),
+            // From the published map, as any member has it (D390, D391).
+            readonly_buckets: map
+                .readonly_buckets
+                .iter()
+                .filter(|(t, _)| realms.realm_of(*t) == realm)
+                .map(|(tenant, name)| pb::S3ReadonlyBucket {
+                    tenant: *tenant,
+                    name: name.clone(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
+    async fn prepare_bucket(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::PrepareBucketRequest>,
+    ) -> ServiceResult<pb::PrepareBucketResponse> {
+        let target = format!("bucket {}/{}", req.tenant, req.name);
+        let who = self.authorize_as(&ctx, "PrepareBucket", &target, Need::S3)?;
+        // Only for a tenant of a realm the gateway serves (D250, I370), as
+        // its keys are.
+        let realms = self.realms().await?;
+        if let Some(id) = hyperstor_pki::Identity::parse(&who)
+            .filter(|i| i.role == hyperstor_pki::Role::S3)
+            .map(|i| i.id)
+            && !realms
+                .gateway_realms(&id)
+                .contains(&realms.realm_of(req.tenant))
+        {
+            let e = with_reason(
+                ConnectError::permission_denied(format!(
+                    "gateway {id} doesn't serve tenant {}'s realm",
+                    req.tenant
+                )),
+                "outside_realm",
+            );
+            super::refused(&who, "PrepareBucket", &target, &e);
+            return Err(e);
+        }
+        // The project its bucket goes to (D300, I379), as the gateway's
+        // create names it.
+        let tenancy = self.tenancy().await?;
+        let project = tenancy.bucket_project(req.tenant, req.project);
+        self.name_free(
+            req.tenant,
+            project,
+            req.name,
+            &who,
+            "PrepareBucket",
+            &target,
+        )
+        .await?;
+        let data_pool = self.default_pool(req.tenant, project).await?.unwrap_or(0);
+        Ok(pb::PrepareBucketResponse {
+            data_pool,
             ..Default::default()
         }
         .into())

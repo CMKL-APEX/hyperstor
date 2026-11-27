@@ -108,6 +108,8 @@ enum Pool {
 struct Served {
     keys: Keys,
     placements: std::collections::HashMap<String, (Pool, Pool)>,
+    /// Buckets whose `readonly` is on, by tenant and name (D390, D391).
+    readonly: std::collections::HashSet<(u32, String)>,
 }
 
 /// The placement CreateBucket uses unless its LocationConstraint names
@@ -154,7 +156,16 @@ async fn fetch(
                         )
                     })
                     .collect();
-                return Ok(Served { keys, placements });
+                let readonly = r
+                    .readonly_buckets
+                    .into_iter()
+                    .map(|b| (b.tenant, b.name))
+                    .collect();
+                return Ok(Served {
+                    keys,
+                    placements,
+                    readonly,
+                });
             }
             Err(e) => why.push(format!(
                 "{a}: {}",
@@ -163,6 +174,59 @@ async fn fetch(
         }
     }
     Err(why.join("; "))
+}
+
+/// What the cluster API says of a new bucket (D391): the pool its
+/// project's or tenant's `pool` names (0: the placement's), or why it may
+/// not be made, as the error to answer.
+async fn prepare(
+    addrs: &[String],
+    tls: &Arc<rustls::ClientConfig>,
+    tenant: u32,
+    project: u32,
+    name: &str,
+) -> Result<u32, ApiError> {
+    use hyperstor_api::proto::hyperstor::v1 as pb;
+    let mut why = Vec::new();
+    for a in addrs {
+        let Ok(uri) = format!("https://{a}").parse::<http::Uri>() else {
+            continue;
+        };
+        let client = connectrpc::client::HttpClient::with_tls(tls.clone());
+        let config =
+            connectrpc::client::ClientConfig::new(uri).with_default_timeout(Duration::from_secs(5));
+        match hyperstor_api::S3ServiceClient::new(client, config)
+            .prepare_bucket(pb::PrepareBucketRequest {
+                tenant,
+                project,
+                name: name.to_string(),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(r) => return Ok(r.into_owned().data_pool),
+            Err(e) if hyperstor_api::reason_of(&e).as_deref() == Some("dataset_exists") => {
+                return Err(ApiError::new(
+                    409,
+                    "BucketAlreadyExists",
+                    e.message.unwrap_or_default(),
+                ));
+            }
+            Err(e) => why.push(format!(
+                "{a}: {}",
+                e.message.as_deref().unwrap_or("no answer")
+            )),
+        }
+    }
+    eprintln!(
+        "hyperstor-s3: a new bucket's checks from the cluster API: {}",
+        why.join("; ")
+    );
+    Err(ApiError::new(
+        503,
+        "ServiceUnavailable",
+        "the cluster API didn't answer: try again",
+    ))
 }
 
 /// Fetches every `every` and swaps in each answer; logs when the counts
@@ -438,6 +502,9 @@ struct State {
     reactors: Reactors,
     domains: Vec<String>,
     served: std::sync::RwLock<Arc<Served>>,
+    /// The cluster API's addresses and the gateway's identity, when it
+    /// serves from them: CreateBucket asks it first (D391).
+    api: Option<(Vec<String>, Arc<rustls::ClientConfig>)>,
 }
 
 impl State {
@@ -481,7 +548,14 @@ pub fn serve(
                     DEFAULT_PLACEMENT.to_string(),
                     (Pool::Name(data_pool), Pool::Name(index_pool)),
                 )]);
-                (Served { keys, placements }, None)
+                (
+                    Served {
+                        keys,
+                        placements,
+                        readonly: Default::default(),
+                    },
+                    None,
+                )
             }
             Source::Api {
                 addrs,
@@ -517,6 +591,7 @@ pub fn serve(
             reactors,
             domains: o.domains.iter().map(|d| d.to_ascii_lowercase()).collect(),
             served: std::sync::RwLock::new(Arc::new(served)),
+            api: api.as_ref().map(|(a, t, ..)| (a.clone(), t.clone())),
         });
         if let Some((addrs, tls, every, realm)) = api {
             tokio::spawn(refresh(state.clone(), addrs, tls, every, realm));
@@ -803,10 +878,27 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
     )?;
     let tenant = key.tenant;
     let project = key.project;
-    drop(served);
     let m = req.method().clone();
     let host = header(req.headers(), "host").map(str::to_string);
-    match (target_of(host.as_deref(), &path, &state.domains)?, m) {
+    let target = target_of(host.as_deref(), &path, &state.domains)?;
+    // A read-only bucket's objects take no writes (D390); the bucket may
+    // still be deleted, as a read-only volume's snapshots may.
+    let writes = match (&target, &m) {
+        (Target::Object(b, _), &Method::PUT | &Method::POST | &Method::DELETE)
+        | (Target::Bucket(b), &Method::POST) => Some(b.clone()),
+        _ => None,
+    };
+    if let Some(b) = writes
+        && served.readonly.contains(&(tenant, b))
+    {
+        return Err(ApiError::new(
+            403,
+            "AccessDenied",
+            "the bucket is read-only (readonly=on)",
+        ));
+    }
+    drop(served);
+    match (target, m) {
         (Target::Service, Method::GET) => {
             only(&q, &[])?;
             list_buckets(state, tenant).await
@@ -1831,6 +1923,12 @@ async fn create_bucket(
             )
         });
     };
+    // Its name among the project's datasets and its pool (D387, D391).
+    let pool = match &state.api {
+        Some((addrs, tls)) => prepare(addrs, tls, tenant, project, name).await?,
+        None => 0,
+    };
+    let data = if pool == 0 { data } else { Pool::Id(pool) };
     let n = name.to_string();
     let r = state
         .reactors

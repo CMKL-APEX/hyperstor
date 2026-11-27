@@ -1971,3 +1971,14 @@ never unique, and `CopyVolume` with no name reused its source's.
 | 351 | Which properties act in H1: all kept, inherited and shown, with `pool` acting and the rest marked not enforced yet (recommended); only those enforced settable; or names only | All kept; `pool` acts (`readonly` and `reads` were offered as acting too: `reads` has no replica reads to act on, and `readonly` needs leases and gateways to know it, the next part) | D388 |
 | 352 | Two datasets of one project with one name: refuse new ones, copies named by none get `NAME-copy`, volumes in no project exempt (recommended); allow and qualify; or refuse everywhere, copies too | Refuse; copies get `-copy` | D387 |
 | 353 | Ship the `hsfs` binary in H1, checking the name half of G64 now (recommended), or only `hyperstorctl dataset` until G64 is whole | Ship it; check the name now | D389 |
+
+## Datasets, stage H1: `readonly` and buckets (2026-11-27)
+
+`readonly` can't be enforced at the lease, because only read-write
+leases exist, and the S3 gateway makes buckets without asking the map
+service.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 354 | How a read-only volume behaves: primaries refuse writes and it still attaches and reads (recommended); rw leases refused, so it can't be attached until read-only leases exist; or build read-only leases first | Primaries refuse writes | D390 |
+| 355 | How the gateway learns names and properties: it asks the API at `CreateBucket`, and read-only buckets travel with the keys (recommended); or everything travels with the keys | Ask the API at `CreateBucket` | D391 |

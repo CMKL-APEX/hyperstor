@@ -25,7 +25,7 @@ a client certificate issued by the cluster's CA, whose identity
 | `admin` (`hyperstorctl`), `mgmt` | Everything |
 | `node`, `meta` | `meta` also `GetClusterKey`; both also `GetSealingKeys`. Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
-| `s3` (`hyperstor-s3`) | Read, `GetS3Gateway` (S3's keys with their secrets; no other role may call it), and renew its own certificate |
+| `s3` (`hyperstor-s3`) | Read, `GetS3Gateway` (S3's keys with their secrets) and `PrepareBucket` (no other role may call them), and renew its own certificate |
 | `metrics` | Read `GET /metrics` (below) and renew its own certificate; nothing else |
 
 A certificate of another cluster is refused, and so is a revoked one:
@@ -187,6 +187,7 @@ values are left out of answers.
 | `GetS3Bucket` | `{"tenant": 1, "name": "photos"}` | `bucket`; `not_found` for a bucket the tenant hasn't |
 | `DeleteS3Bucket` | `{"tenant": 1, "name": "photos"}` | `{}`; `in_use` while it holds objects or uploads under way (D255), `not_found` for none |
 | `GetS3Gateway` | `{}`, or `{"realm": "acme"}` | the realm's tenants' `keys` with their `secret`s, and its `placements`: for `s3` certificates only, which gateways fetch every few seconds; any member answers, from its copy. Without `realm`, `default`'s; `not_found` for an unknown realm |
+| `PrepareBucket` | `{"tenant": 1, "project": 2, "name": "photos"}` | `data_pool`: the pool the project's or tenant's `pool` property names, 0 for the placement's; `already_exists` (`dataset_exists`) when another volume or bucket of the project has the name (D387, D391). For `s3` certificates only: gateways ask it at `CreateBucket` |
 | `CreateRealm` (`RealmService`) | `{"name": "acme"}`, optionally `"description"` | `realm` (`id`, `name`, …). On the leader; `failed_precondition` (`realm_exists`) |
 | `ListRealms` | `{}` | `realms`, `default` first, each with its `tenants`, the `pools` whose lists name it and their `pool_ids`; `open_pools` and `open_pool_ids`, which every realm may use. Through hyperstor-mgmt for someone acting in realms, only those |
 | `DeleteRealm` | `{"name": "acme"}` | `{}`; `failed_precondition` (`realm_in_use`) while a tenant, pool or placement names it |
@@ -231,7 +232,7 @@ word for scripts (the message is for people, and may change):
 | `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |
-| `failed_precondition` | `attached`, `in_use`, `no_ca`, `node_conflict`, `finished`, `not_cancellable` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished, or isn't a drain |
+| `failed_precondition` | `readonly`, `attached`, `in_use`, `no_ca`, `node_conflict`, `finished`, `not_cancellable` | `DeleteVolume` of a volume a client has attached (without `force`), or `RollbackVolume` of one; a snapshot something depends on, or an operation refused as things stand; this member can't sign (no `--ca`); a joining host's addresses belong to another node; the operation has finished, or isn't a drain; `ExpandVolume`, `RollbackVolume` or `FlattenVolume` of a volume whose `readonly` property is on (`readonly`) |
 | `resource_exhausted` | `rate_limited`, `pool_full` | The caller is over its rate limit; `CreateVolume`, `CloneVolume`, `CreateSnapshot` or `CreateGroupSnapshot` in a pool past `full` |
 | `unavailable` | `not_leader`, `not_formed`, `not_published`, `unavailable` | This member isn't the leader (the message names the leader's map service address); the map service has no map yet (it has just started; `CreateToken` waits up to 4 s for it first); a change to the map was made but couldn't be committed in time (it is published if the leader keeps the lead: read the map before trying again); the map service is stopping |
 

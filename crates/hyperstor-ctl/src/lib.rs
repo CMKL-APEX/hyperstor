@@ -1141,6 +1141,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("S3Service.DeleteS3Bucket", "s3 bucket delete"),
     // The gateways' own call (D231): secrets, for s3 certificates only.
     ("S3Service.GetS3Gateway", "hyperstor-s3"),
+    ("S3Service.PrepareBucket", "hyperstor-s3"),
     ("RealmService.CreateRealm", "realm create"),
     ("RealmService.ListRealms", "realm list"),
     ("RealmService.DeleteRealm", "realm delete"),

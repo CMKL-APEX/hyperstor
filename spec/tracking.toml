@@ -1215,6 +1215,16 @@ tests = [
     "hyperstor_ctl::tests::hsfs_is_hyperstorctl_dataset_in_zfs_order",
 ]
 
+[[milestone.item]]
+what = "hsfs H1, second part: `readonly=on` on a volume (set on it or inherited) makes its chunks' primaries refuse clients' writes while it still reads, and on a bucket its gateways refuse writes; both in the cluster map; expand, rollback and flatten refused; CreateBucket asks the map service (PrepareBucket) for the name among the project's datasets and the `pool`"
+spec = ["29-hsfs.md §32.3", "D387", "D390", "D391", "I460"]
+status = "done"
+tests = [
+    "datasets::a_read_only_volume_reads_and_refuses_writes",
+    "s3::buckets_are_datasets_of_their_project",
+    "hyperstor_map::port_tests::read_only_volumes_travel_only_while_there_are_any",
+]
+
 [[milestone]]
 id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"
