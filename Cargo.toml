@@ -43,12 +43,12 @@ thiserror = "2"
 rand = "0.10"
 # The libraries shared with glidex, all at one glidex-commons release tag
 # (04-decisions.md D356): a repin is this tag and the version beside it.
-glidex-auth = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
-glidex-authd = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
-glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
-glidex-tls = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
-glidex-topology = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
-glidex-trust = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
+glidex-auth = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.2.0", version = "0.2.0" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.2.0", version = "0.2.0" }
+glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.2.0", version = "0.2.0" }
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.2.0", version = "0.2.0" }
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.2.0", version = "0.2.0" }
+glidex-trust = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.2.0", version = "0.2.0" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
