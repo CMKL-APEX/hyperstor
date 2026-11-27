@@ -2533,6 +2533,15 @@ impl ShardState {
                         }
                         Ok(who) => {
                             checked = self.map().epoch;
+                            // A host is who its certificate says, said or
+                            // not (D377): realm bindings and capabilities
+                            // go by this name, and one that left `Host`
+                            // out would otherwise count as bound to none.
+                            if let Some(p) = &who
+                                && p.who.role == hyperstor_client::rpc::Role::Host
+                            {
+                                host = p.who.id.clone();
+                            }
                             peer = who;
                         }
                         // The stream is mid-handshake: nothing more can

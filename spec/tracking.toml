@@ -1635,7 +1635,15 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T2: the unauthenticated peers by address in `data-tls status`; a `host` certificate for hyperstor-vhost on storage hosts; `hyperstorctl --identity` for the volume commands, after which `mgmt` certificates are refused on the data path"
+what = "T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts"
+spec = ["30-data-path-tls.md §33.5", "30-data-path-tls.md §33.6", "D375", "D385", "I454"]
+status = "done"
+tests = [
+    "install::a_hosts_certificate_moves_data_within_its_realms",
+]
+
+[[milestone.item]]
+what = "T2: the unauthenticated peers by address in `data-tls status`; a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity`"
 spec = ["30-data-path-tls.md §33.4", "30-data-path-tls.md §33.6", "D375", "D385"]
 status = "planned"
 

@@ -4537,6 +4537,7 @@ fn install(
             s3_names.as_ref(),
             &peers,
             &p.nodes.iter().map(|n| n.n).collect::<Vec<u32>>(),
+            &client_host_name(),
             &mut changed,
         ));
         p.cluster_key = under(root, "/etc/hyperstor/pki/cluster.key").exists();
@@ -4986,6 +4987,7 @@ fn pki(
     s3: Option<&glidex_tls::LocalNames>,
     peers: &[String],
     nodes: &[u32],
+    host: &str,
     changed: &mut Vec<String>,
 ) -> Vec<String> {
     use hyperstor_pki::*;
@@ -5096,6 +5098,13 @@ fn pki(
     }
     for (name, id) in &node_leaves {
         leaves.push((name, Role::Node, id, false, "hyperstor"));
+    }
+    // And the host one as a client of the cluster (D375, D377; I454):
+    // what `hyperstor-vhost` and `hyperstorctl --identity` show storage
+    // nodes here, under the name the host gives them, in place of the
+    // member's certificate, which may send everything.
+    if !host.is_empty() {
+        leaves.push(("host", Role::Host, host, false, "hyperstor"));
     }
     for (name, role, id, server, group) in leaves {
         // A server certificate names where it is reached: loopback, and
@@ -6663,6 +6672,7 @@ mod tests {
                 None,
                 &[],
                 nodes,
+                "hv-7",
                 &mut changed,
             );
             changed
@@ -6688,12 +6698,25 @@ mod tests {
                     .exists()
             );
         }
+        // And the host one of its own, as a client (D375, D377): what
+        // hyperstor-vhost shows first, not the member's.
+        let dir = root.path().join("etc/hyperstor/pki");
+        let host = fs::read_to_string(dir.join("host.crt")).unwrap();
+        let who = hyperstor_pki::identity_in(&host).unwrap();
+        assert_eq!(
+            (who.role, who.id.as_str()),
+            (hyperstor_pki::Role::Host, "hv-7")
+        );
+        let names: Vec<String> = ["host", "node", "api"].map(String::from).into();
+        let (chain, _, _) = hyperstor_pki::identity_files(&dir, &names).unwrap();
+        assert_eq!(hyperstor_pki::identity_in(&chain).unwrap().role, who.role);
         // Kept while fresh; a node added later gets its own.
         let (four, five) = (cert(4), cert(5));
         let changed = run(&[4, 5, 6]);
         assert_eq!((cert(4), cert(5)), (four, five));
         assert!(changed.iter().any(|c| c.ends_with("node-6.crt")));
         assert!(!changed.iter().any(|c| c.ends_with("node-4.crt")));
+        assert!(!changed.iter().any(|c| c.ends_with("host.crt")));
     }
 
     #[test]
@@ -6715,6 +6738,7 @@ mod tests {
             None,
             &[],
             &[],
+            "",
             &mut changed,
         );
         let cert = |r: &Path| fs::read_to_string(r.join("etc/hyperstor/pki/api.crt")).unwrap();
@@ -6733,6 +6757,7 @@ mod tests {
             None,
             &[],
             &[],
+            "",
             &mut changed,
         );
         assert_eq!(cert(root.path()), first, "same addresses: kept");
@@ -6746,6 +6771,7 @@ mod tests {
             None,
             &[],
             &[],
+            "",
             &mut changed,
         );
         assert_ne!(cert(root.path()), first, "new addresses: issued again");
@@ -6775,6 +6801,7 @@ mod tests {
             None,
             &[],
             &[],
+            "",
             &mut changed,
         );
         let first = web(root.path());
@@ -6797,6 +6824,7 @@ mod tests {
             None,
             &[],
             &[],
+            "",
             &mut changed,
         );
         assert_eq!(web(root.path()), first, "same names: kept");
@@ -6811,6 +6839,7 @@ mod tests {
             None,
             &[],
             &[],
+            "",
             &mut changed,
         );
         assert_ne!(web(root.path()), first, "a new address: issued again");

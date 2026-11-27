@@ -111,6 +111,8 @@ Once a connection is authenticated, and for every connection in
 
 - A client's message on a `node` connection is served: primaries act as
   clients of other PGs (copies, flattens).
+- **A `host` certificate's holder is that host, whether it says so or
+  not** (I454): a storage node takes the name from the certificate.
 - **The host a client names (`Host`, D261) must be its certificate's.**
   Realm bindings (D259) and a capability's host (D363) are then checked
   against a name the client can't choose.
@@ -139,6 +141,7 @@ Once a connection is authenticated, and for every connection in
 |---|---|---|
 | Storage host joined with a token | `node` N | has it (AD1) |
 | Map service member that runs a storage node | `node` N beside its `meta`, in `node-N.crt` | the installer issues one at its next run, from the member's CA; until then its node shows the member's (D370) and is served as `meta` |
+| Map service member's host, as a client | `host` NAME, in `host.crt` | the installer issues one from the member's CA (I454): `hyperstor-vhost` and `hyperstorctl --identity` there show it, not the member's |
 | VM host (`--role vhost`), `hyperstor-ublk` host | `host` NAME, the name it gives as `--host` | `hyperstor-install --role vhost --join API --token-file F`, with a `host` token (D375) |
 | S3 gateway | `s3` | has it (D233) |
 | `hyperstorctl`'s data commands | the administrator's | has it |

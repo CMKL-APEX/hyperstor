@@ -1074,6 +1074,94 @@ fn a_host_a_bound_client_joins_is_bound_to_its_realms() {
     assert!(!hosts_of("acme").contains(&name) && !hosts_of("other").contains(&name));
 }
 
+/// `hyperstorctl --identity DIR` (D385, I454): the commands that move data
+/// show storage nodes the host's own certificate, and the nodes hold them
+/// to the host's realms though the tool names no host: a volume of its
+/// realm is written, another realm's isn't. With the administrator's
+/// certificate both are. A directory without a certificate is an error.
+#[test]
+fn a_hosts_certificate_moves_data_within_its_realms() {
+    let c = Cluster::all_in_one("hostdata", 3);
+    c.ctl(&["status", "--wait", "60"]).ok();
+    let name = std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .unwrap()
+        .trim()
+        .to_string();
+    for realm in ["acme", "other"] {
+        c.ctl(&["realm", "create", "--name", realm]).ok();
+    }
+    // A VM host of its own, bound to one realm.
+    let token = c
+        .ctl(&["token", "create", "--role", "host", "--name", &name])
+        .ok();
+    let root = c.scratch.path("vm");
+    link_binaries(&root);
+    let f = c.scratch.path("vm.token");
+    std::fs::write(&f, token.out.lines().next().unwrap()).unwrap();
+    install_cmd(
+        &root,
+        "install",
+        &[
+            "--role",
+            "vhost",
+            "--join",
+            c.api.as_str(),
+            "--token-file",
+            f.to_str().unwrap(),
+        ],
+    )
+    .ok();
+    c.ctl(&["realm", "host", "--host", &name, "--realm", "acme"])
+        .ok();
+    c.ctl(&["realm", "tenant", "--tenant", "7", "--realm", "acme"])
+        .ok();
+    c.ctl(&["realm", "tenant", "--tenant", "8", "--realm", "other"])
+        .ok();
+    let vol = |tenant: &str| {
+        let made = c
+            .ctl(&[
+                "create-volume",
+                "--size",
+                "1M",
+                "--name",
+                &format!("vol-{tenant}"),
+                "--tenant",
+                tenant,
+            ])
+            .ok();
+        made.out.split_whitespace().nth(1).unwrap().to_string()
+    };
+    let (mine, theirs) = (vol("7"), vol("8"));
+    let data = c.scratch.path("data.raw");
+    std::fs::write(&data, vec![7u8; 1 << 20]).unwrap();
+    let host_pki = c.scratch.path("vm").join("etc/hyperstor/pki");
+    let write = |id: &str, as_host: bool| {
+        let mut args = vec!["write-volume", "--id", id, "--file", data.to_str().unwrap()];
+        if as_host {
+            args.extend(["--identity", host_pki.to_str().unwrap()]);
+        }
+        c.ctl(&args)
+    };
+    write(&mine, true).ok();
+    let r = write(&theirs, true);
+    assert!(r.code != 0 && r.has("realm"), "{}", r.out);
+    write(&theirs, false).ok();
+    // A directory with no certificate of a host is an error, not a
+    // fall back to the administrator's.
+    let empty = c.scratch.path("no-pki");
+    std::fs::create_dir_all(&empty).unwrap();
+    c.ctl(&[
+        "write-volume",
+        "--id",
+        &mine,
+        "--file",
+        data.to_str().unwrap(),
+        "--identity",
+        empty.to_str().unwrap(),
+    ])
+    .expect(2);
+}
+
 /// A VM host joins with a `host` token (D375; 30-data-path-tls.md §33.6):
 /// its certificate names it as it names itself to storage nodes, the map
 /// service's addresses come with the join, and later runs need no token.
