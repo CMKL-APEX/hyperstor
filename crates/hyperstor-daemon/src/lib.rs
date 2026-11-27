@@ -2221,7 +2221,7 @@ impl ShardState {
         let tls = self.calling_tls(addr);
         let map = self.map();
         // One kept bare from before `require` is made again (D377), and
-        // one in plaintext from before its sessions were encrypted (D402).
+        // one in plaintext from before its sessions were encrypted (D405).
         if tls.as_ref().is_some_and(|t| t.required) {
             self.peers.close_if(addr, |c| c.peer().is_none());
         }
@@ -2267,7 +2267,7 @@ impl ShardState {
 
     /// What this node calls `addr` with (D373): its identity unless the
     /// cluster's mode is `off`, required when it is `require`, and the
-    /// session kept encrypted where the map says (D402).
+    /// session kept encrypted where the map says (D405).
     fn calling_tls(&self, addr: SocketAddr) -> Option<hyperstor_client::rpc::CallerTls> {
         let map = self.map();
         let mode = map.data_tls;
@@ -2322,7 +2322,7 @@ impl ShardState {
         };
         let map = self.map();
         // One kept bare from before `require` is made again (D377), and
-        // one in plaintext from before its sessions were encrypted (D402).
+        // one in plaintext from before its sessions were encrypted (D405).
         if tls.required {
             self.pings.close_if(addr, |c| c.peer().is_none());
         }
@@ -2446,7 +2446,7 @@ impl ShardState {
         // The map epoch its certificate was last checked against the
         // revoked list at (D384).
         let mut checked = 0;
-        // The caller offered to keep its session (D403): it can be made
+        // The caller offered to keep its session (D406): it can be made
         // to, by calling again.
         let mut offered = false;
         // Counted once it asks for something unauthenticated.
@@ -2482,7 +2482,7 @@ impl ShardState {
                         return;
                     }
                     // A session in plaintext whose address is now
-                    // encrypted (D402): dropped, so its caller, who
+                    // encrypted (D405): dropped, so its caller, who
                     // could have kept it, calls again and is answered
                     // `StartTlsEncrypted`, whatever its map says.
                     if offered && !p.encrypted && s.local_addr().is_ok_and(|a| map.encrypts(a.ip()))

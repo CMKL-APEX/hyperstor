@@ -303,7 +303,7 @@ pub fn peer_revoked(map: &ClusterMap, c: &Conn) -> bool {
 }
 
 /// Whether `c`, a connection to `addr`, authenticated in plaintext from
-/// before `map` encrypted sessions to that address (D402): a peer that
+/// before `map` encrypted sessions to that address (D405): a peer that
 /// can keep one is called again. One whose peer can't (an older build)
 /// stays as it is, in mode `allow`.
 pub fn plaintext_from_before(map: &ClusterMap, addr: std::net::SocketAddr, c: &Conn) -> bool {
@@ -895,7 +895,7 @@ impl Client {
             .as_ref()
             .map(|t| t.calling(required).encrypting(map.encrypts(addr.ip())));
         // One kept from before sessions to `addr` were encrypted is made
-        // again (D402).
+        // again (D405).
         self.conns
             .close_if(addr, |c| plaintext_from_before(&map, addr, c));
         // A connection kept from before the mode was `require` may be

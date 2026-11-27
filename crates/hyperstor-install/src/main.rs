@@ -2103,7 +2103,7 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
         );
         // A new cluster's connections authenticate where both ends can
         // (D380): every host has its certificates from the start; and its
-        // sessions stay encrypted on networks not marked trusted (D402).
+        // sessions stay encrypted on networks not marked trusted (D405).
         // A cluster that runs already keeps the mode its map has.
         cluster += "data-tls allow encrypt\n";
         let map = format!("127.0.0.1:{}", s.map_port);

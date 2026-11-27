@@ -824,7 +824,7 @@ impl Cluster {
     }
 
     /// [`Self::data_tls`], and whether sessions are encrypted off trusted
-    /// networks (D402).
+    /// networks (D405).
     fn data_tls_encrypt(
         &self,
         mode: hyperstor_meta::DataTls,
@@ -10517,7 +10517,7 @@ fn connections_authenticate_when_the_cluster_allows_it() {
     );
 }
 
-/// Sessions encrypted on networks not marked trusted (D402, D403;
+/// Sessions encrypted on networks not marked trusted (D405, D406;
 /// 30-data-path-tls.md §33.9). The cluster's addresses are named a
 /// network not marked trusted, and the cluster told to encrypt there:
 /// from then every node's sessions with its peers and the map service, and
