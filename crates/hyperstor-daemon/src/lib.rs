@@ -2212,12 +2212,16 @@ impl ShardState {
         };
         // And TLS right after it, where the peer has it and the cluster
         // isn't `off` (D373).
-        let tls = self.calling_tls();
+        let tls = self.calling_tls(addr);
         let map = self.map();
-        // One kept bare from before `require` is made again (D377).
+        // One kept bare from before `require` is made again (D377), and
+        // one in plaintext from before its sessions were encrypted (D390).
         if tls.as_ref().is_some_and(|t| t.required) {
             self.peers.close_if(addr, |c| c.peer().is_none());
         }
+        self.peers.close_if(addr, |c| {
+            hyperstor_client::plaintext_from_before(&map, addr, c)
+        });
         let c = self
             .peers
             .get_with(addr, |addr| async move {
@@ -2255,25 +2259,32 @@ impl ShardState {
         let _ = s.shutdown();
     }
 
-    /// What this node calls peers with (D373): its identity unless the
-    /// cluster's mode is `off`, required when it is `require`.
-    fn calling_tls(&self) -> Option<hyperstor_client::rpc::CallerTls> {
-        let mode = self.map().data_tls;
+    /// What this node calls `addr` with (D373): its identity unless the
+    /// cluster's mode is `off`, required when it is `require`, and the
+    /// session kept encrypted where the map says (D390).
+    fn calling_tls(&self, addr: SocketAddr) -> Option<hyperstor_client::rpc::CallerTls> {
+        let map = self.map();
+        let mode = map.data_tls;
         self.tls
             .borrow()
             .as_ref()
             .filter(|_| mode != hyperstor_meta::DataTls::Off)
-            .map(|t| t.calling(mode == hyperstor_meta::DataTls::Require))
+            .map(|t| {
+                t.calling(mode == hyperstor_meta::DataTls::Require)
+                    .encrypting(map.encrypts(addr.ip()))
+            })
     }
 
-    /// What this node answers `StartTls` with: nothing without an
-    /// identity or in mode `off`.
-    fn answering_tls(&self) -> hyperstor_client::rpc::AnswererTls {
+    /// What this node answers `StartTls` with on a connection to its
+    /// address `local`: nothing without an identity or in mode `off`.
+    fn answering_tls(&self, local: Option<SocketAddr>) -> hyperstor_client::rpc::AnswererTls {
+        let map = self.map();
+        let encrypt = local.is_some_and(|a| map.encrypts(a.ip()));
         self.tls
             .borrow()
             .as_ref()
-            .filter(|_| self.map().data_tls != hyperstor_meta::DataTls::Off)
-            .map(|t| t.answerer.clone())
+            .filter(|_| map.data_tls != hyperstor_meta::DataTls::Off)
+            .map(|t| t.answering(encrypt, map.data_tls == hyperstor_meta::DataTls::Require))
     }
 
     /// Bytes of backfill pushes on the wire to `target`.
@@ -2294,7 +2305,7 @@ impl ShardState {
     /// only the caller can know who answered.
     async fn ping_peer(&self, addr: SocketAddr) -> Result<Conn, ClientError> {
         self.partitioned(addr)?;
-        let Some(tls) = self.calling_tls() else {
+        let Some(tls) = self.calling_tls(addr) else {
             return Ok(self.pings.get(addr).await?);
         };
         let hello = Msg::Hello {
@@ -2304,10 +2315,14 @@ impl ShardState {
             instance: 0,
         };
         let map = self.map();
-        // One kept bare from before `require` is made again (D377).
+        // One kept bare from before `require` is made again (D377), and
+        // one in plaintext from before its sessions were encrypted (D390).
         if tls.required {
             self.pings.close_if(addr, |c| c.peer().is_none());
         }
+        self.pings.close_if(addr, |c| {
+            hyperstor_client::plaintext_from_before(&map, addr, c)
+        });
         let c = self
             .pings
             .get_with(addr, |addr| async move {
@@ -2425,6 +2440,9 @@ impl ShardState {
         // The map epoch its certificate was last checked against the
         // revoked list at (D384).
         let mut checked = 0;
+        // The caller offered to keep its session (D391): it can be made
+        // to, by calling again.
+        let mut offered = false;
         // Counted once it asks for something unauthenticated.
         let mut counted = false;
         // Counted and logged once it is refused something (D377).
@@ -2455,6 +2473,15 @@ impl ShardState {
                     checked = map.epoch;
                     if hyperstor_client::cert_revoked(&map, p) {
                         self.refuse_revoked(&s, p);
+                        return;
+                    }
+                    // A session in plaintext whose address is now
+                    // encrypted (D390): dropped, so its caller, who
+                    // could have kept it, calls again and is answered
+                    // `StartTlsEncrypted`, whatever its map says.
+                    if offered && !p.encrypted && s.local_addr().is_ok_and(|a| map.encrypts(a.ip()))
+                    {
+                        let _ = s.shutdown();
                         return;
                     }
                 }
@@ -2512,7 +2539,10 @@ impl ShardState {
             }
             if peer.is_none()
                 && !counted
-                && !matches!(msg, Msg::Hello { .. } | Msg::Ping | Msg::StartTls)
+                && !matches!(
+                    msg,
+                    Msg::Hello { .. } | Msg::Ping | Msg::StartTls | Msg::StartTlsOffer { .. }
+                )
             {
                 counted = true;
                 metrics::ShardMetrics::add(&self.metrics.unauthenticated, 1);
@@ -2527,7 +2557,12 @@ impl ShardState {
                 }
             }
             match msg {
-                Msg::StartTls => {
+                Msg::StartTls | Msg::StartTlsOffer { .. } => {
+                    let offer = match msg {
+                        Msg::StartTlsOffer { encrypt } => Some(encrypt),
+                        _ => None,
+                    };
+                    offered = offer.is_some();
                     let no = err(
                         Code::Invalid,
                         &self.map(),
@@ -2537,8 +2572,9 @@ impl ShardState {
                         &s,
                         &tx,
                         h.req,
-                        &self.answering_tls(),
+                        &self.answering_tls(s.local_addr().ok()),
                         no,
+                        offer,
                     )
                     .await
                     {
@@ -2550,6 +2586,9 @@ impl ShardState {
                         }
                         Ok(who) => {
                             checked = self.map().epoch;
+                            if who.as_ref().is_some_and(|p| p.encrypted) {
+                                metrics::ShardMetrics::add(&self.metrics.encrypted, 1);
+                            }
                             // A host is who its certificate says, said or
                             // not (D377): realm bindings and capabilities
                             // go by this name, and one that left `Host`

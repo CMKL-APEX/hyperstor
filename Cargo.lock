@@ -1710,6 +1710,8 @@ dependencies = [
  "hyperstor-pki",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "io-uring",
+ "libc",
  "rustls",
  "thiserror 2.0.21",
 ]

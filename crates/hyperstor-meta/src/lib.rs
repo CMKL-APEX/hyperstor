@@ -435,7 +435,10 @@ pub enum Admin {
     /// map's epoch and the mode before.
     SetDataTls {
         mode: DataTls,
-        reply: hyperstor_reactor::chan::OneSender<Result<(u64, DataTls), String>>,
+        /// Whether sessions stay encrypted off trusted networks (D390);
+        /// None leaves it.
+        encrypt: Option<bool>,
+        reply: hyperstor_reactor::chan::OneSender<Result<(u64, DataTls, bool), String>>,
     },
     /// Sets the lending of a port, or with `port` `None` of the cluster
     /// (D209). Replies with the working map's epoch.
@@ -3630,12 +3633,16 @@ impl Meta {
                 Admin::SetNetwork { name, def, reply } => {
                     self.reply_published(reply, self.set_network(&name, def), |e| e);
                 }
-                Admin::SetDataTls { mode, reply } => {
+                Admin::SetDataTls {
+                    mode,
+                    encrypt,
+                    reply,
+                } => {
                     // `require` asks every node first: in a task of its
                     // own, so other requests go on.
                     let me = self.clone();
                     hyperstor_reactor::spawn(async move {
-                        let r = me.set_data_tls(mode).await;
+                        let r = me.set_data_tls(mode, encrypt).await;
                         me.reply_published(reply, r, |e| e);
                     });
                 }
@@ -4466,12 +4473,20 @@ impl Meta {
         {
             c.kill();
         }
+        // One in plaintext from before its sessions were encrypted is
+        // made again (D390).
+        if let Some(c) = self.conns.borrow().get(&addr)
+            && hyperstor_client::plaintext_from_before(&self.map.borrow(), addr, c)
+        {
+            c.kill();
+        }
+        let encrypt = self.map.borrow().encrypts(addr.ip());
         let tls = self
             .tls
             .borrow()
             .as_ref()
             .filter(|_| mode != DataTls::Off)
-            .map(|t| t.calling(mode == DataTls::Require));
+            .map(|t| t.calling(mode == DataTls::Require).encrypting(encrypt));
         let c = if mode == DataTls::Off {
             hyperstor_rpc::Conn::connect(addr).await?
         } else {
@@ -4656,14 +4671,16 @@ impl Meta {
         *self.tls.borrow_mut() = Some(tls);
     }
 
-    /// What this member answers `StartTls` with: nothing without an
-    /// identity or in mode `off`.
-    pub fn answering_tls(&self) -> hyperstor_rpc::AnswererTls {
+    /// What this member answers `StartTls` with on a connection to its
+    /// address `local`: nothing without an identity or in mode `off`.
+    pub fn answering_tls(&self, local: Option<SocketAddr>) -> hyperstor_rpc::AnswererTls {
+        let map = self.map.borrow();
+        let encrypt = local.is_some_and(|a| map.encrypts(a.ip()));
         self.tls
             .borrow()
             .as_ref()
-            .filter(|_| self.map.borrow().data_tls != DataTls::Off)
-            .map(|t| t.answerer.clone())
+            .filter(|_| map.data_tls != DataTls::Off)
+            .map(|t| t.answering(encrypt, map.data_tls == DataTls::Require))
     }
 
     /// Whether the cluster may go to mode `require` (D373, D377), or
@@ -4761,10 +4778,78 @@ impl Meta {
         Ok(())
     }
 
-    /// Sets the data path's TLS mode (D373; 30-data-path-tls.md §33.4):
-    /// the working map's epoch, and the mode before. Connections already
-    /// open stay as they are; each new one follows the mode.
-    pub async fn set_data_tls(self: &Rc<Self>, mode: DataTls) -> Result<(u64, DataTls), String> {
+    /// Whether sessions may be encrypted (D390), or why not: every
+    /// storage node that is up runs a build that keeps them, and so
+    /// reads the map's format 25. Each is asked its build with a `Hello`
+    /// on a connection of its own.
+    async fn may_encrypt(self: &Rc<Self>) -> Result<(), String> {
+        let targets: Vec<(u32, SocketAddr)> = {
+            let map = self.published.borrow();
+            map.devices
+                .values()
+                .filter(|d| map.nodes.get(&d.node).is_some_and(|n| n.up))
+                .map(|d| (d.node, d.addr))
+                .collect()
+        };
+        let asked: Vec<_> = targets
+            .into_iter()
+            .map(|(node, addr)| {
+                let task = hyperstor_reactor::spawn(async move {
+                    let hello = hyperstor_proto::Msg::Hello {
+                        min_version: hyperstor_proto::OLDEST_VERSION,
+                        max_version: hyperstor_proto::VERSION,
+                        id: 0,
+                        instance: 0,
+                    };
+                    let (c, _) = hyperstor_rpc::Conn::open(
+                        addr,
+                        hyperstor_rpc::CONNECT_TIMEOUT,
+                        &hello,
+                        None,
+                    )
+                    .await
+                    .ok()?;
+                    let v = c.version();
+                    c.kill();
+                    Some(v)
+                });
+                (node, task)
+            })
+            .collect();
+        let (mut silent, mut old) = (Vec::new(), Vec::new());
+        for (node, task) in asked {
+            match task.await {
+                None => silent.push(node.to_string()),
+                Some(v) if v < hyperstor_proto::ENCRYPT_VERSION => old.push(node.to_string()),
+                Some(_) => {}
+            }
+        }
+        if !old.is_empty() {
+            return Err(format!(
+                "storage node(s) {} run a build that can't encrypt sessions: upgrade them first",
+                old.join(", ")
+            ));
+        }
+        if !silent.is_empty() {
+            return Err(format!(
+                "storage node(s) {} are up and didn't answer: try again once they answer",
+                silent.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Sets the data path's TLS mode (D373; 30-data-path-tls.md §33.4),
+    /// and with `encrypt` whether sessions stay encrypted on networks not
+    /// marked trusted (D390): the working map's epoch, and the mode and
+    /// the switch before. Connections already open stay as they are; each
+    /// new one follows the map, and callers call again a peer they reach
+    /// in plaintext where sessions are now encrypted.
+    pub async fn set_data_tls(
+        self: &Rc<Self>,
+        mode: DataTls,
+        encrypt: Option<bool>,
+    ) -> Result<(u64, DataTls, bool), String> {
         if !self.leads() {
             return Err(self.not_leader());
         }
@@ -4774,13 +4859,20 @@ impl Meta {
                 return Err(self.not_leader());
             }
         }
+        if encrypt == Some(true) && !self.map.borrow().data_tls_encrypt {
+            self.may_encrypt().await?;
+            if !self.leads() {
+                return Err(self.not_leader());
+            }
+        }
         let mut map = self.map.borrow_mut();
-        let was = map.data_tls;
-        if was != mode {
-            map.data_tls = mode;
+        let was = (map.data_tls, map.data_tls_encrypt);
+        let now = (mode, encrypt.unwrap_or(was.1));
+        if was != now {
+            (map.data_tls, map.data_tls_encrypt) = now;
             map.epoch += 1;
         }
-        Ok((map.epoch, was))
+        Ok((map.epoch, was.0, was.1))
     }
 
     /// Returns once `dev` can no longer serve `pgs` under an older map.
@@ -5268,6 +5360,8 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
             // certificate was last checked against the revoked list at.
             let mut peer: Option<hyperstor_rpc::tls::Peer> = None;
             let mut checked = 0;
+            // The caller offered to keep its session (D391).
+            let mut offered = false;
             // Logged once it is refused something (D377).
             let mut refused = false;
             loop {
@@ -5287,14 +5381,19 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                 let msg = Msg::decode(h.kind, &body[..h.body_len as usize]);
                 // TLS on this connection (D373): the handshake runs here,
                 // before the next frame is read.
-                if let Ok(Msg::StartTls) = msg {
+                if let Ok(Msg::StartTls | Msg::StartTlsOffer { .. }) = msg {
+                    let offer = match msg {
+                        Ok(Msg::StartTlsOffer { encrypt }) => Some(encrypt),
+                        _ => None,
+                    };
+                    offered = offer.is_some();
                     let no = Msg::Error {
                         code: hyperstor_proto::Code::Invalid,
                         map_epoch: meta.map.borrow().epoch,
                         detail: "the map service doesn't start TLS: it has no identity, or the cluster's mode is off".into(),
                     };
-                    let tls = meta.answering_tls();
-                    match hyperstor_rpc::answer_start_tls(&s, &tx, h.req, &tls, no).await {
+                    let tls = meta.answering_tls(s.local_addr().ok());
+                    match hyperstor_rpc::answer_start_tls(&s, &tx, h.req, &tls, no, offer).await {
                         // A revoked certificate is refused at the
                         // handshake (D384).
                         Ok(Some(p))
@@ -5323,6 +5422,16 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                         if hyperstor_client::cert_revoked(&map, p) {
                             drop(map);
                             meta.refuse_revoked(&s, p);
+                            return;
+                        }
+                        // In plaintext, where the address is now
+                        // encrypted (D390): dropped, and called again.
+                        if offered
+                            && !p.encrypted
+                            && s.local_addr().is_ok_and(|a| map.encrypts(a.ip()))
+                        {
+                            drop(map);
+                            let _ = s.shutdown();
                             return;
                         }
                     }

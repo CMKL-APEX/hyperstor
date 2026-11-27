@@ -26,8 +26,9 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// [`WireOp::WriteCrcs`] in operation lists (D279). 5:
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
 /// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
-/// (D363, D371). 8: [`Msg::StartTls`] (D25, D373).
-pub const VERSION: u16 = 11;
+/// (D363, D371). 8: [`Msg::StartTls`] (D25, D373). 12:
+/// [`Msg::StartTlsOffer`] and [`Msg::StartTlsEncrypted`] (D391).
+pub const VERSION: u16 = 12;
 /// The version whose storage nodes refuse by certificate role, and
 /// everything unauthenticated in mode `require` (D377), and key their
 /// pings (D379): what the map service wants of every node before it sets
@@ -37,6 +38,9 @@ pub const AUTHZ_VERSION: u16 = 11;
 /// The version whose storage nodes and clients read a map with revoked
 /// certificates (format 24; D384) and refuse them.
 pub const REVOKED_VERSION: u16 = 9;
+/// The first version that decodes [`Msg::StartTlsOffer`], and may keep
+/// a session encrypted (D391; 30-data-path-tls.md §33.9).
+pub const ENCRYPT_VERSION: u16 = 12;
 /// The first version that decodes [`Msg::StartTls`] (D373).
 pub const TLS_VERSION: u16 = 8;
 /// The first version that decodes [`Msg::Capability`] (D363).
@@ -410,6 +414,17 @@ pub enum Msg {
     /// caller sends nothing else until it has the answer.
     StartTls,
     StartTlsOk,
+    /// [`Msg::StartTls`] to a peer whose `HelloOk` answered
+    /// [`ENCRYPT_VERSION`] or more (D391; 30-data-path-tls.md §33.9):
+    /// `encrypt` when the caller's map says the address it dialled is on
+    /// a network not marked trusted and the cluster encrypts there.
+    /// Answered `StartTlsOk` (the session turns back to plaintext),
+    /// `StartTlsEncrypted` (it stays TLS: the caller asked, or the
+    /// answerer's own map says so), or `Error` as `StartTls` is.
+    StartTlsOffer {
+        encrypt: bool,
+    },
+    StartTlsEncrypted,
     /// Client to storage node, after `Hello` and `Host`, when the node's
     /// `HelloOk` answered [`CAPABILITY_VERSION`] or more: a sealed
     /// capability (`hyperstor_pki::seal`; 29-hsfs.md §32.6, D363) for the
@@ -970,6 +985,8 @@ mod kind {
     pub const START_TLS: u16 = 103;
     pub const START_TLS_OK: u16 = 104;
     pub const UNAUTHENTICATED: u16 = 105;
+    pub const START_TLS_OFFER: u16 = 106;
+    pub const START_TLS_ENCRYPTED: u16 = 107;
 }
 
 /// Who may send a message once connections authenticate (D377;
@@ -1007,7 +1024,9 @@ impl Msg {
     /// be added without saying.
     pub fn sender(&self) -> Sender {
         match self {
-            Msg::Hello { .. } | Msg::Ping | Msg::StartTls => Sender::Any,
+            Msg::Hello { .. } | Msg::Ping | Msg::StartTls | Msg::StartTlsOffer { .. } => {
+                Sender::Any
+            }
             // Answers.
             Msg::HelloOk { .. }
             | Msg::Pong
@@ -1022,6 +1041,7 @@ impl Msg {
             | Msg::MapPushOk
             | Msg::PeerDownOk
             | Msg::StartTlsOk
+            | Msg::StartTlsEncrypted
             | Msg::PushOk
             | Msg::DigestsOk
             | Msg::HoldsOk
@@ -1231,6 +1251,8 @@ impl Msg {
             Msg::Capability { .. } => CAPABILITY,
             Msg::StartTls => START_TLS,
             Msg::StartTlsOk => START_TLS_OK,
+            Msg::StartTlsOffer { .. } => START_TLS_OFFER,
+            Msg::StartTlsEncrypted => START_TLS_ENCRYPTED,
             Msg::NodeHost { .. } => NODE_HOST,
             Msg::Unauthenticated { .. } => UNAUTHENTICATED,
             Msg::Lease { .. } => LEASE,
@@ -1317,6 +1339,7 @@ impl Msg {
                 | Msg::BlocklistOk { .. }
                 | Msg::Noted { .. }
                 | Msg::StartTlsOk
+                | Msg::StartTlsEncrypted
                 | Msg::PgUsageOk { .. }
                 | Msg::PgSpaceOk { .. }
                 | Msg::LeaderStateOk { .. }
@@ -1416,7 +1439,10 @@ impl Msg {
             Msg::Capability { sealed } => {
                 e.bytes(sealed);
             }
-            Msg::StartTls | Msg::StartTlsOk => {}
+            Msg::StartTls | Msg::StartTlsOk | Msg::StartTlsEncrypted => {}
+            Msg::StartTlsOffer { encrypt } => {
+                e.bool(*encrypt);
+            }
             Msg::NodeHost { node, name } => {
                 e.u32(*node).str(name);
             }
@@ -1920,6 +1946,8 @@ impl Msg {
             },
             START_TLS => Msg::StartTls,
             START_TLS_OK => Msg::StartTlsOk,
+            START_TLS_OFFER => Msg::StartTlsOffer { encrypt: d.bool()? },
+            START_TLS_ENCRYPTED => Msg::StartTlsEncrypted,
             CAPABILITY => Msg::Capability {
                 sealed: d.bytes()?.to_vec(),
             },
@@ -2864,6 +2892,9 @@ mod tests {
             },
             Msg::StartTls,
             Msg::StartTlsOk,
+            Msg::StartTlsOffer { encrypt: true },
+            Msg::StartTlsOffer { encrypt: false },
+            Msg::StartTlsEncrypted,
             Msg::NodeHost {
                 node: 2,
                 name: "storage-2".into(),

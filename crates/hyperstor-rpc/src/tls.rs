@@ -52,6 +52,8 @@ pub struct Peer {
     /// When it was issued (Unix seconds): an identity's revocation covers
     /// certificates issued until then.
     pub issued_unix: u64,
+    /// The session stayed TLS, in kernel TLS (D390): set once it is.
+    pub encrypted: bool,
 }
 
 impl Peer {
@@ -60,6 +62,7 @@ impl Peer {
             who: hyperstor_pki::identity_of(leaf)?,
             serial: hyperstor_pki::serial_of(leaf)?,
             issued_unix: hyperstor_pki::issued_unix(leaf)?,
+            encrypted: false,
         })
     }
 }
@@ -138,6 +141,105 @@ async fn bounded(mut s: Session<'_>, first: bool) -> Result<Peer, TlsError> {
         Ok(r) => r,
         Err(_) => Err(TlsError::TimedOut(HANDSHAKE_TIMEOUT)),
     }
+}
+
+/// The byte the answerer sends, as TLS, once its handshake is done on a
+/// session that stays.
+const READY: u8 = 0x5e;
+
+impl Session<'_> {
+    /// The handshake of a session that stays TLS, ending where neither
+    /// side holds a record it hasn't processed: the answerer sends one
+    /// byte of application data, [`READY`], once it has the caller's
+    /// `Finished`, and the caller sends nothing after its `Finished` until
+    /// it has read that byte. So rustls has consumed exactly the
+    /// handshake on both sides when its secrets are taken (kernel TLS can
+    /// take no record rustls has already read).
+    async fn run_kept(&mut self, first: bool) -> Result<Peer, TlsError> {
+        loop {
+            self.flush().await?;
+            if !self.conn.is_handshaking() {
+                break;
+            }
+            self.read().await?;
+        }
+        let who = self
+            .conn
+            .peer_certificates()
+            .and_then(|c| c.first())
+            .and_then(|leaf| Peer::of(leaf))
+            .ok_or(TlsError::NoIdentity)?;
+        if first {
+            loop {
+                let mut b = [0u8; 1];
+                match io::Read::read(&mut self.conn.reader(), &mut b) {
+                    Ok(1) if b[0] == READY => break,
+                    Ok(_) => return Err(TlsError::Closed),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.read().await?,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        } else {
+            io::Write::write_all(&mut self.conn.writer(), &[READY])?;
+            self.flush().await?;
+        }
+        Ok(who)
+    }
+}
+
+/// A session that stays TLS after its handshake: who the peer is, and
+/// the session's keys and record numbers, to encrypt and decrypt what
+/// follows (kernel TLS, `crate::ktls`).
+pub struct Kept {
+    pub peer: Peer,
+    pub secrets: rustls::ExtractedSecrets,
+}
+
+async fn bounded_kept(mut s: Session<'_>, first: bool) -> Result<Kept, TlsError> {
+    let peer = match timeout(HANDSHAKE_TIMEOUT, s.run_kept(first)).await {
+        Ok(r) => r?,
+        Err(_) => return Err(TlsError::TimedOut(HANDSHAKE_TIMEOUT)),
+    };
+    let secrets = s.conn.dangerous_extract_secrets()?;
+    Ok(Kept { peer, secrets })
+}
+
+/// [`caller`] on a connection that stays TLS (D25; 30-data-path-tls.md
+/// §33.9): the handshake, and the session's secrets.
+pub async fn caller_kept(
+    stream: &TcpStream,
+    config: Arc<rustls::ClientConfig>,
+) -> Result<Kept, TlsError> {
+    let name = rustls::pki_types::ServerName::from(
+        stream.peer_addr().map_err(|_| TlsError::BadName)?.ip(),
+    );
+    let conn = rustls::ClientConnection::new(config, name)?;
+    bounded_kept(
+        Session {
+            stream,
+            conn: conn.into(),
+            peer_closed: false,
+        },
+        true,
+    )
+    .await
+}
+
+/// [`answerer`] on a connection that stays TLS.
+pub async fn answerer_kept(
+    stream: &TcpStream,
+    config: Arc<rustls::ServerConfig>,
+) -> Result<Kept, TlsError> {
+    let conn = rustls::ServerConnection::new(config)?;
+    bounded_kept(
+        Session {
+            stream,
+            conn: conn.into(),
+            peer_closed: false,
+        },
+        false,
+    )
+    .await
 }
 
 /// The caller's side, on a connection whose peer has just agreed to start
@@ -383,13 +485,17 @@ mod tests {
                     };
                     let _ = tx.send(crate::Frame::new(h.req, &ok, &[]));
                 }
-                Msg::StartTls => {
+                Msg::StartTls | Msg::StartTlsOffer { .. } => {
                     let no = Msg::Error {
                         code: Code::Invalid,
                         map_epoch: 1,
                         detail: "no TLS here".into(),
                     };
-                    match crate::answer_start_tls(&s, &tx, h.req, &tls, no).await {
+                    let offer = match msg {
+                        Msg::StartTlsOffer { encrypt } => Some(encrypt),
+                        _ => None,
+                    };
+                    match crate::answer_start_tls(&s, &tx, h.req, &tls, no, offer).await {
                         Ok(w) => who = w.map(|p| p.who),
                         Err(_) => return who,
                     }
@@ -429,7 +535,11 @@ mod tests {
                 let mut served = Vec::new();
                 for i in 0..4 {
                     let (s, _) = l.accept().await.unwrap();
-                    let tls = (i < 2).then(|| server.clone());
+                    let tls = (i < 2).then(|| crate::Answering {
+                        config: server.clone(),
+                        encrypt: false,
+                        required: false,
+                    });
                     served.push(spawn(serve_frames(s, tls)));
                 }
                 let mut who = Vec::new();
@@ -442,10 +552,12 @@ mod tests {
             let allow = crate::CallerTls {
                 config: client.clone(),
                 required: false,
+                encrypt: false,
             };
             let require = crate::CallerTls {
                 config: client,
                 required: true,
+                encrypt: false,
             };
             let pings = async |conn: &crate::Conn| {
                 let all: Vec<_> = (0..32).map(|_| conn.start(&Msg::Ping, &[])).collect();
@@ -489,6 +601,130 @@ mod tests {
                     None
                 ]
             );
+        });
+    }
+
+    /// D391: a session stays encrypted, in kernel TLS, when the caller
+    /// offers to or the answerer's map says so; either way requests and
+    /// answers of every size go through it. A session neither side wants
+    /// encrypted turns back to plaintext.
+    #[test]
+    fn a_session_stays_encrypted_when_either_side_asks() {
+        use hyperstor_proto::Msg;
+        let c = ca("7");
+        let (client, server) = configs(
+            &c,
+            &leaf(&c, "7", Role::Host, "hv-1"),
+            &leaf(&c, "7", Role::Node, "3"),
+        );
+        let hello = Msg::Hello {
+            min_version: hyperstor_proto::OLDEST_VERSION,
+            max_version: hyperstor_proto::VERSION,
+            id: 9,
+            instance: 10,
+        };
+        // (caller asks, answerer's map says, encrypted)
+        let cases = [
+            (false, false, false),
+            (true, false, true),
+            (false, true, true),
+            (true, true, true),
+        ];
+        block_on(async move {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let accept = spawn(async move {
+                for (_, theirs, _) in cases {
+                    let (s, _) = l.accept().await.unwrap();
+                    let tls = Some(crate::Answering {
+                        config: server.clone(),
+                        encrypt: theirs,
+                        required: false,
+                    });
+                    spawn(serve_frames(s, tls));
+                }
+            });
+            for (ours, _, want) in cases {
+                let tls = crate::CallerTls {
+                    config: client.clone(),
+                    required: true,
+                    encrypt: ours,
+                };
+                let (conn, _) = crate::Conn::open(addr, Duration::from_secs(5), &hello, Some(&tls))
+                    .await
+                    .unwrap();
+                assert_eq!(conn.encrypted(), want, "asked {ours}");
+                assert_eq!(conn.peer().unwrap().id, "3");
+                let all: Vec<_> = (0..32).map(|_| conn.start(&Msg::Ping, &[])).collect();
+                for p in all {
+                    assert!(matches!(p.await.unwrap().0, Msg::Pong));
+                }
+                // A large payload each way: the node answers a ping with
+                // `Pong` whatever it carries.
+                let big = vec![0xa5u8; 1 << 20];
+                assert!(matches!(
+                    conn.start(&Msg::Ping, &big).await.unwrap().0,
+                    Msg::Pong
+                ));
+                conn.kill();
+            }
+            accept.await;
+        });
+    }
+
+    /// D391: in `require`, an answerer whose map says a session must be
+    /// encrypted refuses a caller that can only ask `StartTls`; in
+    /// `allow` it serves it in plaintext, authenticated.
+    #[test]
+    fn a_caller_that_cant_encrypt_is_refused_only_in_require() {
+        use hyperstor_proto::Msg;
+        let c = ca("7");
+        let (client, server) = configs(
+            &c,
+            &leaf(&c, "7", Role::Host, "hv-1"),
+            &leaf(&c, "7", Role::Node, "3"),
+        );
+        // A caller of version 11: `StartTls` only.
+        let hello = Msg::Hello {
+            min_version: hyperstor_proto::OLDEST_VERSION,
+            max_version: hyperstor_proto::ENCRYPT_VERSION - 1,
+            id: 9,
+            instance: 10,
+        };
+        block_on(async move {
+            let l = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let addr = l.local_addr().unwrap();
+            let accept = spawn(async move {
+                let mut who = Vec::new();
+                for required in [false, true] {
+                    let (s, _) = l.accept().await.unwrap();
+                    let tls = Some(crate::Answering {
+                        config: server.clone(),
+                        encrypt: true,
+                        required,
+                    });
+                    who.push(spawn(serve_frames(s, tls)));
+                }
+                let mut out = Vec::new();
+                for h in who {
+                    out.push(h.await.map(|w| w.id));
+                }
+                out
+            });
+            let tls = crate::CallerTls {
+                config: client,
+                required: false,
+                encrypt: false,
+            };
+            for _ in 0..2 {
+                let (conn, _) =
+                    crate::Conn::open_capped(addr, Duration::from_secs(5), &hello, Some(&tls), 11)
+                        .await
+                        .unwrap();
+                assert!(!conn.encrypted());
+                conn.kill();
+            }
+            assert_eq!(accept.await, vec![Some("hv-1".to_string()), None]);
         });
     }
 }

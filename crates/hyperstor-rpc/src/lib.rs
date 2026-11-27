@@ -10,6 +10,7 @@
 //! as broken: it is shut down, its other calls fail, and the next caller
 //! connects afresh (01-implementation-notes.md I184).
 
+pub mod ktls;
 pub mod tls;
 
 /// A data-path peer's identity, from its certificate.
@@ -160,6 +161,8 @@ struct Inner {
     /// Who the peer proved to be in the TLS handshake ([`Conn::open`]);
     /// None on a connection that didn't authenticate.
     peer: RefCell<Option<tls::Peer>>,
+    /// The session stayed TLS, in kernel TLS (D390, D391).
+    encrypted: Cell<bool>,
 }
 
 /// What a caller with an identity does about TLS on a new connection
@@ -169,8 +172,12 @@ pub struct CallerTls {
     /// `hyperstor_pki::data_client_config`.
     pub config: std::sync::Arc<rustls::ClientConfig>,
     /// The cluster's mode is `require`: a peer that speaks no TLS, or
-    /// refuses it, is dropped.
+    /// refuses it, is dropped; so is one that can't keep the session
+    /// encrypted when `encrypt` says it must be.
     pub required: bool,
+    /// The address dialled is one whose sessions stay encrypted
+    /// (`ClusterMap::encrypts`; D390).
+    pub encrypt: bool,
 }
 
 /// A process's identity on the data path (D25): what it calls with and
@@ -206,46 +213,118 @@ impl TlsIdentity {
         CallerTls {
             config: self.caller.clone(),
             required,
+            encrypt: false,
+        }
+    }
+
+    /// What an answerer does with it: `encrypt` where the address it was
+    /// called at is one whose sessions stay encrypted, `required` in mode
+    /// `require`.
+    pub fn answering(&self, encrypt: bool, required: bool) -> Answering {
+        Answering {
+            config: self.answerer.clone(),
+            encrypt,
+            required,
         }
     }
 }
 
-/// What a served connection answers `StartTls` with: the handshake's
-/// configuration (`hyperstor_pki::data_server_config`), or None where
-/// this end has no identity or the cluster's mode is `off`.
-pub type AnswererTls = Option<std::sync::Arc<rustls::ServerConfig>>;
+impl CallerTls {
+    /// With the session kept encrypted when `encrypt` (D390).
+    pub fn encrypting(mut self, encrypt: bool) -> CallerTls {
+        self.encrypt = encrypt;
+        self
+    }
+}
 
-/// Answers a `StartTls` (request `req`) on a served connection whose
-/// replies go through `tx` to [`writer`]. With `tls`: `StartTlsOk`, then,
-/// once it is on the socket, the handshake on `s`; who the caller is, or
-/// an error after which the connection must be closed. Without: `refusal`
-/// and None, and frames go on unauthenticated.
+/// How a served connection answers a request to start TLS.
+#[derive(Clone)]
+pub struct Answering {
+    /// `hyperstor_pki::data_server_config`.
+    pub config: std::sync::Arc<rustls::ServerConfig>,
+    /// This end's map says the session stays encrypted (D390): it does,
+    /// whatever the caller says, if the caller speaks
+    /// [`hyperstor_proto::ENCRYPT_VERSION`].
+    pub encrypt: bool,
+    /// Mode `require`: a caller that can't keep it encrypted when
+    /// `encrypt` is refused TLS, and with it everything else.
+    pub required: bool,
+}
+
+/// What a served connection answers `StartTls` with, or None where this
+/// end has no identity or the cluster's mode is `off`.
+pub type AnswererTls = Option<Answering>;
+
+/// Answers a `StartTls` or a `StartTlsOffer` (request `req`; `offer` is
+/// the offer's `encrypt`, None for `StartTls`) on a served connection
+/// whose replies go through `tx` to [`writer`]. With `tls`: `StartTlsOk`
+/// or `StartTlsEncrypted`, then, once it is on the socket, the handshake
+/// on `s`; who the caller is, or an error after which the connection must
+/// be closed. Without: `refusal` and None, and frames go on
+/// unauthenticated.
 ///
-/// The caller sends nothing after `StartTls` until it has the answer, so
-/// the next bytes read from `s` are the handshake's; whoever calls this
-/// reads no frame meanwhile.
+/// The session stays encrypted, in kernel TLS, if the caller offered to
+/// or `tls.encrypt` says so and the caller can (D391). A caller of a
+/// version before that, where `tls.encrypt` and `tls.required`, is sent
+/// `refusal`: in `require` it is then served nothing.
+///
+/// The caller sends nothing after its request until it has the answer,
+/// so the next bytes read from `s` are the handshake's; whoever calls
+/// this reads no frame meanwhile.
 pub async fn answer_start_tls(
     s: &TcpStream,
     tx: &Sender<Frame>,
     req: u64,
     tls: &AnswererTls,
     refusal: Msg,
+    offer: Option<bool>,
 ) -> Result<Option<tls::Peer>, RpcError> {
-    let Some(config) = tls else {
+    let Some(a) = tls else {
         let _ = tx.send(Frame::new(req, &refusal, &[]));
         return Ok(None);
     };
+    let encrypt = match offer {
+        Some(asked) => asked || a.encrypt,
+        None if a.encrypt && a.required => {
+            let _ = tx.send(Frame::new(req, &refusal, &[]));
+            return Ok(None);
+        }
+        None => false,
+    };
+    let answer = if encrypt {
+        Msg::StartTlsEncrypted
+    } else {
+        Msg::StartTlsOk
+    };
     let (flushed, wait) = oneshot();
-    if tx.send(Frame::new(req, &Msg::StartTlsOk, &[])).is_err()
+    if tx.send(Frame::new(req, &answer, &[])).is_err()
         || tx.send(Frame::barrier(flushed)).is_err()
         || wait.recv().await.is_none()
     {
         return Err(RpcError::Closed);
     }
-    tls::answerer(s, config.clone())
+    let failed = |e: tls::TlsError| RpcError::Protocol(e.to_string());
+    if !encrypt {
+        return tls::answerer(s, a.config.clone())
+            .await
+            .map(Some)
+            .map_err(failed);
+    }
+    let kept = tls::answerer_kept(s, a.config.clone())
         .await
-        .map(Some)
-        .map_err(|e| RpcError::Protocol(e.to_string()))
+        .map_err(failed)?;
+    encrypt_kept(s, &kept)?;
+    Ok(Some(tls::Peer {
+        encrypted: true,
+        ..kept.peer
+    }))
+}
+
+/// Hands a kept session to kernel TLS (D392).
+fn encrypt_kept(s: &TcpStream, kept: &tls::Kept) -> Result<(), RpcError> {
+    use std::os::fd::AsRawFd;
+    ktls::enable(s.as_raw_fd(), &kept.secrets)
+        .map_err(|e| RpcError::Protocol(format!("kernel TLS: {e}")))
 }
 
 /// A client connection. Cheap to clone; all clones share the socket.
@@ -502,6 +581,18 @@ impl Conn {
         hello: &Msg,
         tls: Option<&CallerTls>,
     ) -> Result<(Conn, Msg), RpcError> {
+        Self::open_capped(addr, limit, hello, tls, u16::MAX).await
+    }
+
+    /// [`Conn::open`] as a caller of protocol `cap` would: its tests
+    /// play callers of older builds.
+    async fn open_capped(
+        addr: SocketAddr,
+        limit: Duration,
+        hello: &Msg,
+        tls: Option<&CallerTls>,
+        cap: u16,
+    ) -> Result<(Conn, Msg), RpcError> {
         let s = match hyperstor_reactor::time::timeout(limit, TcpStream::connect(addr)).await {
             Ok(r) => r.map_err(|e| RpcError::Io(e.to_string()))?,
             Err(_) => return Err(RpcError::Timeout),
@@ -521,10 +612,11 @@ impl Conn {
                 .map_err(|e| RpcError::Io(e.to_string()))?;
             let (_, answer, _) = read_frame_counted(&s, counter.as_deref()).await?;
             let version = match &answer {
-                Msg::HelloOk { version, .. } => *version,
+                Msg::HelloOk { version, .. } => (*version).min(cap),
                 _ => 0,
             };
             let mut peer = None;
+            let mut encrypted = false;
             if let Some(tls) = tls {
                 let refused = |why: &str| {
                     RpcError::Protocol(format!(
@@ -532,17 +624,44 @@ impl Conn {
                     ))
                 };
                 if version >= hyperstor_proto::TLS_VERSION {
-                    ask(&Msg::StartTls)
+                    // D391: a peer that can keep the session is offered
+                    // to; an older one can't, and in `require` a session
+                    // that must be encrypted isn't made with it.
+                    let request = if version >= hyperstor_proto::ENCRYPT_VERSION {
+                        Msg::StartTlsOffer {
+                            encrypt: tls.encrypt,
+                        }
+                    } else if tls.encrypt && tls.required {
+                        return Err(refused("speaks a protocol that can't encrypt"));
+                    } else {
+                        Msg::StartTls
+                    };
+                    ask(&request)
                         .await
                         .0
                         .map_err(|e| RpcError::Io(e.to_string()))?;
+                    let failed = |e: tls::TlsError| RpcError::Protocol(format!("{addr}: {e}"));
                     match read_frame_counted(&s, counter.as_deref()).await?.1 {
+                        Msg::StartTlsOk
+                            if tls.encrypt && matches!(request, Msg::StartTlsOffer { .. }) =>
+                        {
+                            return Err(RpcError::Protocol(format!(
+                                "{addr} would turn a session that must be encrypted back to plaintext"
+                            )));
+                        }
                         Msg::StartTlsOk => {
-                            peer = Some(
-                                tls::caller(&s, tls.config.clone())
-                                    .await
-                                    .map_err(|e| RpcError::Protocol(format!("{addr}: {e}")))?,
-                            );
+                            peer = Some(tls::caller(&s, tls.config.clone()).await.map_err(failed)?);
+                        }
+                        Msg::StartTlsEncrypted if matches!(request, Msg::StartTlsOffer { .. }) => {
+                            let kept = tls::caller_kept(&s, tls.config.clone())
+                                .await
+                                .map_err(failed)?;
+                            encrypt_kept(&s, &kept)?;
+                            encrypted = true;
+                            peer = Some(tls::Peer {
+                                encrypted: true,
+                                ..kept.peer
+                            });
                         }
                         _ if tls.required => return Err(refused("refused TLS")),
                         _ => {}
@@ -551,9 +670,9 @@ impl Conn {
                     return Err(refused("speaks a protocol from before TLS"));
                 }
             }
-            Ok((version, peer, answer))
+            Ok((version, peer, encrypted, answer))
         };
-        let (version, peer, answer) =
+        let (version, peer, encrypted, answer) =
             match hyperstor_reactor::time::timeout(CALL_TIMEOUT, preamble).await {
                 Ok(r) => r?,
                 Err(_) => return Err(RpcError::Timeout),
@@ -561,6 +680,7 @@ impl Conn {
         let c = Self::run_on(s, addr);
         c.set_version(version);
         *c.inner.peer.borrow_mut() = peer;
+        c.inner.encrypted.set(encrypted);
         Ok((c, answer))
     }
 
@@ -568,6 +688,12 @@ impl Conn {
     /// authenticated.
     pub fn peer(&self) -> Option<hyperstor_pki::Identity> {
         self.inner.peer.borrow().as_ref().map(|p| p.who.clone())
+    }
+
+    /// Whether the session stayed TLS (D390): every byte since the
+    /// handshake encrypted, by kernel TLS.
+    pub fn encrypted(&self) -> bool {
+        self.inner.encrypted.get()
     }
 
     /// Whether the peer authenticated with a certificate `revoked` says
@@ -593,6 +719,7 @@ impl Conn {
             dead: Cell::new(false),
             version: Cell::new(0),
             peer: RefCell::new(None),
+            encrypted: Cell::new(false),
         });
         spawn(writer(s.clone(), rx));
         let rd = inner.clone();

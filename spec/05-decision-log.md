@@ -1959,3 +1959,16 @@ its node's certificate, whose host name isn't checked (I454).
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 350 | How such a host gets a `host` certificate: the installer asks the cluster API with the node's certificate, for the host name that node reports (recommended); a `host` token as VM hosts use, a manual step on every storage host; or leave it showing the node's | The node asks the API | D386 |
+
+## Data-path TLS, stage T3: encryption (2026-11-27)
+
+Stage T3 encrypts sessions on networks not marked trusted (D25, D372).
+`Network.trusted` is false unless set, so read literally D25 would start
+encrypting every upgraded cluster at the roll. G68 then held on the
+hosts' kernel (I460).
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 354 | When encryption starts: behind a cluster setting, off for an upgraded cluster and on for a new install, with addresses on no network encrypted (recommended); D25 as written, from the roll; or only on networks named and not marked trusted | Behind a setting, as recommended | D390 |
+| 355 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D391 |
+| 356 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D392 |

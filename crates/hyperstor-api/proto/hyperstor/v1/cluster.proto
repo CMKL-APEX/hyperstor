@@ -1035,6 +1035,11 @@ message SetPortRoleRequest {
 message SetDataTlsRequest {
   // "off", "allow" or "require".
   string mode = 1;
+  // Whether authenticated sessions stay encrypted on networks not marked
+  // trusted (D390; 30-data-path-tls.md §33.9). Absent: as it is. Turning
+  // it on is refused while a storage node that is up runs a build that
+  // can't.
+  optional bool encrypt = 2;
 }
 
 message GetDataTlsRequest {}
@@ -1058,6 +1063,8 @@ message GetDataTlsResponse {
   repeated UnauthenticatedPeer unauthenticated = 2;
   // Whether this member holds the nodes' reports: only the leader does.
   bool unauthenticated_known = 3 [json_name = "unauthenticated_known"];
+  // Whether sessions stay encrypted on networks not marked trusted (D390).
+  bool encrypt = 4;
 }
 
 message SetDataTlsResponse {
@@ -1065,6 +1072,8 @@ message SetDataTlsResponse {
   uint64 map_epoch = 1 [json_name = "map_epoch"];
   // The mode before.
   string was = 2;
+  // Whether sessions were encrypted before (D390).
+  bool was_encrypt = 3 [json_name = "was_encrypt"];
 }
 
 message SetLendingRequest {
