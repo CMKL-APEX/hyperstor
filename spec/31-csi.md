@@ -6,9 +6,8 @@ glidex VMs, through disks glidex hot-plugs. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D390–D396 are settled with the owner (05-decision-log.md
-points 354–360, 2026-11-27); D397–D401, taken while drafting, are open for
-review, as are the questions in §34.10. Host checks G70–G72 are to run.
+Status: **design.** D390–D404 are settled with the owner (05-decision-log.md
+points 354–364, 2026-11-27). Host checks G70–G72 are to run.
 Nothing is built. Milestone HS21 (17-milestones.md §21; #454).
 
 ## 34. Kubernetes CSI driver
@@ -125,16 +124,29 @@ for both kinds of cluster.
   PersistentVolume detaches it everywhere and leaves the snapshot to its
   VolumeSnapshot.
 
-### 34.6 Node identities
+### 34.6 Node identities (D402)
 
 Each node plugin needs a `host` certificate: the storage nodes serve it by
 that role (D377) and check its realm binding on the name in it (D259).
-Join tokens are single-use (D57), so a DaemonSet can't share one. How a
-node gets its own is open (§34.10, question 1); the recommendation is that
-the controller, which may make tokens as a `mgmt` client, makes one per
-Kubernetes Node it sees and binds the new host to the controller's own
-realms, and the node's plugin joins with it once and keeps the identity
-on its host path.
+Join tokens are single-use (D57), so a DaemonSet can't share one.
+
+- **The controller makes one per node.** It watches Kubernetes Nodes; for
+  a node with no identity yet it makes a single-use `host` token named
+  after the node and binds that host to its own realms (D327), then
+  writes the token to a Secret named for the node
+  (`hyperstor-csi-host-<node>`).
+- **The node's plugin joins once** with its Secret's token, making its
+  key on the node (D57), and keeps the identity under its host path; the
+  controller deletes the Secret once the join is done. A plugin with an
+  identity never reads a Secret again; its certificate renews over the
+  API as every host's does.
+- **A node removed from Kubernetes** has its host's identity revoked by
+  the controller (D384), so a node name reused later gets a new one.
+- **What it needs:** a `mgmt` client may make `host` tokens and bind the
+  hosts they make to realms it is bound to, and no others. The
+  DaemonSet's service account can read every node's Secret while it
+  exists; a token is single-use and short-lived (1 h), and the Secret
+  goes once used.
 
 ### 34.7 Packaging (D396)
 
@@ -147,7 +159,8 @@ on its host path.
   sidecars at pinned versions, RBAC, and values for the cluster's API
   addresses, the controller's Secret and example StorageClasses and a
   VolumeSnapshotClass.
-- **Docs:** a page in the operator guide, from token to first PVC.
+- **Docs:** a page in the operator guide, from token to first PVC,
+  saying C1 is for trusted storage networks (D404).
 
 ### 34.8 Tests
 
@@ -167,27 +180,28 @@ on its host path.
 
 | Stage | What | Needs |
 |---|---|---|
-| C1 | Volumes on storage-network nodes: controller and node, filesystem and raw block, RWO and RWOP, expansion, stats, idempotent ids (D397), node identities (§34.6), csi-sanity | HS20 T2 for `require` |
+| C1 | Volumes on storage-network nodes: controller and node, filesystem and raw block, RWO and RWOP, expansion, stats, idempotent ids (D397), node identities (D402), no topology (D403), csi-sanity | HS20 T2 for `require` (D404) |
 | C2 | Snapshots and clones: unique snapshot names (D398), volumes from snapshots and from volumes | C1 |
 | C3 | Restarts: ublk user recovery in `hyperstor-ublk`'s crate and the plugin's state file (D394) | C1, G70 |
 | C4 | ReadOnlyMany: read-only snapshot attachments in the client and `hyperstor-ublk` (D395) | C2 |
 | C5 | Packaging: image, chart, release CI, the kind end-to-end suite, the operator guide | C1–C4, G71 |
 | C6 | Kubernetes on glidex VMs: the controller through glidex's API, disks found by serial in the guest | C5; glidex: hot-plug of disks into a running VM (16-glidex.md §20, glidex#685), a credential for a cluster in a project, the disk's serial; G72 |
 
-### 34.10 Open questions
+### 34.10 Settled after drafting
 
-1. **Node identities.** The controller making a single-use `host` token
-   per Kubernetes Node, in a Secret per node (recommended); or the
-   operator joining each node with `hyperstor-install --role host`, the
-   plugin reading its identity from the host. The first needs a `mgmt`
-   client allowed to make `host` tokens and bind them, and a DaemonSet
-   whose service account can read every node's Secret.
-2. **Topology.** Volumes reachable from every node (none, recommended
-   for C1), or `topology.hyperstor.io/realm` so a StorageClass places pods
-   only on nodes bound to its project's realm.
-3. **Encryption on the wire.** C1's data crosses the storage network
-   in plaintext unless HS20's T3 marks it untrusted. Whether C1 waits for
-   T3 for clusters outside the operator's racks.
+- **Node identities** (D402): the controller makes a `host` token per
+  Kubernetes Node (§34.6).
+- **No topology in C1** (D403): every node of a Kubernetes cluster is
+  taken to reach every volume of its StorageClasses. A node whose host
+  isn't bound to the volume's realm fails at staging,
+  `FAILED_PRECONDITION`, naming the realm; the driver reports no
+  topology. A `topology.hyperstor.io/realm` key comes when one
+  Kubernetes cluster spans realms.
+- **C1 doesn't wait for encryption** (D404): it ships with data-path TLS
+  in `require` mode, authenticated, its data in plaintext on networks
+  marked trusted (D374). The operator guide says to use C1 only where
+  the storage network is trusted, and points to HS20's T3 for the rest
+  and to C6 for other tenants' clusters.
 
 ### 34.11 Host checks
 
