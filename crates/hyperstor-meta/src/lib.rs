@@ -11,6 +11,7 @@ pub mod api;
 pub mod audit_log;
 pub mod backup;
 pub mod certs;
+pub mod datasets;
 pub mod fabric;
 pub mod fullness;
 pub mod health;

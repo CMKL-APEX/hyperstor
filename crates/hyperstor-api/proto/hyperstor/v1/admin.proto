@@ -1073,6 +1073,108 @@ message MoveProjectResponse {
   Operation operation = 1;
 }
 
+// Datasets (29-hsfs.md §32.2, §32.3; D360, D361): volumes, filesystems and
+// buckets, each named `tenant/project/name`, with properties set on a
+// tenant, a project or a dataset and inherited down unless set below. A
+// name shared by two live datasets of a project is shown and addressed
+// with a qualifier: `name@<volume id>` or `name@bucket`. `hsfs` and
+// `hyperstorctl dataset` are its commands.
+service DatasetService {
+  // The datasets reached, by name. Read.
+  rpc ListDatasets(ListDatasetsRequest) returns (ListDatasetsResponse);
+
+  // The properties of a tenant, a project or a dataset, each with where
+  // its value comes from. Read.
+  rpc GetDatasetProperties(GetDatasetPropertiesRequest) returns (GetDatasetPropertiesResponse);
+
+  // Sets a property of a tenant, a project or a dataset. Write.
+  rpc SetDatasetProperty(SetDatasetPropertyRequest) returns (SetDatasetPropertyResponse);
+
+  // Clears a property set on a tenant, a project or a dataset, which then
+  // inherits it. Write.
+  rpc InheritDatasetProperty(InheritDatasetPropertyRequest) returns (InheritDatasetPropertyResponse);
+}
+
+message Dataset {
+  // `tenant/project/name`, with its qualifier where its project has
+  // another of its name; `-` for no tenant or project.
+  string name = 1;
+  // "volume", "filesystem" or "bucket".
+  string kind = 2;
+  // A volume's id (32 hexadecimal digits) or a bucket's table id.
+  string id = 3;
+  uint32 tenant = 4;
+  uint32 project = 5;
+  // Its tenant's realm.
+  string realm = 6;
+  // A volume's pool, or a bucket's data pool.
+  uint32 pool = 7;
+  string pool_name = 8 [json_name = "pool_name"];
+}
+
+message ListDatasetsRequest {
+  // A tenant or `tenant/project` to list below; empty: all reached.
+  string under = 1;
+  // "volume", "filesystem" or "bucket"; empty: all.
+  string kind = 2;
+}
+
+message ListDatasetsResponse {
+  repeated Dataset datasets = 1;
+}
+
+message DatasetProperty {
+  string name = 1;
+  // A size in its largest exact unit (K, M, G, T, P), a pool's name, or
+  // as set.
+  string value = 2;
+  // "local", "default", or the tenant or `tenant/project` it is
+  // inherited from.
+  string source = 3;
+  // Whether anything acts on it yet; the others are kept and shown.
+  bool enforced = 4;
+  // For one set somewhere: who set it, when (Unix seconds).
+  string set_by = 5 [json_name = "set_by"];
+  uint64 set_unix = 6 [json_name = "set_unix"];
+}
+
+message GetDatasetPropertiesRequest {
+  // A tenant, `tenant/project`, or a dataset's name.
+  string dataset = 1;
+  // Only these; empty: every one that applies.
+  repeated string names = 2;
+}
+
+message GetDatasetPropertiesResponse {
+  // The name as resolved, qualified where it must be.
+  string dataset = 1;
+  // "tenant", "project", "volume", "filesystem" or "bucket".
+  string kind = 2;
+  repeated DatasetProperty properties = 3;
+}
+
+message SetDatasetPropertyRequest {
+  string dataset = 1;
+  string name = 2;
+  // A pool by its name or id.
+  string value = 3;
+}
+
+message SetDatasetPropertyResponse {
+  // As stored.
+  DatasetProperty property = 1;
+}
+
+message InheritDatasetPropertyRequest {
+  string dataset = 1;
+  string name = 2;
+}
+
+message InheritDatasetPropertyResponse {
+  // Whether it was set there.
+  bool was_set = 1 [json_name = "was_set"];
+}
+
 // Trust in glidex directories (19-administration.md §23.12, D306): offers
 // to a directory's tenants, the directories that redeemed one, and what
 // hyperstor-mgmt relays and pulls for them. A directory is trusted through

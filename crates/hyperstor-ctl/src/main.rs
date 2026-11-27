@@ -235,10 +235,10 @@
 use connectrpc::client::{CallOptions, ClientConfig, HttpClient};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{
-    AuditServiceClient, CaServiceClient, ClusterServiceClient, MapServiceClient,
-    MemberServiceClient, NodeServiceClient, OperationServiceClient, RealmServiceClient,
-    S3ServiceClient, TenantServiceClient, TokenServiceClient, TrashServiceClient,
-    TrustServiceClient,
+    AuditServiceClient, CaServiceClient, ClusterServiceClient, DatasetServiceClient,
+    MapServiceClient, MemberServiceClient, NodeServiceClient, OperationServiceClient,
+    RealmServiceClient, S3ServiceClient, TenantServiceClient, TokenServiceClient,
+    TrashServiceClient, TrustServiceClient,
 };
 use hyperstor_client::Client;
 use hyperstor_ctl::*;
@@ -246,7 +246,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--encrypt on|off] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256]";
+const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|dataset list|dataset get|dataset set|dataset inherit|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--encrypt on|off] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256] [--dataset D] [--property P[=V]]... [--under TENANT[/PROJECT]]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -496,6 +496,12 @@ struct Args {
     /// `s3 placement set`: pool names.
     data_pool: Option<String>,
     index_pool: Option<String>,
+    /// `dataset get|set|inherit`: a tenant, `tenant/project` or dataset.
+    dataset: Option<String>,
+    /// `dataset get|inherit`: property names; `dataset set`: `NAME=VALUE`.
+    properties: Vec<String>,
+    /// `dataset list`: a tenant or `tenant/project` to list below.
+    under: Option<String>,
 }
 
 /// `S` bytes, or with a K, M, G or T suffix (powers of 1024).
@@ -526,7 +532,26 @@ fn parse_caps(s: &str) -> Option<Vec<(String, u64)>> {
 }
 
 fn main() {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let mut argv: Vec<String> = std::env::args().skip(1).collect();
+    // Installed as `hsfs` too (29-hsfs.md §32.4, D361): its commands are
+    // `dataset`'s, in the order `zfs` users type them.
+    let hsfs = std::env::args()
+        .next()
+        .is_some_and(|a| std::path::Path::new(&a).file_name() == Some("hsfs".as_ref()));
+    if hsfs {
+        if argv.iter().any(|a| a == "--help" || a == "help") {
+            println!("{}", hyperstor_ctl::HSFS_USAGE);
+            println!(
+                "the datasets' commands of hyperstorctl (`hyperstorctl help dataset list`, …)"
+            );
+            std::process::exit(0)
+        }
+        argv = hyperstor_ctl::hsfs_args(&argv).unwrap_or_else(|why| {
+            eprintln!("hsfs: {why}");
+            eprintln!("{}", hyperstor_ctl::HSFS_USAGE);
+            std::process::exit(2)
+        });
+    }
     match hyperstor_ctl::help::handle(&argv) {
         Some(hyperstor_ctl::help::Help::Text(t)) => {
             print!("{t}");
@@ -638,6 +663,9 @@ fn main() {
         description: None,
         data_pool: None,
         index_pool: None,
+        dataset: None,
+        properties: Vec::new(),
+        under: None,
     };
     let mut cmd = None;
     let mut it = argv.iter();
@@ -700,6 +728,11 @@ fn main() {
             "--description" => a.description = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--data-pool" => a.data_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
             "--index-pool" => a.index_pool = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--dataset" => a.dataset = Some(it.next().cloned().unwrap_or_else(|| usage())),
+            "--property" => a
+                .properties
+                .push(it.next().cloned().unwrap_or_else(|| usage())),
+            "--under" => a.under = Some(it.next().cloned().unwrap_or_else(|| usage())),
             // Three words: s3, what, and what to do (D231, D232).
             "s3" if cmd.is_none() => {
                 let what = it.next().map(String::as_str);
@@ -896,6 +929,7 @@ fn main() {
             "token" | "op" | "cert" | "map" | "member" | "snapshot" | "trash" | "audit"
             | "device" | "pool" | "scrub" | "port" | "claim" | "realm" | "network" | "tenant"
             | "project" | "admission" | "cluster" | "auth" | "pg" | "sealing-key" | "data-tls"
+            | "dataset"
                 if cmd.is_none() =>
             {
                 let sub = it.next().map(String::as_str);
@@ -905,6 +939,7 @@ fn main() {
                     "map" => matches!(sub, Some("backup")),
                     "sealing-key" => matches!(sub, Some("list" | "rotate")),
                     "data-tls" => matches!(sub, Some("status" | "set")),
+                    "dataset" => matches!(sub, Some("list" | "get" | "set" | "inherit")),
                     "pg" => matches!(sub, Some("promote")),
                     "member" => matches!(sub, Some("list" | "add" | "remove")),
                     "snapshot" => matches!(
@@ -1033,6 +1068,27 @@ fn main() {
     {
         usage();
     }
+    // Datasets (D360): get, set and inherit name one; set takes
+    // NAME=VALUE, inherit names; only list takes --under and a kind.
+    let dataset_one = matches!(
+        cmd.as_str(),
+        "dataset get" | "dataset set" | "dataset inherit"
+    );
+    if dataset_one != a.dataset.is_some()
+        || (cmd == "dataset set"
+            && (a.properties.is_empty() || a.properties.iter().any(|p| !p.contains('='))))
+        || (cmd == "dataset inherit"
+            && (a.properties.is_empty() || a.properties.iter().any(|p| p.contains('='))))
+        || (cmd == "dataset get" && a.properties.iter().any(|p| p.contains('=')))
+        || (!dataset_one && !a.properties.is_empty())
+        || (cmd != "dataset list" && a.under.is_some())
+        || (cmd == "dataset list"
+            && a.kind
+                .as_deref()
+                .is_some_and(|k| !matches!(k, "volume" | "filesystem" | "bucket")))
+    {
+        usage();
+    }
     let timeout = timeout.or_else(|| {
         let v = std::env::var("HYPERSTOR_TIMEOUT").ok()?;
         Some(v.parse().unwrap_or_else(|_| {
@@ -1076,7 +1132,7 @@ fn main() {
         || (!set && a.capabilities.is_some())
         || (cmd == "pool copies" && (a.pool.is_none() || a.copies.is_none() || a.min.is_none()))
         || (!create
-            && ((a.kind.is_some() && cmd != "network set")
+            && ((a.kind.is_some() && cmd != "network set" && cmd != "dataset list")
                 || ((a.copies.is_some() || a.min.is_some()) && cmd != "pool copies")
                 || (a.pgs.is_some() && !set)
                 || a.chunk.is_some()))
@@ -1743,6 +1799,9 @@ const LEADER_ONLY: &[&str] = &[
     "realm host",
     "realm client",
     "realm client-tokens",
+    // And properties (D360).
+    "dataset set",
+    "dataset inherit",
 ];
 
 /// Where the API calls go.
@@ -2037,6 +2096,7 @@ where
         "sealing-key" => {
             return sealing_keys(CaServiceClient::new(transport, config), cmd, a).await;
         }
+        "dataset" => return datasets(DatasetServiceClient::new(transport, config), cmd, a).await,
         "map" => return map_backup(MapServiceClient::new(transport, config), a).await,
         "member" => return members(MemberServiceClient::new(transport, config), cmd, a).await,
         "trash" | "snapshot" | "clone-volume" | "rollback-volume" | "flatten-volume"
@@ -2260,22 +2320,29 @@ where
             Next::Exit(0)
         }
         "create-volume" => {
-            let Some(pool) = volume_pool().await? else {
-                eprintln!("hyperstorctl: the cluster has no data pools");
-                return Ok(Next::Exit(1));
+            let req = |pool| pb::CreateVolumeRequest {
+                pool,
+                size: a.size.expect("checked with the arguments"),
+                name: a.name.clone(),
+                id: a.id.clone().unwrap_or_default(),
+                tenant: a.tenant.unwrap_or_default(),
+                project: a.project.unwrap_or_default(),
+                directory_project: a.directory_project.clone().unwrap_or_default(),
+                ..Default::default()
             };
-            let r = client
-                .create_volume(pb::CreateVolumeRequest {
-                    pool,
-                    size: a.size.expect("checked with the arguments"),
-                    name: a.name.clone(),
-                    id: a.id.clone().unwrap_or_default(),
-                    tenant: a.tenant.unwrap_or_default(),
-                    project: a.project.unwrap_or_default(),
-                    directory_project: a.directory_project.clone().unwrap_or_default(),
-                    ..Default::default()
-                })
-                .await;
+            // Naming no pool: the project's or tenant's `pool` property
+            // (D360), else the first pool, as before.
+            let mut r = client.create_volume(req(a.pool.unwrap_or(0))).await;
+            if a.pool.is_none()
+                && let Err(e) = &r
+                && hyperstor_ctl::reason_of(e).as_deref() == Some("no_pool")
+            {
+                let Some(pool) = volume_pool().await? else {
+                    eprintln!("hyperstorctl: the cluster has no data pools");
+                    return Ok(Next::Exit(1));
+                };
+                r = client.create_volume(req(pool)).await;
+            }
             match r {
                 Ok(r) => {
                     let r = r.into_owned();
@@ -3545,6 +3612,84 @@ where
                 a.name
             );
         }
+    }
+    Ok(Next::Exit(0))
+}
+
+/// `dataset list|get|set|inherit` (29-hsfs.md §32.2, §32.3, D360), and
+/// `hsfs`'s commands, which are these.
+async fn datasets<T>(
+    client: DatasetServiceClient<T>,
+    cmd: &str,
+    a: &Args,
+) -> Result<Next, connectrpc::ConnectError>
+where
+    T: connectrpc::client::ClientTransport,
+    <T::ResponseBody as http_body::Body>::Error: std::fmt::Display,
+{
+    let dataset = || a.dataset.clone().expect("checked with the arguments");
+    match cmd {
+        "dataset list" => {
+            let r = client
+                .list_datasets(pb::ListDatasetsRequest {
+                    under: a.under.clone().unwrap_or_default(),
+                    kind: a.kind.clone().unwrap_or_default(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || hyperstor_ctl::datasets_text(&r));
+        }
+        "dataset get" => {
+            let r = client
+                .get_dataset_properties(pb::GetDatasetPropertiesRequest {
+                    dataset: dataset(),
+                    names: a.properties.clone(),
+                    ..Default::default()
+                })
+                .await?
+                .into_owned();
+            show(a, &r, || hyperstor_ctl::dataset_properties_text(&r));
+        }
+        "dataset set" => {
+            // One call each, in order: what came before a refusal is set.
+            for p in &a.properties {
+                let (name, value) = p.split_once('=').expect("checked with the arguments");
+                let r = client
+                    .set_dataset_property(pb::SetDatasetPropertyRequest {
+                        dataset: dataset(),
+                        name: name.into(),
+                        value: value.into(),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_owned();
+                show(a, &r, || {
+                    let v = r.property.as_option().map_or("", |p| p.value.as_str());
+                    format!("{} {name}={v}\n", dataset())
+                });
+            }
+        }
+        "dataset inherit" => {
+            for name in &a.properties {
+                let r = client
+                    .inherit_dataset_property(pb::InheritDatasetPropertyRequest {
+                        dataset: dataset(),
+                        name: name.clone(),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_owned();
+                show(a, &r, || {
+                    if r.was_set {
+                        format!("{} {name} is inherited now\n", dataset())
+                    } else {
+                        format!("{} {name} was inherited already\n", dataset())
+                    }
+                });
+            }
+        }
+        _ => unreachable!("checked with the arguments"),
     }
     Ok(Next::Exit(0))
 }

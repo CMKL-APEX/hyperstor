@@ -137,10 +137,11 @@ jobs:
     # On the self-hosted runner, except for forks' pull requests:
     # runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "Linux"]') || 'ubuntu-26.04' }}
     runs-on: ubuntu-26.04
-    # A run takes about half an hour; a test that hangs (a cluster test
-    # waiting on a node) fails the job instead of holding the runner for
-    # 6 hours.
-    timeout-minutes: 45
+    # A run takes about 40 minutes (2026-11-27: the build, the tests'
+    # build, then the tests and the browser's); a test that hangs (a
+    # cluster test waiting on a node) fails the job instead of holding the
+    # runner for 6 hours.
+    timeout-minutes: 60
 
     steps:
     - uses: actions/checkout@v7

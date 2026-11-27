@@ -123,16 +123,16 @@ values are left out of answers.
 | `SetPoolDevice` | `{"pool": 1, "device": 3001, "member": true}`: the pool uses the device beyond its classes; `"member": false` stops it using one; `"force": true` as for `SetPool` | `map_epoch` and `mixed_kinds`; `not_found` without the pool or the device, `failed_precondition` (`pool_conflict`) as for `SetPool`. Each pool in `GetStatus` gives its `added_devices` and `removed_devices` |
 | `DeletePool` | `{"pool": 3}`; `"dry_run": true` lists what it holds and deletes nothing; `"force": true` deletes that first, as an operation. Needs step-up through hyperstor-mgmt | `map_epoch`, or for a dry run `volumes`: the pool's volumes with those in the trash; forced, `volumes` and the `operation` deleting them and then the pool; `not_found` without the pool, `failed_precondition` (`pool_conflict`) for `.meta` and while the pool holds a volume. The pool leaves the map at once, its id is never given again, and devices delete its data |
 | `ListVolumes` | `{"pool": 1}` | `volumes`: `id` (32 hex digits), `pool`, `size` (bytes), `name`, `state` (`active` or `deleting`; trashed volumes aren't listed), `version`, `attached_by` (the client instance holding its lease, 16 hex digits; empty if none), `tenant` and its `realm` |
-| `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) and `"tenant"` (D258; clones take their volume's) | `volume`, with its `tenant`; `failed_precondition` (`pool_not_in_realm`) in a pool the tenant's realm may not use. Through mgmt in realms, `invalid_argument` (`tenant_required`) without a tenant unless `default` is your only realm |
+| `CreateVolume` | `{"pool": 1, "size": "1073741824", "name": "disk-a"}`, optionally `"id"` (32 hex digits; else drawn at random) and `"tenant"` (D258; clones take their volume's) | `volume`, with its `tenant`; `failed_precondition` (`pool_not_in_realm`) in a pool the tenant's realm may not use. Through mgmt in realms, `invalid_argument` (`tenant_required`) without a tenant unless `default` is your only realm. `"pool": 0` takes its project's or tenant's `pool` property (`invalid_argument`, `no_pool`, when neither sets one). `already_exists` (`dataset_exists`) for a name another volume or bucket of its project has |
 | `ExpandVolume` | `{"id": "…", "size": "2147483648"}` (a multiple of 4096, not smaller than now) | `volume`; `invalid_argument` for a smaller size |
 | `DeleteVolume` | `{"id": "…"}`, optionally `"force": true` (delete it even if attached: the holder is blocklisted first) | `purge_unix`: it is in the trash until then (`TrashService` below); `failed_precondition` while it is attached, without `force` |
 | `ListSnapshots` | `{"id": "…"}` | `snapshots`: `epoch`, `name`, `group` (32 hex digits, or empty), `state` (`active` or `deleting`) |
 | `CreateSnapshot` | `{"id": "…", "name": "before-upgrade"}` | `snapshot`; `unavailable` if the volume's client didn't pause within 2 s |
 | `DeleteSnapshot` | `{"id": "…", "epoch": "4"}` | `purge_unix`: to the trash; `failed_precondition` (`in_use`) while a clone or rollback depends on it |
-| `CloneVolume` | `{"id": "…", "epoch": "4", "name": "copy"}`, optionally `"new_id"` | `volume`: the clone |
+| `CloneVolume` | `{"id": "…", "epoch": "4", "name": "copy"}`, optionally `"new_id"` | `volume`: the clone; `already_exists` (`dataset_exists`) for a name another dataset of its project has |
 | `RollbackVolume` | `{"id": "…", "epoch": "4"}` | `volume`; `failed_precondition` (`attached`) while attached |
 | `FlattenVolume` | `{"id": "…"}` | `volume` as it is now, and the `operation` that copies its data (follow it with `WatchOperation`) |
-| `CopyVolume` | `{"id": "…", "pool": 3}`, optionally `"epoch": "4"` (a snapshot; otherwise the head, which needs the volume detached), `"name"`, `"new_id"` | `volume` as it is now, `new_id` and the `operation` that copies it; `not_found` without the volume, snapshot or pool, `resource_exhausted` (`pool_full`) for a full pool, `failed_precondition` (`attached`) for an attached volume's head, `already_exists` for an id in use |
+| `CopyVolume` | `{"id": "…", "pool": 3}`, optionally `"epoch": "4"` (a snapshot; otherwise the head, which needs the volume detached), `"name"`, `"new_id"` | `volume` as it is now, `new_id` and the `operation` that copies it; `not_found` without the volume, snapshot or pool, `resource_exhausted` (`pool_full`) for a full pool, `failed_precondition` (`attached`) for an attached volume's head, `already_exists` for an id in use, or (`dataset_exists`) a name another dataset of its project has. With no name, the copy of a volume in a project is `NAME-copy` (`-copy-2`…) |
 | `MoveVolume` | `{"id": "…", "pool": 3}` | `volume` as it is now, and the `operation` that copies its data, switches pools and deletes what is left behind; `invalid_argument` for its own pool, `failed_precondition` (`attached`) while attached, (`in_use`) while it has snapshots, as for `CopyVolume` otherwise |
 | `CreateGroupSnapshot` | `{"ids": ["…", "…"], "name": "vm-7"}` | `group` and `members`: each `id` and its `snapshot` |
 | `DeleteGroupSnapshot` | `{"group": "…"}` | `purge_unix`: its snapshots are in the trash |
@@ -151,7 +151,7 @@ values are left out of answers.
 | Method | Request | Answer |
 |---|---|---|
 | `ListTrash` | `{"pool": 1}` (0: every pool) | `items`: `kind` (`volume` or `snapshot`), `id`, `epoch`, `name`, `pool`, `size`, `trashed_unix`, `purge_unix`, `group`, the volume's `tenant` and its `realm` |
-| `RestoreFromTrash` | `{"id": "…"}`, optionally `"epoch"` (a snapshot) and `"name"` | `volume`; a volume whose name was taken comes back as `NAME-restored` |
+| `RestoreFromTrash` | `{"id": "…"}`, optionally `"epoch"` (a snapshot) and `"name"` | `volume`; a volume whose name another volume of its pool or dataset of its project took comes back as `NAME-restored`; a `name` its project has, `already_exists` (`dataset_exists`) |
 | `PurgeFromTrash` | `{"id": "…"}`, optionally `"epoch"` | the `operation` that deletes its data; `failed_precondition` if it isn't in the trash |
 | `GetTrashSettings` | `{"pool": 1}` | `settings`: `pool`, `grace_seconds` (default 86400), `on_full` (`keep` or `purge`) |
 | `SetTrashSettings` | `{"pool": 1, "grace_seconds": "604800", "on_full": "keep"}` | `settings`. On the leader |
@@ -198,6 +198,10 @@ values are left out of answers.
 | `ListOperations` | `{}` | `operations`, newest first: drains, device removals, pool deletes, flattens, copies, moves and purges, kept in the map service's replicated store a week after they finish; a new leader carries on with those still running |
 | `WatchOperation` | `{"id": "…"}` | a stream: the operation now, then each change (and again every 2 s), ending once it has finished |
 | `CancelOperation` | `{"id": "…"}` | the operation; a cancelled drain or device removal brings the devices back in; a cancelled copy deletes its new volume, and a move stops unless it has switched pools. A flatten or a purge can't be cancelled (`failed_precondition`, `not_cancellable`) |
+| `ListDatasets` | `{}`, optionally `"under": "acme/ml"` and `"kind": "volume"` | `datasets`: each volume and bucket reached as `tenant/project/name` (`-` for none; `@<volume id>` or `@bucket` where a project's names repeat), with `kind`, `id`, `tenant`, `project`, `realm`, `pool` and `pool_name` (D360) |
+| `GetDatasetProperties` | `{"dataset": "acme/ml"}`, optionally `"names": ["quota"]` | `dataset` as resolved, its `kind` (`tenant`, `project`, `volume`, `bucket`) and `properties`: each `name`, `value`, `source` (`local`, `default`, or the tenant or `tenant/project` it is inherited from), `enforced`, `set_by` and `set_unix`. `not_found` for a dataset not reached; `failed_precondition` (`ambiguous`) for a name two datasets share |
+| `SetDatasetProperty` | `{"dataset": "acme", "name": "pool", "value": "fast"}` | `property` as stored, audited; on the leader. `invalid_argument` for no such property, one that doesn't apply to the dataset, or a value it doesn't take; `failed_precondition` (`pool_not_in_realm`) for a pool the tenant's realm may not use |
+| `InheritDatasetProperty` | `{"dataset": "acme/ml", "name": "pool"}` | `was_set`, audited; on the leader |
 
 ```sh
 cd /etc/hyperstor/pki
@@ -223,7 +227,7 @@ word for scripts (the message is for people, and may change):
 | Code | Reason | When |
 |---|---|---|
 | `not_found` | `not_found` | No such device, pool, volume, node, token or operation |
-| `already_exists` | `already_exists` | `CreateVolume` with the id of a volume that exists |
+| `already_exists` | `already_exists`, `dataset_exists` | `CreateVolume` with the id of a volume that exists; a new volume, clone or copy with a name another dataset of its project has |
 | `invalid_argument` | `invalid_argument`, `token_invalid`, `bad_request` | A size that isn't a positive multiple of 4096, a malformed id; a token that isn't one, or is for another cluster; a certificate request that doesn't parse |
 | `unauthenticated` | `unauthenticated` | No client certificate with a hyperstor identity |
 | `permission_denied` | `permission_denied`, `wrong_cluster`, `revoked`, `token_used`, `token_expired`, `token_revoked` | The certificate's role or cluster doesn't allow the call, or it is revoked; the token was used, has expired or was revoked |

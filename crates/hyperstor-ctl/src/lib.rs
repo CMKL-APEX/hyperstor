@@ -1157,6 +1157,16 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("TenantService.RenameProject", "project rename"),
     ("TenantService.DeleteProject", "project delete"),
     ("TenantService.MoveProject", "project move"),
+    ("DatasetService.ListDatasets", "dataset list, hsfs list"),
+    (
+        "DatasetService.GetDatasetProperties",
+        "dataset get, hsfs get",
+    ),
+    ("DatasetService.SetDatasetProperty", "dataset set, hsfs set"),
+    (
+        "DatasetService.InheritDatasetProperty",
+        "dataset inherit, hsfs inherit",
+    ),
     ("TrustService.CreateOffer", "admission offer"),
     ("TrustService.ListOffers", "admission list"),
     ("TrustService.RevokeOffer", "admission revoke"),
@@ -1761,6 +1771,133 @@ pub fn projects_text(r: &pb::ListTenantsResponse) -> String {
         }
     }
     o
+}
+
+/// `dataset list` (29-hsfs.md §32.2, D360).
+pub fn datasets_text(r: &pb::ListDatasetsResponse) -> String {
+    let mut o = format!(
+        "{:<40}  {:<10}  {:<12}  {:<12}  {}\n",
+        "NAME", "KIND", "POOL", "REALM", "ID"
+    );
+    for d in &r.datasets {
+        let _ = writeln!(
+            o,
+            "{:<40}  {:<10}  {:<12}  {:<12}  {}",
+            d.name,
+            d.kind,
+            dash(&d.pool_name),
+            dash(&d.realm),
+            d.id
+        );
+    }
+    o
+}
+
+/// `dataset get` (29-hsfs.md §32.3, D360): each property, its value and
+/// where it comes from; one nothing acts on yet is marked.
+pub fn dataset_properties_text(r: &pb::GetDatasetPropertiesResponse) -> String {
+    let mut o = format!(
+        "{:<40}  {:<12}  {:<20}  {}\n",
+        "DATASET", "PROPERTY", "VALUE", "SOURCE"
+    );
+    for p in &r.properties {
+        let source = if p.enforced {
+            p.source.clone()
+        } else {
+            format!("{} (not enforced yet)", p.source)
+        };
+        let _ = writeln!(
+            o,
+            "{:<40}  {:<12}  {:<20}  {}",
+            r.dataset, p.name, p.value, source
+        );
+    }
+    o
+}
+
+/// `hsfs`'s usage line (29-hsfs.md §32.4, D361).
+pub const HSFS_USAGE: &str = "usage: hsfs [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] list [-t volume|filesystem|bucket] [TENANT[/PROJECT]] | get all|PROPERTY[,PROPERTY...] DATASET | set PROPERTY=VALUE... DATASET | inherit PROPERTY... DATASET";
+
+/// Options of `hsfs` that take a value, passed to `hyperstorctl` as they
+/// are.
+const HSFS_VALUED: &[&str] = &[
+    "--api",
+    "--tls",
+    "--socket",
+    "--mgmt",
+    "--token-file",
+    "--mgmt-ca",
+    "--in-realm",
+    "--timeout-secs",
+    "-o",
+];
+
+/// `hsfs ARGS` as the `hyperstorctl dataset` command it is (D361): the
+/// same API, its arguments in the order `zfs` users type them. `Err` is
+/// why they aren't one, for the usage line.
+pub fn hsfs_args(argv: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    let mut words = Vec::new();
+    let mut kind = None;
+    let mut it = argv.iter();
+    while let Some(a) = it.next() {
+        if HSFS_VALUED.contains(&a.as_str()) {
+            let v = it.next().ok_or_else(|| format!("{a}: missing value"))?;
+            out.extend([a.clone(), v.clone()]);
+        } else if a == "--json" {
+            out.push(a.clone());
+        } else if a == "-t" {
+            let v = it.next().ok_or("-t: missing kind")?;
+            if !matches!(v.as_str(), "volume" | "filesystem" | "bucket") {
+                return Err(format!("-t {v}: a kind is volume, filesystem or bucket"));
+            }
+            kind = Some(v.clone());
+        } else if a.starts_with('-') && a.len() > 1 {
+            return Err(format!("unknown option {a}"));
+        } else {
+            words.push(a.as_str());
+        }
+    }
+    let Some((&verb, rest)) = words.split_first() else {
+        return Err("no command given".into());
+    };
+    if kind.is_some() && verb != "list" {
+        return Err("-t is for list".into());
+    }
+    out.extend(["dataset".to_string(), verb.to_string()]);
+    let props = |p: &[&str], out: &mut Vec<String>| {
+        for x in p {
+            out.extend(["--property".to_string(), x.to_string()]);
+        }
+    };
+    match (verb, rest) {
+        ("list", []) => {}
+        ("list", [under]) => out.extend(["--under".to_string(), under.to_string()]),
+        ("get", [which, dataset]) => {
+            out.extend(["--dataset".to_string(), dataset.to_string()]);
+            if *which != "all" {
+                props(&which.split(',').collect::<Vec<_>>(), &mut out);
+            }
+        }
+        ("set", [ps @ .., dataset]) if !ps.is_empty() && ps.iter().all(|p| p.contains('=')) => {
+            out.extend(["--dataset".to_string(), dataset.to_string()]);
+            props(ps, &mut out);
+        }
+        ("inherit", [ps @ .., dataset])
+            if !ps.is_empty() && ps.iter().all(|p| !p.contains('=')) =>
+        {
+            out.extend(["--dataset".to_string(), dataset.to_string()]);
+            props(ps, &mut out);
+        }
+        ("list" | "get" | "set" | "inherit", _) => {
+            return Err(format!("wrong arguments for `hsfs {verb}`"));
+        }
+        _ => return Err(format!("no such command: {verb}")),
+    }
+    if let Some(k) = kind {
+        out.extend(["--kind".to_string(), k]);
+    }
+    Ok(out)
 }
 
 pub fn realms_text(r: &pb::ListRealmsResponse) -> String {
@@ -2657,6 +2794,45 @@ mod tests {
 
     /// D55: every RPC in the protos has a command (or is called by the
     /// installer), and the table names no RPC the protos lack.
+    #[test]
+    fn hsfs_is_hyperstorctl_dataset_in_zfs_order() {
+        let v = |s: &str| -> Vec<String> { s.split(' ').map(String::from).collect() };
+        let ok = |s: &str| hsfs_args(&v(s)).unwrap().join(" ");
+        assert_eq!(ok("list"), "dataset list");
+        assert_eq!(
+            ok("--api a:1 list -t bucket acme"),
+            "--api a:1 dataset list --under acme --kind bucket"
+        );
+        assert_eq!(
+            ok("get quota,pool acme/ml/root --json"),
+            "--json dataset get --dataset acme/ml/root --property quota --property pool"
+        );
+        assert_eq!(ok("get all acme"), "dataset get --dataset acme");
+        assert_eq!(
+            ok("set quota=1T readonly=on acme/ml"),
+            "dataset set --dataset acme/ml --property quota=1T --property readonly=on"
+        );
+        assert_eq!(
+            ok("-o yaml inherit quota acme/ml"),
+            "-o yaml dataset inherit --dataset acme/ml --property quota"
+        );
+        for bad in [
+            "",
+            "destroy acme",
+            "get acme",
+            "set acme/ml",
+            "set quota acme/ml",
+            "inherit quota=1 acme",
+            "get -t volume all acme",
+            "list -t disk",
+            "list a b",
+            "--frobnicate list",
+            "--api",
+        ] {
+            assert!(hsfs_args(&v(bad)).is_err(), "{bad:?}");
+        }
+    }
+
     #[test]
     fn every_rpc_has_a_command() {
         let dir = concat!(

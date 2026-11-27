@@ -7,11 +7,13 @@ hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).
 
-Status: **design; H0 built** (01-implementation-notes.md I439, I440, I442: the
-sealing keys, the capability's format, storage nodes holding the keys, and
-reactors checking capabilities in pools that require them; nothing issues
-a capability yet, which comes with datasets in H1, and peers aren't told
-from clients until D25). The order agreed with the owner (2026-11-25):
+Status: **design; H0 built, H1 begun** (01-implementation-notes.md I439,
+I440, I442: the sealing keys, the capability's format, storage nodes
+holding the keys, and reactors checking capabilities in pools that
+require them; nothing issues a capability yet, and peers aren't told
+from clients until D25. I459: dataset names over volumes and buckets,
+every property kept and inherited, `pool` enforced, and `hsfs`; D387–D389
+settled 2026-11-27, points 351–353). The order agreed with the owner (2026-11-25):
 H0, then the data path's mutual TLS (D25), then H1 and H2. D360–D371 are settled with the owner
 (05-decision-log.md points 323–334, 2026-11-24 and 2026-11-25), D361 (the name `hsfs`)
 and D367 (no striping across clusters) among them. Host checks G62–G66
@@ -48,6 +50,10 @@ filesystem ([00-filesystem.md](00-filesystem.md) F1–F12), volumes
   mount: a rename or hard link across the boundary is refused (`EXDEV`).
 - Existing commands stay: `hyperstorctl volume …` is the dataset
   commands with `type=volume`.
+- A name is unique in its project (D387): a new volume, clone or bucket
+  may not take one another dataset there has; a copy named by none is
+  `NAME-copy`. Two that shared a name before are addressed as
+  `name@<volume id>` and `name@bucket`.
 
 Why: one place for quotas, grants, snapshots and replication, and
 glidex maps a project to one subtree.
@@ -275,6 +281,8 @@ Part of HS14, in stages. N0 (22-nfs.md §26.10) needs H0–H2.
   and an `/etc/fstab` line work through a `mount.fuse.hsfs` helper on
   the distributions we ship, and that no package claims `hsfs` (Solaris
   used the name for its ISO 9660 driver; check Linux distributions).
+  The name half holds for Debian 13 and Fedora (I459, 2026-11-27);
+  Ubuntu's archive and the mount half are still to check.
 - **G66. What interception catches** (D369). With `libhsfs-preload.so`:
   Python (CPython's `open`, NumPy, PyTorch's `DataLoader` workers after
   `fork`), `dd`, `cp`, `tar`, a Go binary and a statically linked one.

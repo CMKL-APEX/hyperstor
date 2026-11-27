@@ -630,6 +630,41 @@ Realms and Tenants tabs with what their role allows; security
 administrators see them too, and the Directories tab. Space is shown
 to the read roles.
 
+## Datasets and their properties
+
+A dataset is a volume or a bucket (and, once hsfs's filesystems are
+built, a filesystem), named `tenant/project/name`. Properties set on a
+tenant apply to all its projects and datasets, those set on a project
+to its datasets, unless set below. `hsfs`, installed beside
+`hyperstorctl`, takes the same commands in the order `zfs` users type
+them:
+
+```sh
+hsfs list acme                      # hyperstorctl dataset list --under acme
+hsfs set pool=fast acme/ml          # hyperstorctl dataset set --dataset acme/ml --property pool=fast
+hsfs get all acme/ml/train-disk     # each value and where it comes from
+hsfs inherit pool acme/ml           # back to the tenant's
+```
+
+- **Names** are unique in a project: a volume, clone or copy may not
+  take a name another volume or bucket of its project has
+  (`dataset_exists`). A copy named by none is `NAME-copy`; a volume
+  back from the trash whose name was taken, `NAME-restored`. Volumes in
+  no project (glidex's image volumes) are not checked. Two datasets
+  that shared a name before are listed as `name@<volume id>` and
+  `name@bucket`, and addressed that way, until one is renamed.
+- **`pool`** acts now: a volume created without a pool goes to the pool
+  its project's or tenant's `pool` names, else the first data pool.
+  Only a pool the tenant's realm may use can be set.
+- **The others** (`quota`, `refquota`, `reservation`, `chunk`,
+  `stripe`, `compression`, `encryption`, `readonly`, `reads`, `weight`,
+  `class`, `snapdir`, `nfs`, `s3`, `sync`) are kept and shown, marked
+  *not enforced yet*: set a tenant's plan now, and each is applied as
+  it is built.
+
+Someone with a role on a tenant sets its properties; on a project, the
+project's and its datasets'. Each change is audited.
+
 ## VM disks
 
 [`hyperstor-vhost`](../reference/hyperstor-vhost.md) serves volumes to
