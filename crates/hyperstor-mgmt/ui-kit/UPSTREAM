@@ -1,5 +1,5 @@
 # A copy of glidex-commons' ui-kit/, unchanged, at this tag: the one the
 # Rust crates from glidex-commons pin (Cargo.toml). Change it there, then
 # scripts/ui-kit-sync.sh <tag>. CI checks it: scripts/ui-kit-sync.sh --check
-tag v0.1.1
-rev 657d95c665d57dafb50fe1c5b895edaf2800d3cc
+tag v0.2.0
+rev cf980403edb1773b311e53207555ef33eb757132
