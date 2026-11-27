@@ -11,7 +11,7 @@ Status: **design; H0 built, H1 begun** (01-implementation-notes.md I439,
 I440, I442: the sealing keys, the capability's format, storage nodes
 holding the keys, and reactors checking capabilities in pools that
 require them; nothing issues a capability yet, and peers aren't told
-from clients until D25. I458: dataset names over volumes and buckets,
+from clients until D25. I459: dataset names over volumes and buckets,
 every property kept and inherited, `pool` enforced, and `hsfs`; D387–D389
 settled 2026-11-27, points 351–353). The order agreed with the owner (2026-11-25):
 H0, then the data path's mutual TLS (D25), then H1 and H2. D360–D371 are settled with the owner
@@ -281,7 +281,7 @@ Part of HS14, in stages. N0 (22-nfs.md §26.10) needs H0–H2.
   and an `/etc/fstab` line work through a `mount.fuse.hsfs` helper on
   the distributions we ship, and that no package claims `hsfs` (Solaris
   used the name for its ISO 9660 driver; check Linux distributions).
-  The name half holds for Debian 13 and Fedora (I458, 2026-11-27);
+  The name half holds for Debian 13 and Fedora (I459, 2026-11-27);
   Ubuntu's archive and the mount half are still to check.
 - **G66. What interception catches** (D369). With `libhsfs-preload.so`:
   Python (CPython's `open`, NumPy, PyTorch's `DataLoader` workers after

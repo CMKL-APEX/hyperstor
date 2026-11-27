@@ -116,7 +116,7 @@ impl TrashService for Api {
             .await?;
         // A volume back from the trash is a dataset of its project again:
         // its name is unique there, so one whose name was taken meanwhile
-        // comes back as `NAME-restored`, as in its pool (D360, I458).
+        // comes back as `NAME-restored`, as in its pool (D360, I459).
         let name = if epoch.is_some() {
             (!req.name.is_empty()).then(|| req.name.to_string())
         } else {

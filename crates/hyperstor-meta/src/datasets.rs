@@ -21,7 +21,7 @@
 //! there is no second record of them to keep in step. Names were never
 //! unique, so two live datasets of one project that share one are each
 //! shown and addressed with a qualifier, `name@<volume id>` or
-//! `name@bucket`; a new one may not take a name its project has (I458).
+//! `name@bucket`; a new one may not take a name its project has (I459).
 
 use crate::store::{self, Db, Origin, Table};
 use crate::tenancy::Tenancy;
@@ -142,7 +142,7 @@ pub struct Property {
 }
 
 /// Every property, in §32.3's order. Only `pool` acts in H1: it is the
-/// pool new volumes go to when their creation names none (I458).
+/// pool new volumes go to when their creation names none (I459).
 pub const PROPERTIES: &[Property] = &[
     Property {
         name: "quota",
@@ -648,7 +648,7 @@ pub fn qualified(entries: &[Entry]) -> Vec<bool> {
 }
 
 /// Why a new dataset of `tenant`'s `project` may not be named `name`:
-/// another live one there has it (D360, I458). Datasets in no project
+/// another live one there has it (D360, I459). Datasets in no project
 /// (glidex's image volumes, a bare tenant's) and unnamed ones are not
 /// checked.
 pub fn clash(
@@ -673,7 +673,7 @@ pub fn clash(
 
 /// The name a new dataset of `tenant`'s `project` takes for `name` when
 /// its caller named none and `name` is taken there: `name-SUFFIX`, else
-/// `name-SUFFIX-2`, `-3`… (I458): a copy's `-copy`, a restore's
+/// `name-SUFFIX-2`, `-3`… (I459): a copy's `-copy`, a restore's
 /// `-restored`. In no project, or unnamed, `name` itself, as before.
 pub fn free_name(entries: &[Entry], tenant: u32, project: u32, name: &str, suffix: &str) -> String {
     if project == 0 || name.is_empty() {
