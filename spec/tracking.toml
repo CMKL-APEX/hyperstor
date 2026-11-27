@@ -1200,6 +1200,21 @@ tests = [
     "hyperstor_meta::tests::a_pool_is_made_to_require_capabilities_and_not",
 ]
 
+[[milestone.item]]
+what = "hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hyperstorctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet"
+spec = ["29-hsfs.md §32.2", "29-hsfs.md §32.3", "29-hsfs.md §32.4", "D360", "D361", "D387", "D388", "D389", "I459"]
+status = "partial"
+tests = [
+    "datasets::datasets_are_named_in_projects_and_inherit_properties",
+    "hyperstor_meta::datasets::tests::values_come_from_the_nearest_level_that_sets_them",
+    "hyperstor_meta::datasets::tests::values_are_checked_and_made_canonical",
+    "hyperstor_meta::datasets::tests::a_dataset_takes_only_what_applies_to_it",
+    "hyperstor_meta::datasets::tests::a_deleted_project_takes_its_properties",
+    "hyperstor_meta::datasets::tests::names_are_qualified_only_where_they_repeat",
+    "hyperstor_meta::datasets::tests::a_new_name_its_project_has_is_refused_and_copies_get_their_own",
+    "hyperstor_ctl::tests::hsfs_is_hyperstorctl_dataset_in_zfs_order",
+]
+
 [[milestone]]
 id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"
@@ -1677,8 +1692,22 @@ spec = ["30-data-path-tls.md §33.5", "D385"]
 status = "planned"
 
 [[milestone.item]]
-what = "T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows"
-spec = ["30-data-path-tls.md §33.9", "D25", "D372", "G68", "G69"]
+what = "T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again"
+spec = ["30-data-path-tls.md §33.11", "D25", "D405", "D406", "D407", "G68", "I460"]
+status = "done"
+tests = [
+    "hyperstor_rpc::ktls::tests::kernel_tls_carries_the_reactors_reads_and_writes",
+    "hyperstor_rpc::ktls::tests::what_leaves_a_kernel_tls_socket_is_tls_records",
+    "hyperstor_rpc::ktls::tests::a_zero_copy_send_on_kernel_tls",
+    "hyperstor_rpc::tls::tests::a_session_stays_encrypted_when_either_side_asks",
+    "hyperstor_rpc::tls::tests::a_caller_that_cant_encrypt_is_refused_only_in_require",
+    "hyperstor_map::port_tests::sessions_are_encrypted_off_trusted_networks_once_switched_on",
+    "cluster::sessions_stay_encrypted_on_networks_not_marked_trusted",
+]
+
+[[milestone.item]]
+what = "T3: the cost of encryption on a reactor, measured on the pilot's hosts (G69); an installer check that the kernel has TLS"
+spec = ["30-data-path-tls.md §33.10", "G69", "D407"]
 status = "planned"
 
 [[milestone]]

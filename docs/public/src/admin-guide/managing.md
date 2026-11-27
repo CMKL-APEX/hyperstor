@@ -423,6 +423,38 @@ release refuses it once such clients show a `host` certificate.
 A caller checks who answered too: at a device's address the node the
 map has there, elsewhere the map service.
 
+### Encryption
+
+After the handshake, connections carry plaintext frames under CRC32C,
+unless the cluster encrypts. To encrypt on every network you haven't
+marked trusted:
+
+```sh
+hyperstorctl network list                         # mark fast fabrics trusted first
+hyperstorctl data-tls set --mode allow --encrypt on
+```
+
+| Address | Encrypted once `--encrypt on` |
+|---|---|
+| On a network marked trusted (`network set --trusted`) | No |
+| On a network not marked trusted | Yes |
+| On no network | Yes |
+| Loopback | Only where a network not marked trusted names it |
+
+- A session that stays encrypted runs in the kernel's TLS (the `tls`
+  module). Encryption costs CPU on both ends; measurements are still to
+  come, so mark networks trusted where nobody else can reach them.
+- Either end can ask for it: a node whose map says the address is
+  encrypted encrypts even if the caller didn't ask.
+- A client of an older release can't encrypt: in `allow` it is served
+  in plaintext; in `require` it is refused where the session should be
+  encrypted.
+- A new cluster from `hyperstor-install --all-in-one` starts with it on;
+  an upgraded cluster starts with it off.
+- Connections made in plaintext before are made again as they are next
+  used. `hyperstor_encrypted_connections_total` on each node counts the
+  encrypted ones it serves.
+
 The pings storage nodes send each other to find dead peers carry a MAC
 under the cluster's sealing key, so a forged answer can't make a dead
 node look alive. In `require` a ping without one is ignored.
@@ -598,6 +630,41 @@ Realms and Tenants tabs with what their role allows; security
 administrators see them too, and the Directories tab. Space is shown
 to the read roles.
 
+## Datasets and their properties
+
+A dataset is a volume or a bucket (and, once hsfs's filesystems are
+built, a filesystem), named `tenant/project/name`. Properties set on a
+tenant apply to all its projects and datasets, those set on a project
+to its datasets, unless set below. `hsfs`, installed beside
+`hyperstorctl`, takes the same commands in the order `zfs` users type
+them:
+
+```sh
+hsfs list acme                      # hyperstorctl dataset list --under acme
+hsfs set pool=fast acme/ml          # hyperstorctl dataset set --dataset acme/ml --property pool=fast
+hsfs get all acme/ml/train-disk     # each value and where it comes from
+hsfs inherit pool acme/ml           # back to the tenant's
+```
+
+- **Names** are unique in a project: a volume, clone or copy may not
+  take a name another volume or bucket of its project has
+  (`dataset_exists`). A copy named by none is `NAME-copy`; a volume
+  back from the trash whose name was taken, `NAME-restored`. Volumes in
+  no project (glidex's image volumes) are not checked. Two datasets
+  that shared a name before are listed as `name@<volume id>` and
+  `name@bucket`, and addressed that way, until one is renamed.
+- **`pool`** acts now: a volume created without a pool goes to the pool
+  its project's or tenant's `pool` names, else the first data pool.
+  Only a pool the tenant's realm may use can be set.
+- **The others** (`quota`, `refquota`, `reservation`, `chunk`,
+  `stripe`, `compression`, `encryption`, `readonly`, `reads`, `weight`,
+  `class`, `snapdir`, `nfs`, `s3`, `sync`) are kept and shown, marked
+  *not enforced yet*: set a tenant's plan now, and each is applied as
+  it is built.
+
+Someone with a role on a tenant sets its properties; on a project, the
+project's and its datasets'. Each change is audited.
+
 ## VM disks
 
 [`hyperstor-vhost`](../reference/hyperstor-vhost.md) serves volumes to
@@ -746,6 +813,7 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_checkpoint_damage_total` | Damaged checkpoint pages and directories the device's checkpoint scrub found and rewrote (see [Troubleshooting](troubleshooting.md)). Any rise means the device's media is failing somewhere |
 | `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
 | `hyperstor_sealing_keys` | Sealing keys the node holds (one per node, without a `device` label): 1, or 2 after a rotation. 0 means the cluster API hasn't answered the node since it started; absent on a node started without `--api` |
+| `hyperstor_encrypted_connections_total` | Connections the device's reactor served whose session stayed encrypted after the handshake, in kernel TLS: those on networks not marked trusted, once the cluster encrypts there (`hyperstorctl data-tls status`) |
 | `hyperstor_revoked_connections_total` | Connections the device's reactor dropped because the caller showed a revoked certificate, at the handshake or once it was revoked. A rise after a revocation is the revoked holder still trying |
 | `hyperstor_refused_connections_total` | Connections the device's reactor refused a request: their certificate's role may not send it, or they showed none while the mode is `require` |
 | `hyperstor_unauthenticated_connections_total` | Connections the device's reactor served a request on without a TLS handshake. While the cluster's mode is `allow` (`hyperstorctl data-tls status`), a rise names a client or node without a certificate: who would be cut off if connections had to authenticate |

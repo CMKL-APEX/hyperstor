@@ -658,6 +658,9 @@ pub fn data_client_config(
     // One handshake per connection, which then lives for hours: nothing
     // to resume.
     c.resumption = rustls::client::Resumption::disabled();
+    // A session kept on a network not marked trusted may move to kernel
+    // TLS, which takes its secrets (D25; 30-data-path-tls.md §33.9).
+    c.enable_secret_extraction = true;
     Ok(c)
 }
 
@@ -681,6 +684,7 @@ pub fn data_server_config(
         .with_single_cert(certs(chain)?, key(key_pem)?)
         .map_err(err)?;
     c.send_tls13_tickets = 0;
+    c.enable_secret_extraction = true;
     Ok(c)
 }
 

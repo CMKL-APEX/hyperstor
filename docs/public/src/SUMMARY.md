@@ -45,6 +45,7 @@
   - [hyperstord](reference/hyperstord.md)
   - [hyperstor-bench](reference/hyperstor-bench.md)
   - [hyperstorctl](reference/hyperstorctl.md)
+  - [hsfs](reference/hsfs.md)
   - [hyperstor-ublk](reference/hyperstor-ublk.md)
   - [hyperstor-vhost](reference/hyperstor-vhost.md)
   - [hyperstor-s3](reference/hyperstor-s3.md)

@@ -203,6 +203,7 @@ covered by tests that run on every change.
 |---|---|
 | hsfs H0: sealing keys in the map service (made on a storage node's first ask, rotated with the one before still valid, bytes for storage nodes and members only, audited), the sealed capability's format, and storage nodes fetching the keys from the cluster API (D370); no reactor checks a capability yet | In progress |
 | hsfs H0: a pool flag requires capabilities (D371); clients show sealed capabilities on each connection and reactors serve a flagged pool's chunks only as granted, read-only where so; nothing issues capabilities yet | In progress |
+| hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hyperstorctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet | In progress |
 
 ## HS15: Tenancy: quotas and fair share between tenants
 
@@ -265,7 +266,8 @@ covered by tests that run on every change.
 | T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts | Done |
 | T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`) | Done |
 | T2: `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
-| T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
+| T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again | Done |
+| T3: the cost of encryption on a reactor, measured on the pilot's hosts (G69); an installer check that the kernel has TLS | Planned |
 
 ## HS21: Kubernetes CSI driver
 

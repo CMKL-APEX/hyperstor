@@ -95,6 +95,10 @@ const BINARIES: [&str; 8] = [
     "hyperstor-s3",
 ];
 
+/// `hsfs`: a link to hyperstorctl, which reads the name it is run by
+/// (29-hsfs.md §32.4, D361).
+const HSFS: &str = "/usr/local/bin/hsfs";
+
 /// Where `hyperstor-vhost`'s sockets and state file are (its unit's
 /// runtime directory).
 const VHOST_DIR: &str = "/run/hyperstor/vhost";
@@ -2102,9 +2106,10 @@ fn role_plan(root: &Path, s: &Settings, cluster_file: Option<String>) -> Plan {
             pgs(1)
         );
         // A new cluster's connections authenticate where both ends can
-        // (D380): every host has its certificates from the start. A
-        // cluster that runs already keeps the mode its map has.
-        cluster += "data-tls allow\n";
+        // (D380): every host has its certificates from the start; and its
+        // sessions stay encrypted on networks not marked trusted (D405).
+        // A cluster that runs already keeps the mode its map has.
+        cluster += "data-tls allow encrypt\n";
         let map = format!("127.0.0.1:{}", s.map_port);
         let metrics = (0..s.nodes)
             .map(|n| format!("127.0.0.1:{}", s.admin_port + n as u16))
@@ -4431,6 +4436,15 @@ fn install(
         }
     }
     drop(binaries);
+    // `hsfs` is hyperstorctl by another name (D361, D389).
+    let hsfs = under(root, HSFS);
+    if fs::read_link(&hsfs).ok().as_deref() != Some(Path::new("hyperstorctl")) {
+        let _ = fs::remove_file(&hsfs);
+        if let Err(e) = std::os::unix::fs::symlink("hyperstorctl", &hsfs) {
+            fail(&format!("{HSFS}: {e}"));
+        }
+        changed.push(HSFS.to_string());
+    }
 
     // 1b. The patched libblkid (D332), when asked for; a host installed
     // into a scratch root has no packages to change.
@@ -5805,6 +5819,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         "/etc/systemd/system/hyperstor-renew.service".to_string(),
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),
+        HSFS.to_string(),
         UDEV_RULES.to_string(),
         OLD_UDEV_RULES.to_string(),
     ]

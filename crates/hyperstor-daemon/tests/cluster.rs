@@ -79,13 +79,20 @@ enum MetaCmd {
     /// Sets the data path's TLS mode (D373).
     DataTls(
         hyperstor_meta::DataTls,
-        std::sync::mpsc::Sender<Result<(u64, hyperstor_meta::DataTls), String>>,
+        Option<bool>,
+        std::sync::mpsc::Sender<Result<(u64, hyperstor_meta::DataTls, bool), String>>,
     ),
     /// Turns a pool's capability requirement on or off (D371).
     Capabilities(
         u32,
         bool,
         std::sync::mpsc::Sender<Result<(u64, bool), String>>,
+    ),
+    /// Sets or removes a network (D284).
+    Network(
+        String,
+        Option<hyperstor_meta::NetworkDef>,
+        std::sync::mpsc::Sender<Result<u64, String>>,
     ),
     Split(
         u32,
@@ -550,14 +557,17 @@ impl Cluster {
                             };
                             let _ = tx.send(r);
                         }
-                        MetaCmd::DataTls(mode, tx) => {
-                            let _ = tx.send(meta.set_data_tls(mode).await);
+                        MetaCmd::DataTls(mode, encrypt, tx) => {
+                            let _ = tx.send(meta.set_data_tls(mode, encrypt).await);
                         }
                         MetaCmd::Unauthenticated(tx) => {
                             let _ = tx.send(meta.unauthenticated_peers());
                         }
                         MetaCmd::Revoke(list, tx) => {
                             let _ = tx.send(meta.revoke_on_data_path(list).await);
+                        }
+                        MetaCmd::Network(name, def, tx) => {
+                            let _ = tx.send(meta.set_network(&name, def));
                         }
                         MetaCmd::Capabilities(pool, on, tx) => {
                             let change = hyperstor_meta::PoolChange {
@@ -810,8 +820,22 @@ impl Cluster {
         &self,
         mode: hyperstor_meta::DataTls,
     ) -> Result<(u64, hyperstor_meta::DataTls), String> {
+        self.data_tls_encrypt(mode, None).map(|(e, m, _)| (e, m))
+    }
+
+    /// [`Self::data_tls`], and whether sessions are encrypted off trusted
+    /// networks (D405).
+    fn data_tls_encrypt(
+        &self,
+        mode: hyperstor_meta::DataTls,
+        encrypt: Option<bool>,
+    ) -> Result<(u64, hyperstor_meta::DataTls, bool), String> {
         let (tx, rx) = std::sync::mpsc::channel();
-        assert!(self.meta_tx.send(MetaCmd::DataTls(mode, tx)).is_ok());
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::DataTls(mode, encrypt, tx))
+                .is_ok()
+        );
         rx.recv().unwrap()
     }
 
@@ -843,6 +867,17 @@ impl Cluster {
         assert!(
             self.meta_tx
                 .send(MetaCmd::Capabilities(pool, on, tx))
+                .is_ok()
+        );
+        rx.recv().unwrap().unwrap();
+    }
+
+    /// Sets network `name`, or removes it (D284).
+    fn network(&self, name: &str, def: Option<hyperstor_meta::NetworkDef>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(
+            self.meta_tx
+                .send(MetaCmd::Network(name.into(), def, tx))
                 .is_ok()
         );
         rx.recv().unwrap().unwrap();
@@ -10473,6 +10508,145 @@ fn connections_authenticate_when_the_cluster_allows_it() {
     t.join().unwrap();
     let (map, devs) = c.stop();
     assert_eq!(map.data_tls, DataTls::Off);
+    copies_agree(
+        &map,
+        devs,
+        &(0..6u64)
+            .flat_map(|i| [(1u128, i), (2u128, i)])
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// Sessions encrypted on networks not marked trusted (D405, D406;
+/// 30-data-path-tls.md §33.9). The cluster's addresses are named a
+/// network not marked trusted, and the cluster told to encrypt there:
+/// from then every node's sessions with its peers and the map service, and
+/// a client's with a certificate, stay TLS in kernel TLS, and I/O and
+/// replication go on through them. Connections in plaintext from before
+/// are made again. Once the network is marked trusted, new sessions turn
+/// back to plaintext.
+#[test]
+fn sessions_stay_encrypted_on_networks_not_marked_trusted() {
+    use hyperstor_meta::DataTls;
+    let c = Cluster::start(3, 1);
+    let meta = c.meta_addr;
+    let host = c.pki.identity(hyperstor_pki::Role::Host, "hv-1");
+    let lo = |trusted| {
+        Some(hyperstor_meta::NetworkDef::parse("data", trusted, "subnet 127.0.0.0/8").unwrap())
+    };
+    c.data_tls(DataTls::Allow).unwrap();
+    c.network("lo", lo(false));
+    let encrypted = |c: &Cluster| -> Vec<u64> {
+        c.nodes
+            .iter()
+            .flatten()
+            .map(|n| {
+                n.metrics
+                    .iter()
+                    .map(|(_, m)| m.encrypted.load(std::sync::atomic::Ordering::Relaxed))
+                    .sum()
+            })
+            .collect()
+    };
+    assert_eq!(encrypted(&c), vec![0; 3]);
+    let (step_tx, step_rx) = std::sync::mpsc::channel::<&'static str>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let t = std::thread::spawn(move || {
+        block_on(async move {
+            let hello = hyperstor_proto::Msg::Hello {
+                min_version: hyperstor_proto::OLDEST_VERSION,
+                max_version: hyperstor_proto::VERSION,
+                id: 7,
+                instance: 8,
+            };
+            // Whether a new session with `addr`, as a caller that doesn't
+            // ask to encrypt, stays encrypted: the answerer's map decides.
+            let probe = async |addr: SocketAddr| {
+                let (conn, _) = hyperstor_rpc::Conn::open(
+                    addr,
+                    std::time::Duration::from_secs(5),
+                    &hello,
+                    Some(&host.calling(false)),
+                )
+                .await
+                .unwrap();
+                assert!(conn.peer().is_some());
+                let e = conn.encrypted();
+                conn.kill();
+                e
+            };
+            let plain = Client::connect(meta, 98).await.unwrap();
+            let named = Client::connect(meta, 99).await.unwrap();
+            named.set_identity(host.clone());
+            let node0 = plain.map().device_addr(0).unwrap();
+            let io = async |cl: &std::rc::Rc<Client>, lineage: u128, seed: u64| {
+                for i in 0..6u64 {
+                    cl.write(POOL, lineage, i * CHUNK as u64, pattern(seed + i, 64 << 10))
+                        .await
+                        .unwrap();
+                }
+                for i in 0..6u64 {
+                    assert!(
+                        cl.read(POOL, lineage, i * CHUNK as u64, 64 << 10)
+                            .await
+                            .unwrap()
+                            == pattern(seed + i, 64 << 10)
+                    );
+                }
+            };
+            // Before: authenticated, in plaintext.
+            io(&named, 1, 10).await;
+            assert!(!probe(node0).await);
+            assert!(!probe(meta).await);
+
+            step_tx.send("encrypt").unwrap();
+            go_rx.recv().unwrap();
+            let t0 = std::time::Instant::now();
+            while !(probe(node0).await && probe(meta).await) {
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            // The client with a certificate, whose map may not say so
+            // yet, has its plaintext sessions dropped by the nodes and
+            // calls again, encrypted; the one without is served as
+            // before, in `allow`. A request that met the drop is retried.
+            io(&named, 1, 20).await;
+            io(&plain, 2, 30).await;
+            step_tx.send("count").unwrap();
+            go_rx.recv().unwrap();
+
+            step_tx.send("trusted").unwrap();
+            go_rx.recv().unwrap();
+            let t0 = std::time::Instant::now();
+            while probe(node0).await || probe(meta).await {
+                assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+                hyperstor_reactor::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            io(&named, 1, 40).await;
+            io(&plain, 2, 50).await;
+            step_tx.send("done").unwrap();
+        })
+    });
+    loop {
+        match step_rx.recv().unwrap() {
+            "encrypt" => {
+                let (_, mode, was) = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap();
+                assert_eq!((mode, was), (DataTls::Allow, false));
+            }
+            "count" => {
+                // Every node served encrypted sessions: its peers'
+                // replication, the map service's, the client's.
+                let n = encrypted(&c);
+                assert!(n.iter().all(|&n| n > 0), "{n:?}");
+            }
+            "trusted" => c.network("lo", lo(true)),
+            _ => break,
+        }
+        go_tx.send(()).unwrap();
+    }
+    t.join().unwrap();
+    let (map, devs) = c.stop();
+    assert!(map.data_tls_encrypt);
     copies_agree(
         &map,
         devs,

@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = ROOT / "docs" / "public" / "src" / "reference"
-BINARIES = ["hyperstor-meta", "hyperstord", "hyperstor-bench", "hyperstorctl", "hyperstor-install", "hyperstor-mgmt", "hyperstor-ublk", "hyperstor-authd", "hyperstor-vhost", "hyperstor-smart", "hyperstor-s3"]
+BINARIES = ["hyperstor-meta", "hyperstord", "hyperstor-bench", "hyperstorctl", "hsfs", "hyperstor-install", "hyperstor-mgmt", "hyperstor-ublk", "hyperstor-authd", "hyperstor-vhost", "hyperstor-smart", "hyperstor-s3"]
 OPTION = re.compile(r"--[a-z][a-z-]*")
 
 bin_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "target" / "release"
@@ -27,7 +27,9 @@ for name in BINARIES:
     if not page.exists():
         errors.append(f"{page.relative_to(ROOT)}: missing")
         continue
-    run = subprocess.run([bin_dir / name], capture_output=True, text=True, timeout=10)
+    # hsfs is hyperstorctl run by that name (D361): installed as a link.
+    exe = bin_dir / ("hyperstorctl" if name == "hsfs" else name)
+    run = subprocess.run([name], executable=exe, capture_output=True, text=True, timeout=10)
     usage = [l for l in run.stderr.splitlines() if l.startswith("usage:")]
     if run.returncode != 2 or len(usage) != 1:
         errors.append(f"{name}: expected one usage line and exit status 2, got {run.returncode}")

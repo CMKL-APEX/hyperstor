@@ -11,10 +11,16 @@ hyperstor-codec = { path = "../hyperstor-codec" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }
 thiserror.workspace = true
+# Kernel TLS's socket options (crate::ktls).
+libc.workspace = true
 # The data path's handshake (D25, D376): rustls does no I/O of its own and
 # is fed from the reactor's sockets.
 hyperstor-pki = { path = "../hyperstor-pki" }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+[dev-dependencies]
+# G68: a zero-copy send on a kernel TLS socket.
+io-uring.workspace = true
 
 [lints]
 workspace = true

@@ -1960,6 +1960,18 @@ its node's certificate, whose host name isn't checked (I454).
 |---|---|---|---|
 | 350 | How such a host gets a `host` certificate: the installer asks the cluster API with the node's certificate, for the host name that node reports (recommended); a `host` token as VM hosts use, a manual step on every storage host; or leave it showing the node's | The node asks the API | D386 |
 
+## Datasets, stage H1: before building (2026-11-27)
+
+The first cut of dataset names and properties (29-hsfs.md §32.2, §32.3).
+Two facts changed the second question as first asked: volume names were
+never unique, and `CopyVolume` with no name reused its source's.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 351 | Which properties act in H1: all kept, inherited and shown, with `pool` acting and the rest marked not enforced yet (recommended); only those enforced settable; or names only | All kept; `pool` acts (`readonly` and `reads` were offered as acting too: `reads` has no replica reads to act on, and `readonly` needs leases and gateways to know it, the next part) | D388 |
+| 352 | Two datasets of one project with one name: refuse new ones, copies named by none get `NAME-copy`, volumes in no project exempt (recommended); allow and qualify; or refuse everywhere, copies too | Refuse; copies get `-copy` | D387 |
+| 353 | Ship the `hsfs` binary in H1, checking the name half of G64 now (recommended), or only `hyperstorctl dataset` until G64 is whole | Ship it; check the name now | D389 |
+
 ## A Kubernetes CSI driver (31-csi.md, 2026-11-27)
 
 Asked to plan CSI support, with what is built (ublk, leases, management
@@ -1989,6 +2001,19 @@ drafting, the owner chose as recommended:
 | 363 | Whether C1 waits for encryption on the wire (HS20 T3): no, the docs saying trusted networks only (recommended); it waits | C1 now, for trusted networks | D404 |
 | 364 | D397–D401, taken while drafting: settle as written (recommended); keep open | Settled as written | D397–D401 |
 
+## Data-path TLS, stage T3: encryption (2026-11-27)
+
+Stage T3 encrypts sessions on networks not marked trusted (D25, D372).
+`Network.trusted` is false unless set, so read literally D25 would start
+encrypting every upgraded cluster at the roll. G68 then held on the
+hosts' kernel (I460).
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 365 | When encryption starts: behind a cluster setting, off for an upgraded cluster and on for a new install, with addresses on no network encrypted (recommended); D25 as written, from the roll; or only on networks named and not marked trusted | Behind a setting, as recommended | D405 |
+| 366 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D406 |
+| 367 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D407 |
+
 ## The on-device index's layout: measured (2026-11-27)
 
 Proposed refinements to D43 (range keys, checksums out of the leaves,
@@ -1999,9 +2024,9 @@ layout`). Open for the owner:
 
 | # | Point | Data so far | Recommendation |
 |---|---|---|---|
-| 365 | Leaf format: per-block entries (D43, point 99's a); range keys; range keys with packed leaves | Ranges + packed 1.1–2.6 GiB per TiB on every workload measured, 40–74% less than per-block (4.3); plain ranges reach 6.9 on fragmented VM disks | Ranges with packed leaves, after a trace check (MSR, Tencent) |
-| 366 | Checksums: in the leaves; pages of their own (point 99's b); NVMe protection information where formatted (c); inline in packed entries and in pages of their own for ranges | With ranges, CRC pages are 1.11 of 1.1–2.6 GiB per TiB. A separate page costs 5% per read one at a time and halves the reads a saturated drive serves (2026-11-28, M3) | Inline in packed entries, pages of their own for ranges; (c) where drives support it (G40, M7) |
-| 367 | Checkpoints as a copy-on-write tree over the log (D43, point 12) | Ranges + packed write −22% to +17% of today's paged checkpoints at 1.6–25% density, less when sparser | As D43, with ranges + packed |
-| 368 | A buffer pool: a page table first, swizzling only if lookups show in profiles | Inner nodes at most 14 MiB per TiB. A page table costs 0.18–0.47 µs more per lookup than swizzled pointers, about 0.25–0.3% of a request's CPU (2026-11-28, M6) | Page table first |
-| 369 | Free space at open: walked from the tree (today's rebuild); bitmap pages written at checkpoint; a tree of free extents | Open time not measured yet (M4) | Bitmap pages |
-| 370 | 64-bit physical addresses in the same incompatible step | Range entries carry 64-bit already; packed leaves keep 32-bit offsets from a 64-bit base | Yes |
+| 368 | Leaf format: per-block entries (D43, point 99's a); range keys; range keys with packed leaves | Ranges + packed 1.1–2.6 GiB per TiB on every workload measured, 40–74% less than per-block (4.3); plain ranges reach 6.9 on fragmented VM disks | Ranges with packed leaves, after a trace check (MSR, Tencent) |
+| 369 | Checksums: in the leaves; pages of their own (point 99's b); NVMe protection information where formatted (c); inline in packed entries and in pages of their own for ranges | With ranges, CRC pages are 1.11 of 1.1–2.6 GiB per TiB. A separate page costs 5% per read one at a time and halves the reads a saturated drive serves (2026-11-28, M3) | Inline in packed entries, pages of their own for ranges; (c) where drives support it (G40, M7) |
+| 370 | Checkpoints as a copy-on-write tree over the log (D43, point 12) | Ranges + packed write −22% to +17% of today's paged checkpoints at 1.6–25% density, less when sparser | As D43, with ranges + packed |
+| 371 | A buffer pool: a page table first, swizzling only if lookups show in profiles | Inner nodes at most 14 MiB per TiB. A page table costs 0.18–0.47 µs more per lookup than swizzled pointers, about 0.25–0.3% of a request's CPU (2026-11-28, M6) | Page table first |
+| 372 | Free space at open: walked from the tree (today's rebuild); bitmap pages written at checkpoint; a tree of free extents | Open time not measured yet (M4) | Bitmap pages |
+| 373 | 64-bit physical addresses in the same incompatible step | Range entries carry 64-bit already; packed leaves keep 32-bit offsets from a 64-bit base | Yes |

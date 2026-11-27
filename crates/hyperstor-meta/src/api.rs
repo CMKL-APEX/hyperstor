@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 mod admin;
 mod audit;
+mod datasets;
 mod metrics;
 mod ops;
 mod perf;
@@ -2115,6 +2116,7 @@ impl ClusterService for Api {
         let (map, ..) = self.published().await?;
         Ok(pb::GetDataTlsResponse {
             data_tls: map.data_tls.as_str().into(),
+            encrypt: map.data_tls_encrypt,
             unauthenticated_known: peers.is_some(),
             unauthenticated: peers
                 .unwrap_or_default()
@@ -2136,7 +2138,10 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::SetDataTlsRequest>,
     ) -> ServiceResult<pb::SetDataTlsResponse> {
-        let target = format!("data path TLS mode={}", req.mode);
+        let target = match req.encrypt {
+            Some(e) => format!("data path TLS mode={} encrypt={e}", req.mode),
+            None => format!("data path TLS mode={}", req.mode),
+        };
         let who = self.authorize(&ctx, "SetDataTls", &target, true)?;
         let mode = hyperstor_map::DataTls::parse(req.mode).ok_or_else(|| {
             admin::invalid(
@@ -2146,7 +2151,11 @@ impl ClusterService for Api {
         })?;
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::SetDataTls { mode, reply })
+            .send(Admin::SetDataTls {
+                mode,
+                encrypt: req.encrypt,
+                reply,
+            })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let r = rx.recv().await;
         audit(
@@ -2154,15 +2163,20 @@ impl ClusterService for Api {
             "SetDataTls",
             &target,
             &match &r {
-                Some(Ok((epoch, was))) => format!("ok, was {}, map epoch {epoch}", was.as_str()),
+                Some(Ok((epoch, was, was_encrypt))) => format!(
+                    "ok, was {}{}, map epoch {epoch}",
+                    was.as_str(),
+                    if *was_encrypt { " encrypt" } else { "" }
+                ),
                 Some(Err(e)) => format!("failed: {e}"),
                 None => "failed: map service stopped".into(),
             },
         );
         match r {
-            Some(Ok((map_epoch, was))) => Ok(pb::SetDataTlsResponse {
+            Some(Ok((map_epoch, was, was_encrypt))) => Ok(pb::SetDataTlsResponse {
                 map_epoch,
                 was: was.as_str().into(),
+                was_encrypt,
                 ..Default::default()
             }
             .into()),
@@ -3539,15 +3553,34 @@ impl ClusterService for Api {
         } else {
             Some(parse_volume_id(req.id)?)
         };
+        // Naming no pool: its project's or tenant's `pool` property (D360).
+        let pool = match req.pool {
+            hyperstor_map::META_POOL => match self.default_pool(tenant, project).await? {
+                Some(p) => p,
+                None => {
+                    return Err(with_reason(
+                        ConnectError::invalid_argument(
+                            "name a pool, or set the pool property of the volume's project \
+                             or tenant",
+                        ),
+                        "no_pool",
+                    ));
+                }
+            },
+            p => p,
+        };
+        // A dataset's name is unique in its project (D360, I459).
+        self.name_free(tenant, project, req.name, &who, "CreateVolume", &target)
+            .await?;
         // Only in a pool the tenant's realm may use (D249, D258).
         let realms = self.realms().await?;
         let realm = realms.realm_of(tenant);
-        if !realms.may_use(realm, req.pool) {
+        if !realms.may_use(realm, pool) {
             let why = format!(
                 "realm {} of tenant {} may not use pool {}",
                 realms.name(realm),
                 tenant,
-                req.pool
+                pool
             );
             audit(&who, "CreateVolume", &target, &format!("failed: {why}"));
             return Err(with_reason(
@@ -3555,13 +3588,13 @@ impl ClusterService for Api {
                 "pool_not_in_realm",
             ));
         }
-        let r = match self.full_pools().await.remove(&req.pool) {
+        let r = match self.full_pools().await.remove(&pool) {
             Some(why) => Some(Err((crate::VolumeFault::Full, why))),
             None => {
                 let (reply, rx) = oneshot();
                 self.tx
                     .send(Admin::CreateVolume {
-                        pool: req.pool,
+                        pool,
                         size: req.size,
                         name: req.name.to_string(),
                         id,
@@ -3898,9 +3931,13 @@ impl ClusterService for Api {
         if self.volume_any(new_id).await.is_ok() {
             refuse(F::Exists, format!("volume {new_id:032x} exists"))?;
         }
+        // The copy is a dataset of the volume's project: its name is
+        // unique there, so one named by none is `NAME-copy` (D360, I459).
         let name = if req.name.is_empty() {
-            v.name.clone()
+            self.free_name(v.tenant, v.project, &v.name, "copy").await?
         } else {
+            self.name_free(v.tenant, v.project, req.name, &who, "CopyVolume", &target)
+                .await?;
             req.name.to_string()
         };
         let op = self
@@ -4266,6 +4303,22 @@ impl Api {
                 self.volume_in(&scope, *id, &who, rpc, &target).await?
             }
         }
+        // A clone is a dataset of its project: its name is unique there
+        // (D360, I459).
+        if let crate::SnapOp::Clone {
+            id, name, owner, ..
+        } = &op
+        {
+            let (tenant, project) = match owner {
+                Some(o) => *o,
+                None => {
+                    let v = self.volume_any(*id).await?;
+                    (v.tenant, v.project)
+                }
+            };
+            self.name_free(tenant, project, name, &who, rpc, &target)
+                .await?;
+        }
         // Snapshots and clones make more to keep: none in a full pool.
         let full = match &op {
             crate::SnapOp::Create { id, .. } | crate::SnapOp::Clone { id, .. } => {
@@ -4573,6 +4626,7 @@ pub fn spawn(
                 let router = s3::register(api.clone(), router);
                 let router = realms::register(api.clone(), router);
                 let router = tenants::register(api.clone(), router);
+                let router = datasets::register(api.clone(), router);
                 let router = trust::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);

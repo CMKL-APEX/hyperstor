@@ -5,14 +5,15 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380 and D382–D386 are settled with the owner
-(05-decision-log.md points 335–347, 349 and 350, 2026-11-25 to 27). Host checks G67–G69 are
-to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
-built (01-implementation-notes.md I444, I445): connections authenticate
-in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
+Status: **design.** D372–D380, D382–D386 and D405–D407 are settled with the owner
+(05-decision-log.md points 335–347, 349, 350 and 365–367, 2026-11-25 to 27). G67 and G68
+hold on one host (I445, I460); G69 is to run on the pilot's hosts. Stages T0
+and T1 are built (01-implementation-notes.md I444, I445): connections
+authenticate in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
 connections are served by their certificate's role and `require` can be
 set (D377, I451), pings are keyed (D379, I453), and `data-tls status`
-lists who connects without a certificate (I455). It delivers D25, which stays the rule.
+lists who connects without a certificate (I455). Of T3, sessions stay
+encrypted in kernel TLS where the cluster says (D405–D407, I460). It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -38,7 +39,7 @@ lists who connects without a certificate (I455). It delivers D25, which stays th
   stage (D372), and for good on networks marked `trusted` (D374, D25):
   plaintext, each frame and block under CRC32C.
 - **Encryption on networks not marked trusted** is the last stage
-  (§33.9): the session stays TLS there.
+  (§33.9): the session stays TLS there, in kernel TLS (§33.11).
 - **The cluster API is unchanged**: it has had mutual TLS since AD0.
 
 ### 33.3 Starting TLS on a connection (D373, D376)
@@ -205,7 +206,7 @@ answer could make a dead node look alive.
 | T0 | Certificates everywhere: `node` certificates on member hosts, `host` tokens and `--role vhost --join` | — |
 | T1 | `--identity` on every data-path binary, the handshake, modes `off` and `allow`, identities kept with connections, the unauthenticated-connection count | T0, G67 |
 | T2 | `require`, authorization by role (§33.5), the host name from the certificate, keyed pings (§33.7) | T1 |
-| T3 | Encryption on networks not marked trusted: TLS records from rustls first, kernel TLS where G68 allows | T2, G68, G69 |
+| T3 | Encryption on networks not marked trusted, in kernel TLS from the rustls handshake (D405–D407, §33.11); records in userspace only if a host lacks kernel TLS | T2, G68, G69 |
 
 Milestone HS20 (17-milestones.md §21).
 
@@ -218,7 +219,74 @@ Milestone HS20 (17-milestones.md §21).
 - **G68. Kernel TLS from a rustls handshake** (T3). On the hosts' kernel
   (6.17): the session's secrets extracted from rustls set up `TCP_ULP
   tls` for TLS 1.3 with AES-GCM in both directions, and io_uring sends
-  and receives then work unchanged, zero-copy sends included.
+  and receives then work unchanged, zero-copy sends included. **Holds on
+  one host, except zero-copy sends** (I460): `SEND_ZC` is refused with
+  `EOPNOTSUPP` on such a socket. The reactor sends none.
 - **G69. The cost of encryption on a reactor** (T3). 4 KiB and 1 MiB
   reads and writes on an untrusted network, userspace records against
   kernel TLS against plaintext, on the pilot's hosts.
+
+### 33.11 Encryption (D405–D407)
+
+**When.** A cluster setting beside the mode (D405): `hyperstorctl
+data-tls set --mode allow --encrypt on`, or `data-tls allow encrypt` in
+the cluster file, which `hyperstor-install --all-in-one` writes. Off in
+an upgraded cluster. Once on, and the mode isn't `off`, a session stays
+TLS unless its address is on a network marked trusted (26-networks.md
+§29.3):
+
+| Address | Encrypted |
+|---|---|
+| On a network marked trusted | no |
+| On a network not marked trusted | yes |
+| On no network | yes: only a named network can be marked trusted |
+| Loopback | only where a network not marked trusted names it |
+
+- **Why a switch:** `trusted` is false unless set, so D25 read literally
+  would encrypt every upgraded cluster at the roll, fast fabrics too.
+- **Turning it on** is refused while a storage node that is up runs a
+  build from before version 12: it couldn't keep a session, nor read
+  the map's format 25.
+
+**Who decides** (D406; protocol version 12):
+
+1. A caller of version 12 sends `StartTlsOffer { encrypt }` in place of
+   `StartTls`: `encrypt` where its map says the address it dialled is
+   encrypted.
+2. The answerer keeps the session if the caller asks or its own map says
+   so for the address it was called at, and answers `StartTlsEncrypted`;
+   else `StartTlsOk`, and the session turns back as in §33.3.
+3. A caller that asked and is answered `StartTlsOk` drops the
+   connection.
+
+| Caller | Answerer's map says encrypt | Result |
+|---|---|---|
+| Version 12 | either | encrypted if either says so |
+| Before 12, mode `allow` | yes | authenticated, plaintext |
+| Before 12, mode `require` | yes | refused TLS, so served nothing |
+
+**The handshake's end.** Kernel TLS can't take a record rustls has
+already read. So the answerer sends one byte of application data once it
+has the caller's `Finished`, and the caller sends nothing after its
+`Finished` until it has read that byte: neither side holds a record it
+hasn't processed. Session tickets are off (§33.3), so no record follows.
+
+**Kernel TLS** (D407). Both sides take the session's keys and record
+numbers from rustls (`dangerous_extract_secrets`) and give them to the
+kernel: `TCP_ULP tls`, then `TLS_TX` and `TLS_RX`, for AES-128-GCM,
+AES-256-GCM or ChaCha20-Poly1305. The reactor's sends and receives then
+carry records unchanged, as G68 showed. A host whose kernel can't take
+them fails the session, and the connection is closed.
+
+- **Kept connections.** One made in plaintext before its address was
+  encrypted is made again at its next use, by every caller whose map
+  says so: a storage node's peers and pings, the map service's, a
+  client's. And a storage node or the map service drops one it serves
+  in plaintext at its next request once its own map says the address is
+  encrypted, if the caller had offered (version 12): a client whose map
+  is older calls again, and is answered `StartTlsEncrypted`. One whose
+  peer runs an older build stays as it is.
+- **Counted.** `hyperstor_encrypted_connections_total` on each node: the
+  connections it served whose session stayed encrypted.
+- **Cost:** G69, on the pilot's hosts.
+

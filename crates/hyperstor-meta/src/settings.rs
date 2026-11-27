@@ -7,6 +7,7 @@
 use crate::store::{self, Db, Origin, Table};
 use crate::tokens::TokenError as Error;
 use glidex_raftstore::store::{StoreError, definition};
+use redb::ReadableTable as _;
 use std::sync::Arc;
 
 /// How long a deleted volume or snapshot stays in the trash, by default
