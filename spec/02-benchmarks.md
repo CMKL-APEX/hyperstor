@@ -2816,6 +2816,154 @@ three settings were within about 10% of one another everywhere, except
    owner, I457); spending less per spin needs a spin that doesn't enter
    the kernel.
 
+## 2026-11-27: The on-device index's leaf formats on real block maps (D43, point 99)
+
+Question: before D43's node format is fixed (#299), how big is the index
+in each candidate format, and what does a copy-on-write tree write per
+checkpoint against today's paged checkpoints? `hyperstor-bench layout`
+drives writes through a real shard on a memory device (its allocator,
+redirect-on-write, dense maps; deferral off, as storage nodes on flash
+run, D38), then sizes each format from the shard's mappings. The
+formats are a model, not built: 4 KiB nodes 70% full, 24-byte inner
+entries, a 32-byte object header per leaf, CRC32C 4 bytes per block.
+
+- **Per-block:** D43 as planned and point 99's option (a): an entry
+  per block (block u32, physical u32, CRC), 12 bytes; *64-bit*, 16.
+- **Ranges:** (block u32, count u32, physical u64), 16 bytes a run;
+  CRCs in pages of their own (point 99's option b).
+- **Ranges + packed:** as ranges, but a stretch of logically adjacent
+  runs is stored as one packed entry (block, count, a 64-bit base, a
+  u32 offset per block) where that is smaller.
+
+4 GiB of 4 MiB chunks, filled sequentially, then overwritten at random
+(4 KiB uniform; 4 KiB with 90% of writes on 10% of the space; sizes
+4 KiB–1 MiB, half 4 KiB). `HS_GIB=4 HS_INTERVAL_BLOCKS=16384
+hyperstor-bench layout`; deterministic (seeded).
+
+### Index size, GiB per TiB of data (on the device, CRCs included)
+
+| Workload | Runs | Today, in RAM | Per-block | Per-block, 64-bit | Ranges | Ranges + packed |
+|---|---|---|---|---|---|---|
+| Written sequentially | 1,024 | 1.0 | 4.33 | 5.78 | 1.13 | 1.13 |
+| Random 4 KiB, 0.05× | 100,551 | 2.0 | 4.33 | 5.78 | 1.68 | 1.68 |
+| Random 4 KiB, 0.25× | 412,706 | 2.0 | 4.33 | 5.78 | 3.39 | 2.57 |
+| Random 4 KiB, 1× | 906,836 | 2.0 | 4.33 | 5.78 | 6.11 | 2.57 |
+| Random 4 KiB, 3× | 1,046,006 | 2.0 | 4.33 | 5.78 | 6.87 | 2.57 |
+| Hot 10%, 4 KiB, 3× | 530,044 | 2.0 | 4.33 | 5.78 | 4.04 | 2.57 |
+| Mixed sizes, 3× | 114,396 | 2.0 | 4.33 | 5.78 | 1.75 | 1.75 |
+
+Of which CRC pages: 1.11 GiB per TiB in the range formats. Inner nodes,
+the part a buffer pool keeps in RAM: at most 51 MiB per TiB (per-block,
+64-bit), 14 MiB for ranges + packed.
+
+### Bytes written per changed block, per checkpoint
+
+The log (today's records, which the tree keeps as its write-ahead log)
+is the same for every format: 128–144 bytes per 4 KiB block changed,
+10–11 for the mixed sizes. Then the checkpoint: today's paged format
+(128 KiB pages, measured), against each format's copy-on-write pages
+(the leaves holding a changed block, their ancestors and, for ranges,
+CRC pages; modelled). Density is the share of the shard's blocks
+changed between checkpoints; today a checkpoint starts when a quarter
+of the log is used (08-engine.md §7.3), about 2 million blocks, so 1–10%
+of a shard of 100 GiB–1 TiB.
+
+| Workload | Density | Today | Per-block | Per-block, 64-bit | Ranges | Ranges + packed |
+|---|---|---|---|---|---|---|
+| Random 4 KiB | 0.1% (1 GiB, 256 blocks) | 8,387 | 3,832 | 3,984 | 6,393 | 5,587 |
+| | 0.4% (1 GiB, 1,024) | 2,289 | 2,715 | 3,007 | 3,736 | 2,388 |
+| | 1.6% (4 GiB, 16,384) | 544 | 1,094 | 1,403 | 1,448 | 629 |
+| | 25% (4 GiB, 262,144) | 40 | 85 | 113 | 111 | 47 |
+| Hot 10%, 4 KiB | 0.1% | 4,854 | 2,196 | 2,520 | 3,101 | 1,990 |
+| | 1.6% | 599 | 473 | 532 | 604 | 469 |
+| | 25% | 77 | 160 | 210 | 108 | 81 |
+| Mixed sizes | 0.1% | 1,434 | 316 | 335 | 438 | 438 |
+| | 1.6% | 497 | 259 | 274 | 267 | 267 |
+| | 25% | 39 | 80 | 103 | 29 | 29 |
+
+### Findings
+
+1. **Range keys alone lose on fragmented VM disks.** After one random
+   overwrite of every block, plain ranges take 6.1 GiB per TiB, more
+   than per-block entries (4.3); after three, 6.9. A range entry costs
+   more than a block's.
+2. **Ranges with packed leaves win everywhere:** 1.1–2.6 GiB per TiB,
+   40–74% less than per-block entries, and never more than 2.6 however
+   fragmented. On sequential data the leaves shrink by 99.6% (0.02
+   against 4.30 GiB per TiB), RASK's order of reduction; with the CRCs
+   counted, by 74%.
+3. **Once ranges compress the leaves, checksums are most of the
+   index** (1.11 of 1.13–2.57 GiB per TiB). Moving them into NVMe
+   protection information (point 99's option c) is what would cut it
+   further.
+4. **The inner levels are small**: at most 14 MiB per TiB with ranges +
+   packed, so a buffer pool keeps them in RAM easily, against today's
+   1–2 GiB per TiB for the whole index.
+5. **A copy-on-write tree of ranges + packed writes about what today's
+   checkpoints write** at 1.6% and 25% density (−22% to +17%), and less
+   at sparser densities on hot or mixed writes. Per-block entries write
+   up to twice as much at 1.6% on uniform random writes, plain ranges
+   up to 2.7 times. The log, about 130 bytes per 4 KiB block, is
+   unchanged.
+
+Not covered: snapshots and clones (ranges shared between versions),
+real traces (MSR Cambridge and Tencent's on SNIA IOTTA need their
+license accepted; `HS_TRACE` reads MSR's format), the read cost of
+separate CRC pages (M3) and open time (M4).
+
+## 2026-11-28: A page table against swizzled pointers, and cold reads of separate CRC pages (M6, M3)
+
+### Lookup cost (M6)
+
+`hyperstor-bench lookup` (`HS_FRAMES=262144`, then `4194304`), pinned to
+one idle CPU of a 2× AMD EPYC 7742 host: a tree of real 4 KiB frames,
+119 entries per node, two million random lookups from the root, each
+level a binary search in its node. Swizzled: the child pointer is the
+frame. Page table: the child's page number is looked up in a hash table
+of page number to frame, as a pool that can evict any page needs.
+
+| Frames | Depth | Swizzled, ns per lookup | Page table, multiplicative hash | Page table, SipHash |
+|---|---|---|---|---|
+| 262,164 (1 GiB) | 4 | 492 | 669 | 730 |
+| 4,194,602 (16 GiB) | 5 | 831 | 1,304 | 1,386 |
+
+A page table costs 0.18–0.47 µs more per lookup, out of caches. A 4 KiB
+read costs about 190 µs of CPU end to end and a replicated write about
+520 µs (memory devices, the bench's `cluster mem`, 2026-11-27): one
+lookup per copy is about 0.25–0.3% of that. Swizzling isn't worth its
+complexity until profiles say otherwise.
+
+### Cold reads with checksums elsewhere (M3)
+
+fio 3.36, `io_uring`, `O_DIRECT`, random reads over a 16 GiB file on ext4
+on two Samsung PM983 (1.92 TB) NVMe drives in RAID 1, 30 s per job, two
+rounds (within 1%); medians. "Adjacent": the checksum page next to the
+data, read as one 8 KiB read. "Separate": two 4 KiB reads at random
+places, submitted and completed together. A request is one 4 KiB of
+data with its checksums.
+
+| Job | Reads/s | Requests/s | Per request at QD1 | p99, µs |
+|---|---|---|---|---|
+| One 4 KiB read, QD1 | 5,312 | 5,312 | 188 µs | 197 |
+| Adjacent (8 KiB), QD1 | 5,157 | 5,157 | 194 µs | 199 |
+| Separate (2 × 4 KiB), QD1 | 10,085 | 5,042 | 198 µs | 198 |
+| One 4 KiB read, QD32 | 155,200 | 155,200 | | 297 |
+| Adjacent (8 KiB), QD32 | 143,206 | 143,206 | | 322 |
+| Separate (2 × 4 KiB), QD32 | 163,545 | 81,772 | | 471 |
+
+1. **One request at a time, a separate checksum page costs 5%** (two
+   reads in parallel wait for the slower); adjacent, 3%.
+2. **When the drives are the limit, a separate page halves the
+   requests a device serves** (155,200 to 81,772 a second); adjacent
+   costs 8%.
+3. So separate CRC pages suit large ranges, where one page serves 4 MiB
+   of reads, and cost most on small random reads of fragmented data,
+   exactly where packed leaves are used. Keeping CRCs inline in packed
+   entries (8 bytes a block, as today's dense maps) and in their own
+   pages for ranges avoids the extra read where it hurts: on the
+   fragmented workloads of 2026-11-27 that is about 2.9 GiB per TiB
+   instead of 2.6.
+
 ## 2026-11-27: The cost of encrypting the data path (G69, D407, I462)
 
 Question: what kernel TLS (D407) costs a reactor against plaintext after
