@@ -1452,6 +1452,7 @@ dependencies = [
  "hyperstor-daemon",
  "hyperstor-engine",
  "hyperstor-meta",
+ "hyperstor-pki",
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",

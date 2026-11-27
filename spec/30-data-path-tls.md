@@ -7,13 +7,14 @@ the same section everywhere (see [README.md](README.md)).
 
 Status: **design.** D372–D380, D382–D386 and D405–D407 are settled with the owner
 (05-decision-log.md points 335–347, 349, 350 and 365–367, 2026-11-25 to 27). G67 and G68
-hold on one host (I445, I460); G69 is to run on the pilot's hosts. Stages T0
+hold on one host (I445, I460); G69 is measured (I462). Stages T0
 and T1 are built (01-implementation-notes.md I444, I445): connections
 authenticate in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
 connections are served by their certificate's role and `require` can be
 set (D377, I451), pings are keyed (D379, I453), and `data-tls status`
 lists who connects without a certificate (I455). Of T3, sessions stay
-encrypted in kernel TLS where the cluster says (D405–D407, I460). It delivers D25, which stays the rule.
+encrypted in kernel TLS where the cluster says (D405–D407, I460), at
+about 0.5 s of CPU per GB on each end (G69, I462). It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -224,7 +225,11 @@ Milestone HS20 (17-milestones.md §21).
   `EOPNOTSUPP` on such a socket. The reactor sends none.
 - **G69. The cost of encryption on a reactor** (T3). 4 KiB and 1 MiB
   reads and writes on an untrusted network, userspace records against
-  kernel TLS against plaintext, on the pilot's hosts.
+  kernel TLS against plaintext, on the pilot's hosts. **Measured** for
+  kernel TLS against plaintext (02-benchmarks.md, 2026-11-27; I462):
+  about 0.5 s of CPU per GB on each end, so one core moves 35–60% less
+  at 1 MiB and 17–23% fewer 4 KiB requests; userspace records aren't
+  built (D407).
 
 ### 33.11 Encryption (D405–D407)
 
@@ -288,5 +293,7 @@ them fails the session, and the connection is closed.
   peer runs an older build stays as it is.
 - **Counted.** `hyperstor_encrypted_connections_total` on each node: the
   connections it served whose session stayed encrypted.
-- **Cost:** G69, on the pilot's hosts.
+- **Cost** (G69, I462): about 0.5 s of CPU per GB on each end, twice
+  plaintext's at 1 MiB; mark a network trusted where only the cluster
+  reaches it.
 

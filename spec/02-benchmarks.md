@@ -2963,3 +2963,61 @@ data with its checksums.
    pages for ranges avoids the extra read where it hurts: on the
    fragmented workloads of 2026-11-27 that is about 2.9 GiB per TiB
    instead of 2.6.
+
+## 2026-11-27: The cost of encrypting the data path (G69, D407, I462)
+
+Question: what kernel TLS (D407) costs a reactor against plaintext after
+the handshake, for 4 KiB and 1 MiB reads and writes (G69). Bare metal:
+**prism2** (client; 2× AMD EPYC 7742, kernel 6.17) calling **prism1**
+(server; 2× AMD EPYC 7742, kernel 6.8) over the pilot's `fast` network
+(200 Gb/s, not marked trusted), each end one reactor pinned to one core,
+one connection. The pilot's cluster was not touched: the benchmark has
+its own listener and throwaway certificates.
+
+```sh
+hyperstor-bench tls-certs DIR                  # copied to the server
+hyperstor-bench tls-serve ADDR:PORT DIR        # on prism1
+HS_BENCH_SECS=3 hyperstor-bench tls ADDR:PORT DIR   # on prism2
+```
+
+Requests are `Ping`s carrying the data (writes) or asking for it (reads),
+answered by the server's reactor, so this is the wire and the frames
+alone: no engine, no replication. Userspace records aren't built (D407),
+so there is no third column. Two runs; the second (the first within 5%,
+except 1 MiB QD1 writes, 597 MB/s):
+
+| Op | Size | QD | Plaintext ops/s, MB/s | Kernel TLS ops/s, MB/s | Change | p50 µs, plaintext → TLS | CPU s/GB client, server: plaintext → TLS |
+|---|---|---|---|---|---|---|---|
+| write | 4 KiB | 1 | 12048, 49 | 9886, 40 | −18% | 82 → 100 | 5.52, 6.31 → 7.47, 8.44 |
+| write | 4 KiB | 16 | 37922, 155 | 29041, 119 | −23% | 433 → 530 | 2.98, 4.51 → 4.90, 5.93 |
+| read | 4 KiB | 1 | 11700, 48 | 9713, 40 | −17% | 84 → 102 | 6.51, 5.94 → 8.55, 7.98 |
+| read | 4 KiB | 16 | 38062, 156 | 29534, 121 | −22% | 377 → 513 | 4.57, 3.90 → 6.40, 6.13 |
+| write | 1 MiB | 1 | 775, 812 | 506, 531 | −35% | 1283 → 2084 | 0.30, 0.92 → 0.79, 1.50 |
+| write | 1 MiB | 16 | 1049, 1100 | 637, 667 | −39% | 15164 → 24997 | 0.26, 0.91 → 0.75, 1.46 |
+| read | 1 MiB | 1 | 1601, 1679 | 737, 772 | −54% | 615 → 1357 | 0.40, 0.38 → 0.92, 0.89 |
+| read | 1 MiB | 16 | 2593, 2719 | 1036, 1087 | −60% | 6141 → 15405 | 0.37, 0.37 → 0.88, 0.91 |
+
+Findings:
+
+- **One core is the limit either way**, not the 200 Gb/s link:
+  plaintext moves 1.1–2.7 GB/s per connection, kernel TLS 0.5–1.1.
+- **Kernel TLS costs about 0.5 s of CPU per GB on each end** (AES-GCM in
+  the kernel, one direction encrypting and the other decrypting): at
+  1 MiB that is twice plaintext's CPU, and the throughput of one
+  connection on one core falls by 35–60%.
+- **At 4 KiB the cost per request is about 18 µs** of round trip at QD1, and 22–23% fewer requests a second at QD16;
+  the per-request work of the frames dominates either way (5–8 s/GB).
+- So a reactor that encrypts carries about half the large-I/O bandwidth
+  it would in plaintext. A storage fabric that only the cluster reaches
+  should be marked trusted; encryption is for networks shared with
+  others, where the cost buys what D25 asks.
+- **No NIC offload on the pilot** (checked 2026-11-28, `ethtool -k`):
+  `fast` runs on two 100 Gb/s ConnectX-6 ports (PCI `15b3:101b`, not
+  the Dx) in an 802.3ad bond, under a VLAN and a bridge on prism2 and a
+  bridge on prism1. Every port and device shows `tls-hw-tx-offload` and
+  `tls-hw-rx-offload` `off [fixed]`, the BlueField-3's ConnectX-7 port
+  too (its crypto firmware wasn't checked). Even on cards that offer it
+  the bridge would likely stand between the socket and the card;
+  untested. So on the pilot the numbers above are encryption's cost.
+- Not measured: several connections per core, and the full data path
+  (engine, replication).

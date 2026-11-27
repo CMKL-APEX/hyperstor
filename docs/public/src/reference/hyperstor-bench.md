@@ -19,6 +19,9 @@ The usage line lists the most common modes; all of them:
 | `cluster mem\|DIR [REACTORS]` | A whole cluster in one process, on memory or on files in `DIR`, with `REACTORS` devices per node (default 1) |
 | `remote ADDR` | A running cluster, as a client of the map service at `ADDR`; writes test data to pool 1 |
 | `index FILE` | Memory and checkpoint cost of the engine's index; needs 2 GiB free |
+| `tls-certs DIR` | Writes a throwaway CA and a `node` and a `host` certificate to `DIR`, for `tls-serve` and `tls`; nothing of a cluster's |
+| `tls-serve ADDR DIR` | Answers `tls`'s requests on `ADDR`, as a storage node's reactor would, until killed; `DIR` from `tls-certs` |
+| `tls ADDR DIR` | The cost of encrypting the data path: 4 KiB and 1 MiB writes and reads at queue depths 1 and 16 on one connection to a `tls-serve`, in plaintext after the handshake and in kernel TLS, with each end's CPU per GB |
 | `space-walk` | The walk each primary makes of its PGs every 30 s: D155's sum of blocks alone, and with each chunk's versions laid over each other for the space counts (D335), on one PG's index in memory; the whole walk and its longest slice of 4,096 objects |
 
 | Environment variable | Default | Meaning |

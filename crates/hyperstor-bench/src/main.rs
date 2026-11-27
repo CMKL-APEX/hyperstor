@@ -13,6 +13,7 @@
 
 mod cpus;
 mod layout;
+mod tls;
 
 use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
@@ -2511,6 +2512,21 @@ fn main() {
             }
         }
         Some("space-walk") => space_walk(),
+        // G69 (30-data-path-tls.md §33.10): the cost of encryption.
+        Some("tls-certs") => tls::certs(Path::new(args.get(2).expect("tls-certs DIR"))),
+        Some("tls-serve") => tls::serve(
+            args.get(2)
+                .and_then(|a| a.parse().ok())
+                .expect("tls-serve ADDR DIR"),
+            Path::new(args.get(3).expect("tls-serve ADDR DIR")),
+        ),
+        Some("tls") => tls::client(
+            args.get(2)
+                .and_then(|a| a.parse().ok())
+                .expect("tls ADDR DIR"),
+            Path::new(args.get(3).expect("tls ADDR DIR")),
+            secs,
+        ),
         _ => {
             eprintln!("usage: hyperstor-bench engine|raw <file> [size_gib] | mem | crc");
             std::process::exit(2);
