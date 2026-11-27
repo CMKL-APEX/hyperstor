@@ -527,7 +527,7 @@ fn parse_caps(s: &str) -> Option<Vec<(String, u64)>> {
         .collect()
 }
 
-pub(crate) fn main() {
+fn main() {
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     // Installed as `hsfs` too (29-hsfs.md §32.4, D361): its commands are
     // `dataset`'s, in the order `zfs` users type them.

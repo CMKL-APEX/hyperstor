@@ -242,8 +242,13 @@ fn datasets_are_named_in_projects_and_inherit_properties() {
     );
 
     // hsfs prints its own usage line, and refuses what isn't a command.
+    // Installed as a link to hyperstorctl.
+    assert_eq!(
+        std::fs::read_link(c.root.join("usr/local/bin/hsfs")).unwrap(),
+        std::path::Path::new("hyperstorctl")
+    );
     let u = Run::of(
-        std::process::Command::new(c.bin.join("hsfs"))
+        std::process::Command::new(c.root.join("usr/local/bin/hsfs"))
             .output()
             .unwrap(),
     );
