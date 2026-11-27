@@ -26,6 +26,16 @@ The usage line lists the most common modes; all of them:
 | `HS_BENCH_SECS` | 3 | Seconds per test |
 | `HS_BENCH_ONLY` | every test | `remote`: only the tests named, as in its output after the address (`1 MiB reads, QD4`), separated by `;` |
 | `HS_DEFER_MAX` | | Override the size up to which the engine defers overwrites through its log, in bytes (`engine` and `mem`) |
+| `HS_BENCH_CPUS` | see below | `cluster`, `remote` and `adminload`: the CPUs to pin to, as a list (`8-11`), the client's first and then each node's reactors |
+
+`cluster`, `remote` and `adminload` pin each reactor to a CPU of its own:
+the client's, then (`cluster`) each node's, one per device. Without
+`HS_BENCH_CPUS` they take the CPUs the bench may run on (so
+`taskset -c 8-15 hyperstor-bench cluster mem` keeps it there), less
+CPU 0 and the CPUs a running Pylon `pylond` takes on a glidex host:
+its polling engine's (`--engine-cpu`, 1 by default), which spins, and
+the cores it gives VMs (`--cores`). The CPUs chosen are printed first; with
+too few free, the bench stops and says so.
 
 Output is Markdown table rows. Files given to `raw`, `engine`,
 `commit` and `index` are overwritten.
