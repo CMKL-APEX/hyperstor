@@ -1971,3 +1971,20 @@ never unique, and `CopyVolume` with no name reused its source's.
 | 351 | Which properties act in H1: all kept, inherited and shown, with `pool` acting and the rest marked not enforced yet (recommended); only those enforced settable; or names only | All kept; `pool` acts (`readonly` and `reads` were offered as acting too: `reads` has no replica reads to act on, and `readonly` needs leases and gateways to know it, the next part) | D388 |
 | 352 | Two datasets of one project with one name: refuse new ones, copies named by none get `NAME-copy`, volumes in no project exempt (recommended); allow and qualify; or refuse everywhere, copies too | Refuse; copies get `-copy` | D387 |
 | 353 | Ship the `hsfs` binary in H1, checking the name half of G64 now (recommended), or only `hyperstorctl dataset` until G64 is whole | Ship it; check the name now | D389 |
+
+## A Kubernetes CSI driver (31-csi.md, 2026-11-27)
+
+Asked to plan CSI support, with what is built (ublk, leases, management
+clients bound to realms, data-path certificates) and what isn't (the
+NVMe-oF gateway, glidex's hot-plug of disks, the filesystem), the owner
+settled each choice as recommended:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 354 | Which Kubernetes clusters first: both, nodes on the storage network through ublk first (recommended); only Kubernetes on glidex VMs; only storage-network nodes | Both, ublk first | D390 |
+| 355 | The driver's language: Rust (recommended); Go | Rust | D391 |
+| 356 | Access modes in the first release: RWO, RWOP and ROX (recommended); RWO and RWOP only; also RWX raw block | RWO, RWOP and ROX | D392 |
+| 357 | A Kubernetes cluster's identity and where its volumes go: a management client bound to realms, the StorageClass naming the project (recommended); one project per cluster | A bound management client | D393 |
+| 358 | Where a node's ublk devices are served: in the plugin, with ublk user recovery (recommended); a host service the plugin drives | In the plugin, with recovery | D394 |
+| 359 | ReadOnlyMany: a read-only snapshot attachment with no lease (recommended); a clone per node | Read-only snapshot attachment | D395 |
+| 360 | Packaging: an image and a Helm chart (recommended); an image and plain manifests | Image and Helm chart | D396 |
