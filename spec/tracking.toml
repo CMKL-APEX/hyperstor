@@ -1702,7 +1702,7 @@ title = "Kubernetes CSI driver"
 
 [[milestone.item]]
 what = "C1: volumes on storage-network nodes: `hyperstor-csi` controller and node, filesystem and raw block, RWO and RWOP, expansion, stats, ids derived from CSI names, node identities, csi-sanity"
-spec = ["31-csi.md §34.3", "31-csi.md §34.4", "31-csi.md §34.6", "D390", "D391", "D392", "D393", "D397", "D399", "D400", "D401"]
+spec = ["31-csi.md §34.3", "31-csi.md §34.4", "31-csi.md §34.6", "D390", "D391", "D392", "D393", "D397", "D399", "D400", "D401", "D402", "D403", "D404"]
 status = "planned"
 
 [[milestone.item]]
