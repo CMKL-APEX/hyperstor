@@ -13,7 +13,7 @@ holding the keys, and reactors checking capabilities in pools that
 require them; nothing issues a capability yet, and peers aren't told
 from clients until D25. I459: dataset names over volumes and buckets,
 every property kept and inherited, `pool` enforced, and `hsfs`; I461:
-`readonly` for volumes; D387–D406 settled 2026-11-27, points 351–355). The order agreed with the owner (2026-11-25):
+`readonly` for volumes; D387–D389 and D405–D406 settled 2026-11-27, points 351–353, 365 and 366). The order agreed with the owner (2026-11-25):
 H0, then the data path's mutual TLS (D25), then H1 and H2. D360–D371 are settled with the owner
 (05-decision-log.md points 323–334, 2026-11-24 and 2026-11-25), D361 (the name `hsfs`)
 and D367 (no striping across clusters) among them. Host checks G62–G66
