@@ -1939,3 +1939,14 @@ every host being upgraded), the owner chose:
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 348 | How glidex tells a target that holds a standby's writes from one that fails them: a `standby_hold` feature in `hello` (recommended), protocol 5, or nothing | A `standby_hold` feature | D381 (amended) |
+
+## Data-path TLS, stage T2: while building (2026-11-26)
+
+Authorization by role (D377) named `host`, `s3` and `admin` as clients.
+The tests found a fourth: a management client moves volume data with
+its own `mgmt` certificate (`hyperstorctl write-volume`, glidex's image
+import).
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 349 | Whether a `mgmt` certificate may send clients' messages on the data path: yes for now, and refused once `hyperstorctl --identity` lets a management client's host show a `host` certificate for the volume commands and glidex uses it (recommended); or refused now, which closes a bound client's reach to any volume's data and breaks glidex's image import at the upgrade | Yes for now, refused once `--identity` is built and glidex uses it | D385 |

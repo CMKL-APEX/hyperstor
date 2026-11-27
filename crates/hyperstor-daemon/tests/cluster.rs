@@ -10970,3 +10970,101 @@ fn a_connection_is_served_by_its_certificates_role() {
         &(0..6u64).map(|i| (1u128, i)).collect::<Vec<_>>(),
     );
 }
+
+/// UDP pings keyed with the sealing key (D379; 30-data-path-tls.md
+/// §33.7). A node answers a ping whose MAC holds under a key it has and
+/// that is for it, with a keyed answer; not one under another key, nor
+/// one for another node. A ping without a key is answered in `allow` and
+/// ignored in `require`, where the nodes go on finding each other alive
+/// by keyed pings alone.
+#[test]
+fn pings_are_keyed_and_plain_ones_ignored_in_require() {
+    use hyperstor_meta::DataTls;
+    use hyperstor_pki::seal::{PING_MAC_LEN, SealingKey, SealingKeys};
+    let c = Cluster::start(3, 1);
+    let keys = || SealingKeys::new(vec![SealingKey::new(1, [7; 32])]);
+    let other = SealingKeys::new(vec![SealingKey::new(1, [8; 32])]);
+    c.sealing.set(keys());
+    let node0 = c.published().device_addr(0).unwrap();
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sock.set_read_timeout(Some(std::time::Duration::from_millis(300)))
+        .unwrap();
+    // What node 0 answers `packet` with, if anything.
+    let ask = |packet: &[u8]| -> Option<Vec<u8>> {
+        // Nothing left over from the ping before.
+        sock.set_nonblocking(true).unwrap();
+        let mut buf = [0u8; 64];
+        while sock.recv_from(&mut buf).is_ok() {}
+        sock.set_nonblocking(false).unwrap();
+        sock.send_to(packet, node0).unwrap();
+        let (n, _) = sock.recv_from(&mut buf).ok()?;
+        Some(buf[..n].to_vec())
+    };
+    let plain = |nonce: u64| [&b"HSP?"[..], &nonce.to_le_bytes()].concat();
+    let keyed = |k: &SealingKeys, nonce: u64, node: u32| {
+        let mac = k.ping_mac(1, b"HSK?", nonce, node).unwrap();
+        [
+            &b"HSK?"[..],
+            &nonce.to_le_bytes(),
+            &node.to_le_bytes(),
+            &[1u8],
+            &mac,
+        ]
+        .concat()
+    };
+    // A keyed answer for `nonce` from node 0, its MAC holding.
+    let good = |a: Option<Vec<u8>>, nonce: u64| {
+        let a = a.expect("no answer");
+        assert_eq!(a.len(), 17 + PING_MAC_LEN);
+        assert_eq!(&a[..4], b"HSK!");
+        assert_eq!(a[4..12], nonce.to_le_bytes());
+        assert_eq!(a[12..16], 0u32.to_le_bytes());
+        assert!(keys().ping_verify(a[16], b"HSK!", nonce, 0, &a[17..]));
+    };
+    let checks = |plain_answered: bool| {
+        good(ask(&keyed(&keys(), 11, 0)), 11);
+        // Another cluster's key; another node's ping shown to this one;
+        // a ping changed on the way.
+        assert!(ask(&keyed(&other, 12, 0)).is_none());
+        assert!(ask(&keyed(&keys(), 13, 1)).is_none());
+        let mut bent = keyed(&keys(), 14, 0);
+        bent[5] ^= 1;
+        assert!(ask(&bent).is_none());
+        let a = ask(&plain(15));
+        assert_eq!(a.is_some(), plain_answered, "{a:?}");
+        if let Some(a) = a {
+            assert_eq!(a, [&b"HSP!"[..], &15u64.to_le_bytes()].concat());
+        }
+    };
+    // Once node 0 has bound its socket.
+    let t0 = std::time::Instant::now();
+    while ask(&plain(1)).is_none() {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+    }
+    // `off` and `allow`: with a key or without.
+    checks(true);
+    c.data_tls(DataTls::Allow).unwrap();
+    checks(true);
+    // `require`: with a key only. The nodes take the map within moments.
+    let t0 = std::time::Instant::now();
+    while c.data_tls(DataTls::Require).is_err() {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(30));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let t0 = std::time::Instant::now();
+    while ask(&plain(16)).is_some() {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    checks(false);
+    // No answer over TCP either: the nodes hold each other up by keyed
+    // pings alone, well past the time a silent peer is reported in.
+    for n in 0..3 {
+        c.pings.lose_tcp(n, true);
+    }
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let map = c.published();
+    assert!(map.nodes.values().all(|n| n.up), "{:?}", map.nodes);
+    assert_eq!(map.data_tls, DataTls::Require);
+    c.stop();
+}

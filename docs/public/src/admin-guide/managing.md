@@ -416,8 +416,16 @@ What a certificate allows:
 | `meta` (a map service member) | Everything |
 | `metrics`, `orchestrator` | Nothing: they use the cluster API |
 
+A `mgmt` certificate is served as a client for now, because a
+management client such as glidex imports images with its own; a later
+release refuses it once such clients show a `host` certificate.
+
 A caller checks who answered too: at a device's address the node the
 map has there, elsewhere the map service.
+
+The pings storage nodes send each other to find dead peers carry a MAC
+under the cluster's sealing key, so a forged answer can't make a dead
+node look alive. In `require` a ping without one is ignored.
 
 To move a cluster to `require`:
 

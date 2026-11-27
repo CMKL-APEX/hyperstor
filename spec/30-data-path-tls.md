@@ -5,14 +5,14 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380 and D382–D384 are settled with the owner
-(05-decision-log.md points 335–347, 2026-11-25 and 26). Host checks G67–G69 are
+Status: **design.** D372–D380 and D382–D385 are settled with the owner
+(05-decision-log.md points 335–347 and 349, 2026-11-25 and 26). Host checks G67–G69 are
 to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
 connections are served by their certificate's role and `require` can be
-set (D377, I451); keyed pings (D379) and the list of unauthenticated
-peers are still to build. It delivers D25, which stays the rule.
+set (D377, I451), and pings are keyed (D379, I453); the list of
+unauthenticated peers is still to build. It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -107,6 +107,7 @@ Once a connection is authenticated, and for every connection in
 | `node` N | node-to-node messages (replication, pushes, fetches, digests, peering) and reports to the map service, as node N: the id in `Hello` and in each report must be N |
 | `meta` | what the map service sends nodes (`MapPush`, `Fence`, scrub requests) and members send each other |
 | `host`, `s3`, `admin` | clients' messages only: object reads and writes, leases, snapshots, map requests |
+| `mgmt` | clients' messages, until management clients show a `host` certificate here (D385); then nothing |
 
 - A client's message on a `node` connection is served: primaries act as
   clients of other PGs (copies, flattens).
@@ -175,8 +176,10 @@ answer could make a dead node look alive.
   breaks nothing.
 - In `require`, a ping or answer without a valid MAC is ignored. In
   `allow` it is accepted, so nodes from before it keep their peers.
-- A node that hasn't fetched the keys yet answers no keyed ping, and
-  looks down until it has: seconds after its start.
+- A node that hasn't fetched the keys yet answers no keyed ping. Its
+  peers still find it over the TCP fallback, on an authenticated
+  connection (I453); in `require` it reports nobody silent until it
+  has them: seconds after its start.
 - **Why the sealing key and not a key per pair:** a key from two nodes'
   TLS session would make pings depend on the TCP connection they exist
   to notice the loss of. The sealing key needs no state per peer.

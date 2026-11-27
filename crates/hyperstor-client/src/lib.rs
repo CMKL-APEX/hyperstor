@@ -482,11 +482,35 @@ pub fn cut_label(label: &str) -> String {
     label[..end].to_string()
 }
 
+/// Eight bytes from the kernel's generator: lease identities, client
+/// instances, and the nonces of pings (D379), which must not repeat.
+///
+/// Panics if the kernel gives none: a value left at zero would be a
+/// nonce every caller shares. `getrandom` without flags fails only when
+/// interrupted before the pool is ready, which is tried again.
 pub fn random_u64() -> u64 {
-    let mut v = 0u64;
-    // SAFETY: getrandom writes at most 8 bytes into `v`.
-    unsafe { libc::getrandom(&mut v as *mut u64 as *mut libc::c_void, 8, 0) };
-    v
+    let mut b = [0u8; 8];
+    let mut have = 0;
+    while have < b.len() {
+        // SAFETY: getrandom writes at most `b.len() - have` bytes, into
+        // the part of `b` from `have` on.
+        let n = unsafe {
+            libc::getrandom(
+                b[have..].as_mut_ptr() as *mut libc::c_void,
+                b.len() - have,
+                0,
+            )
+        };
+        if n > 0 {
+            have += n as usize;
+        } else if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            panic!(
+                "getrandom: {}: no random numbers from the kernel",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+    u64::from_ne_bytes(b)
 }
 
 impl Client {
