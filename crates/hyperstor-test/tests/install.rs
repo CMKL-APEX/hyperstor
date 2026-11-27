@@ -239,6 +239,7 @@ fn a_missing_binary_installs_nothing() {
         "hyperstor-meta",
         "hyperstord",
         "hyperstorctl",
+        "hsfs",
         "hyperstor-mgmt",
         "hyperstor-authd",
         "hyperstor-vhost",

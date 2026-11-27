@@ -83,6 +83,12 @@ namespace Hyperstor {
   action "TenantService.ListTenants" in [Action::"read", Action::"secure"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
+  action "DatasetService.ListDatasets" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "DatasetService.GetDatasetProperties" in [Action::"read"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
   action "Dashboard.Read" in [Action::"read"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
@@ -184,6 +190,13 @@ namespace Hyperstor {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "TenantService.MoveProject" in [Action::"store", Action::"step-up"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  // Datasets and their properties (D360).
+  action "DatasetService.SetDatasetProperty" in [Action::"store"] appliesTo {
+    principal: [User], resource: [Cluster], context: { "auth": Auth }
+  };
+  action "DatasetService.InheritDatasetProperty" in [Action::"store"] appliesTo {
     principal: [User], resource: [Cluster], context: { "auth": Auth }
   };
   action "ClusterService.SetScrubSettings" in [Action::"store"] appliesTo {

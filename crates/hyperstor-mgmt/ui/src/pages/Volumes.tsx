@@ -400,7 +400,7 @@ export default function Volumes() {
           run={async () => {
             if (target == null) throw new Error("Choose a pool");
             const r = copy
-              ? await cluster.copyVolume({ id: dialog.v.id, pool: target, name: name || dialog.v.name })
+              ? await cluster.copyVolume({ id: dialog.v.id, pool: target, name })
               : await cluster.moveVolume({ id: dialog.v.id, pool: target });
             setNotice(`${copy ? "Copying" : "Moving"} to pool ${target}: operation ${r.operation?.id} (Operations).`);
           }}
@@ -424,7 +424,7 @@ export default function Volumes() {
           {copy ? (
             <>
               <Field label="The copy's name">
-                <input className={input} value={name} placeholder={dialog.v.name} onChange={(e) => setName(e.target.value)} />
+                <input className={input} value={name} placeholder={dialog.v.project ? `${dialog.v.name}-copy` : dialog.v.name} onChange={(e) => setName(e.target.value)} />
               </Field>
               <p className="text-sm">Copies its current data, which needs it detached; to copy while it is in use, copy a snapshot (Snapshots).</p>
             </>

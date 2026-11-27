@@ -71,6 +71,8 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("S3Service.GetS3Bucket", Group::Read, false),
     ("RealmService.ListRealms", Group::Read, false),
     ("TenantService.ListTenants", Group::Read, false),
+    ("DatasetService.ListDatasets", Group::Read, false),
+    ("DatasetService.GetDatasetProperties", Group::Read, false),
     ("Dashboard.Read", Group::Read, false),
     ("ClusterService.SetDeviceIn", Group::Operate, false),
     ("ClusterService.SetDeviceWeight", Group::Operate, false),
@@ -126,6 +128,9 @@ pub const ACTIONS: &[(&str, Group, bool)] = &[
     ("TenantService.DeleteProject", Group::Store, true),
     // Moving a project between tenants (D303): their data, fresh.
     ("TenantService.MoveProject", Group::Store, true),
+    // Datasets' properties (D360): a tenant's plan, a project's layout.
+    ("DatasetService.SetDatasetProperty", Group::Store, false),
+    ("DatasetService.InheritDatasetProperty", Group::Store, false),
     // Weakening scrub is a deliberate choice (D226): a fresh login.
     ("ClusterService.SetScrubSettings", Group::Store, false),
     ("ClusterService.WeakenScrubSettings", Group::Store, true),
@@ -242,6 +247,11 @@ pub const IN_REALM: &[&str] = &[
     "TenantService.RenameProject",
     "TenantService.DeleteProject",
     "TenantService.MoveProject",
+    // Its tenants' and projects' datasets and properties (D360).
+    "DatasetService.ListDatasets",
+    "DatasetService.GetDatasetProperties",
+    "DatasetService.SetDatasetProperty",
+    "DatasetService.InheritDatasetProperty",
     // Those on its tenants' volumes and one's own (D283).
     "OperationService.GetOperation",
     "OperationService.ListOperations",

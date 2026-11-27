@@ -1179,6 +1179,21 @@ tests = [
     "hyperstor_meta::tests::a_pool_is_made_to_require_capabilities_and_not",
 ]
 
+[[milestone.item]]
+what = "hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hyperstorctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet"
+spec = ["29-hsfs.md §32.2", "29-hsfs.md §32.3", "29-hsfs.md §32.4", "D360", "D361", "D387", "D388", "D389", "I458"]
+status = "partial"
+tests = [
+    "datasets::datasets_are_named_in_projects_and_inherit_properties",
+    "hyperstor_meta::datasets::tests::values_come_from_the_nearest_level_that_sets_them",
+    "hyperstor_meta::datasets::tests::values_are_checked_and_made_canonical",
+    "hyperstor_meta::datasets::tests::a_dataset_takes_only_what_applies_to_it",
+    "hyperstor_meta::datasets::tests::a_deleted_project_takes_its_properties",
+    "hyperstor_meta::datasets::tests::names_are_qualified_only_where_they_repeat",
+    "hyperstor_meta::datasets::tests::a_new_name_its_project_has_is_refused_and_copies_get_their_own",
+    "hyperstor_ctl::tests::hsfs_is_hyperstorctl_dataset_in_zfs_order",
+]
+
 [[milestone]]
 id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"
