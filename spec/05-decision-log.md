@@ -1989,6 +1989,18 @@ settled each choice as recommended:
 | 359 | ReadOnlyMany: a read-only snapshot attachment with no lease (recommended); a clone per node | Read-only snapshot attachment | D395 |
 | 360 | Packaging: an image and a Helm chart (recommended); an image and plain manifests | Image and Helm chart | D396 |
 
+## The CSI driver's open questions (31-csi.md §34.10, 2026-11-27)
+
+Asked to settle §34.10's questions and the decisions taken while
+drafting, the owner chose as recommended:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 361 | How each node's plugin gets its `host` certificate: the controller makes a single-use token per Kubernetes Node, in a Secret (recommended); the operator joins each node; the plugin's CSR signed through the controller | The controller's tokens | D402 |
+| 362 | Topology: none in C1 (recommended); a realm topology key | None in C1 | D403 |
+| 363 | Whether C1 waits for encryption on the wire (HS20 T3): no, the docs saying trusted networks only (recommended); it waits | C1 now, for trusted networks | D404 |
+| 364 | D397–D401, taken while drafting: settle as written (recommended); keep open | Settled as written | D397–D401 |
+
 ## Datasets, stage H1: `readonly` and buckets (2026-11-27)
 
 `readonly` can't be enforced at the lease, because only read-write
