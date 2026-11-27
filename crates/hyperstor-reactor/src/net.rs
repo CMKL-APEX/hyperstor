@@ -194,6 +194,14 @@ fn sockaddr(addr: SocketAddr) -> Box<(libc::sockaddr_storage, libc::socklen_t)> 
     Box::new((st, len as libc::socklen_t))
 }
 
+/// The socket, for options the reactor doesn't set itself (kernel TLS:
+/// 30-data-path-tls.md §33.9).
+impl AsRawFd for TcpStream {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.inner.as_raw_fd()
+    }
+}
+
 impl TcpStream {
     /// The local address the connection is bound to.
     pub fn local_addr(&self) -> io::Result<SocketAddr> {

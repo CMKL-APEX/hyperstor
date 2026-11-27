@@ -111,6 +111,8 @@ pub struct ShardMetrics {
     pub unauthenticated: AtomicU64,
     /// Connections dropped for a revoked certificate (D384).
     pub revoked: AtomicU64,
+    /// Connections served whose session stayed encrypted (D405).
+    pub encrypted: AtomicU64,
     /// Connections refused a request by their certificate's role, or for
     /// showing none in mode `require` (D377).
     pub refused: AtomicU64,
@@ -333,6 +335,12 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         &|m| vec![("", g(&m.unauthenticated))],
     );
     family(
+        "hyperstor_encrypted_connections_total",
+        "counter",
+        "Connections served whose TLS session stayed encrypted after the handshake, by kernel TLS: those on networks not marked trusted, once the cluster encrypts there.",
+        &|m| vec![("", g(&m.encrypted))],
+    );
+    family(
         "hyperstor_revoked_connections_total",
         "counter",
         "Connections dropped because the caller showed a revoked certificate, at the handshake or once it was revoked.",
@@ -485,8 +493,11 @@ mod tests {
             "hyperstor_unauthenticated_connections_total{node=\"4\",device=\"4000\"} 0\n"
         ));
         assert!(t.contains("hyperstor_revoked_connections_total{node=\"4\",device=\"4000\"} 0\n"));
+        assert!(
+            t.contains("hyperstor_encrypted_connections_total{node=\"4\",device=\"4000\"} 0\n")
+        );
         assert!(t.contains("hyperstor_refused_connections_total{node=\"4\",device=\"4000\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 29);
+        assert_eq!(t.matches("# TYPE ").count(), 30);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

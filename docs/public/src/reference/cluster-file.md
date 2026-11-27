@@ -24,16 +24,19 @@ The cluster's number. Optional; `0` if absent.
 ## `data-tls`
 
 ```
-data-tls allow
+data-tls allow encrypt
 ```
 
 The mode a new cluster's storage network starts in: `off` (connections
 don't authenticate; the default without the line), `allow` (they
 authenticate with the cluster's certificates where both ends can, and
 others are still served) or `require` (only authenticated connections
-are served: every node and client needs a certificate from the start). `hyperstor-install --all-in-one` writes
-`allow`. The line is read when the cluster's first map is made; a
-running cluster changes its mode with `hyperstorctl data-tls set`.
+are served: every node and client needs a certificate from the start).
+With `encrypt` after the mode, authenticated sessions also stay
+encrypted, in kernel TLS, on networks not marked trusted and on
+addresses on no network. `hyperstor-install --all-in-one` writes
+`allow encrypt`. The line is read when the cluster's first map is made;
+a running cluster changes both with `hyperstorctl data-tls set`.
 
 ## `node`
 

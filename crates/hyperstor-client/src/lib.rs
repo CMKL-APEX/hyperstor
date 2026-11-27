@@ -302,6 +302,17 @@ pub fn peer_revoked(map: &ClusterMap, c: &Conn) -> bool {
         && c.peer_revoked(|serial, uri, issued| map.cert_revoked(serial, uri, issued, wall_unix()))
 }
 
+/// Whether `c`, a connection to `addr`, authenticated in plaintext from
+/// before `map` encrypted sessions to that address (D405): a peer that
+/// can keep one is called again. One whose peer can't (an older build)
+/// stays as it is, in mode `allow`.
+pub fn plaintext_from_before(map: &ClusterMap, addr: std::net::SocketAddr, c: &Conn) -> bool {
+    !c.encrypted()
+        && c.peer().is_some()
+        && c.version() >= hyperstor_proto::ENCRYPT_VERSION
+        && map.encrypts(addr.ip())
+}
+
 /// What a caller gets instead of a connection to a peer whose certificate
 /// is revoked; the connection is dropped.
 pub fn refuse_revoked(c: &Conn, addr: std::net::SocketAddr) -> RpcError {
@@ -877,8 +888,16 @@ impl Client {
         // service, is made before any map says the mode. Required once a
         // map does.
         let required = self.map.borrow().data_tls == hyperstor_map::DataTls::Require;
-        let tls = self.identity.borrow().as_ref().map(|t| t.calling(required));
         let map = self.map();
+        let tls = self
+            .identity
+            .borrow()
+            .as_ref()
+            .map(|t| t.calling(required).encrypting(map.encrypts(addr.ip())));
+        // One kept from before sessions to `addr` were encrypted is made
+        // again (D405).
+        self.conns
+            .close_if(addr, |c| plaintext_from_before(&map, addr, c));
         // A connection kept from before the mode was `require` may be
         // bare (its peer was in `off` then, and refused TLS), and is
         // refused everything now: with a certificate to show, it is made

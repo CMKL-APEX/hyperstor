@@ -2000,3 +2000,16 @@ drafting, the owner chose as recommended:
 | 362 | Topology: none in C1 (recommended); a realm topology key | None in C1 | D403 |
 | 363 | Whether C1 waits for encryption on the wire (HS20 T3): no, the docs saying trusted networks only (recommended); it waits | C1 now, for trusted networks | D404 |
 | 364 | D397–D401, taken while drafting: settle as written (recommended); keep open | Settled as written | D397–D401 |
+
+## Data-path TLS, stage T3: encryption (2026-11-27)
+
+Stage T3 encrypts sessions on networks not marked trusted (D25, D372).
+`Network.trusted` is false unless set, so read literally D25 would start
+encrypting every upgraded cluster at the roll. G68 then held on the
+hosts' kernel (I460).
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 365 | When encryption starts: behind a cluster setting, off for an upgraded cluster and on for a new install, with addresses on no network encrypted (recommended); D25 as written, from the roll; or only on networks named and not marked trusted | Behind a setting, as recommended | D405 |
+| 366 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D406 |
+| 367 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D407 |
