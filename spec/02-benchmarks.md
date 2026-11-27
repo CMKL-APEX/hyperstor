@@ -2710,3 +2710,108 @@ epoch commit of 5.0–5.5 ms against 5.5–5.7 ms with it.
 3. **Each member's reload of the whole map after an entry is CPU, not
    latency**: skipping it changes p50 by at most 0.5 ms. It costs about
    3 ms of CPU per entry per member on this map.
+
+## 2026-11-27: The reactor's spin window, counted and adaptive (HS5b, I457)
+
+Question: what does `hyperstord`'s fixed 200 µs spin window (I38) cost
+and give, on slow and fast paths, and does a window that adapts (I457)
+keep the gain for less CPU? Two Cloud Hypervisor guests (12 vCPUs of an
+AMD EPYC 7742, 31 GiB, Ubuntu 24.04, kernel 6.8), one on **prism2** and
+one on **prism1**, each with a ConnectX-6 (InfiniBand HDR, 200 Gb/s)
+passed through. Builds of `main` and of the branch from the same base,
+run back to back. These are virtual machines: the shape of the results
+should hold, but the numbers want confirming on bare metal.
+
+### The branch against `main`, defaults unchanged
+
+`HS_BENCH_SECS=3 HS_SPIN_US=200 hyperstor-bench cluster mem 1` (three
+nodes and the client in one process, over loopback), on the prism2
+guest, three rounds alternating; medians. `main` is `d7772108`; the
+adaptive column sets `HS_SPIN_ADAPTIVE=1`.
+
+| Test | `main`: ops/s, mean µs, CPU µs/op | Branch | Change | Branch, adaptive | Change |
+|---|---|---|---|---|---|
+| 4 KiB random writes, QD1 | 6398, 152, 623 | 6574, 148, 606 | +2.8% ops, −2.7% CPU | 6437, 148, 618 | +0.6% ops, −0.8% CPU |
+| 4 KiB random writes, QD32 | 21003, 1179, 188 | 21503, 1168, 184 | +2.4% ops, −2.3% CPU | 21771, 1202, 182 | +3.7% ops, −3.5% CPU |
+| 4 KiB random reads, QD1 | 15406, 60, 214 | 15743, 59, 211 | +2.2% ops, −1.5% CPU | 14429, 66, 179 | −6.3% ops, −16.4% CPU |
+| 4 KiB random reads, QD32 | 44024, 470, 90 | 44554, 460, 89 | +1.2% ops, −1.2% CPU | 46100, 455, 85 | +4.7% ops, −5.5% CPU |
+| 1 MiB writes, QD4 | 835, 4697, 3795 | 776, 4970, 3999 | −7.1% ops, +5.4% CPU | 783, 4832, 3757 | −6.2% ops, −1.0% CPU |
+| 1 MiB reads, QD1 | 1028, 981, 1765 | 1000, 997, 1788 | −2.7% ops, +1.3% CPU | 1035, 990, 1521 | +0.7% ops, −13.9% CPU |
+| 1 MiB reads, QD2 | 1559, 1186, 1511 | 1481, 1255, 1558 | −5.0% ops, +3.1% CPU | 1593, 1177, 1307 | +2.2% ops, −13.5% CPU |
+| 1 MiB reads, QD4 | 2341, 1599, 1315 | 2261, 1636, 1355 | −3.4% ops, +3.0% CPU | 2315, 1597, 1223 | −1.1% ops, −7.0% CPU |
+
+The same comparison on the previous base (`a74b1200`) gave 4 KiB
++0.8–2.7% ops at 0.4–2.5% less CPU, and 1 MiB +0.8–1.6% ops. The 1 MiB
+tests vary by up to ±7% between rounds (1 MiB writes: `main` 835–900,
+the branch 764–892), so their sign differs between the two bases; the
+4 KiB gain is the same on both.
+
+### Across two hosts
+
+fio 3.36 (`libaio`, direct, 20 s, a 2 GiB range of an 8 GiB volume) on
+the prism2 guest through `hyperstor-ublk`; the map service and node 0
+there, node 1 on the prism1 guest; a pool of two copies, one per host;
+devices on tmpfs, so the network and the software are what is measured.
+Base `a74b1200`, two rounds rotating the order; medians. CPU is both
+hosts' `hyperstord` (user and system) per I/O.
+
+Over IPoIB (datagram mode, MTU 2044; RTT 0.1–0.2 ms):
+
+| Job | `main`: IOPS, p50 µs, CPU µs/IO | Branch | Branch, adaptive |
+|---|---|---|---|
+| 4 KiB random writes, QD1 | 3182, 305, 653 | 3296, 293, 634 | 3322, 289, 595 |
+| 4 KiB random writes, QD32 | 18178, 1909, 126 | 17531, 1909, 132 | 17872, 1962, 129 |
+| 4 KiB random reads, QD1 | 6259, 152, 220 | 6367, 147, 217 | 6244, 153, 148 |
+| 4 KiB random reads, QD32 | 25225, 1589, 86 | 27712, 1425, 79 | 27052, 1466, 79 |
+| 1 MiB writes, QD8 | 911, 8094, 2821 | 944, 7897, 2810 | 938, 7995, 2791 |
+| 1 MiB reads, QD8 | 949, 8192, 1189 | 925, 8258, 1211 | 949, 8094, 1087 |
+
+Over the guests' virtio network (plain TCP):
+
+| Job | `main`: IOPS, p50 µs, CPU µs/IO | Branch | Branch, adaptive |
+|---|---|---|---|
+| 4 KiB random writes, QD1 | 2398, 395, 793 | 2393, 393, 786 | 2318, 412, 596 |
+| 4 KiB random writes, QD32 | 12646, 2392, 165 | 13689, 2785, 169 | 15501, 2093, 144 |
+| 4 KiB random reads, QD1 | 5072, 168, 242 | 5109, 169, 239 | 4812, 180, 164 |
+| 4 KiB random reads, QD32 | 25246, 1581, 86 | 27365, 1417, 80 | 26369, 1483, 82 |
+| 1 MiB reads, QD8 | 538, 13238, 1532 | 555, 11026, 1541 | 511, 14287, 1299 |
+
+(1 MiB writes over TCP: 231 IOPS in every column; the branch's CPU
+reading was lost to a restarted process.)
+
+### What the window costs and gives
+
+Off (`--spin-us 0`), the fixed 200 µs window and the adaptive window
+under 200 µs, on the branch; medians of two or three rounds.
+
+| Path | Job | Off: IOPS, CPU µs/IO | 200 µs | Adaptive |
+|---|---|---|---|---|
+| Memory (`hyperstor-bench cluster mem`, 3 rounds) | 4 KiB writes, QD1 | 5576, 234 | 7027, 567 | 6707, 594 |
+| | 4 KiB reads, QD1 | 13044, 74 | 17755, 193 | 15081, 176 |
+| Two hosts over IPoIB (fio) | 4 KiB writes, QD1 | 2906, 241 | 3549, 594 | 3459, 577 |
+| | 4 KiB reads, QD1 | 5909, 70 | 6668, 209 | 6590, 140 |
+| A trial cluster on one guest's virtio disk (files, three copies; fio) | 4 KiB writes, QD1 | 296, 677 | 286, 3068 | 280, 1042 |
+| | 4 KiB reads, QD1 | 1345, 107 | 1353, 489 | 1357, 137 |
+
+On the virtio disk, the counters showed 38–97% of spins ending in a hit,
+each saving only a thread's wake-up for tens of µs of polling; the
+adaptive window settled at 2–7 µs there. At QD32 and for 1 MiB the
+three settings were within about 10% of one another everywhere, except
+4 KiB reads at QD32 on the disk, where spinning gave 10% more.
+
+### Findings
+
+1. **The cheaper pass gives 1–3% at 4 KiB**, at as much less CPU per
+   operation, on two bases; it costs nothing measurable elsewhere.
+2. **The fixed window pays only where the path is fast.** At QD1 it
+   gives 13–36% on memory and across hosts over InfiniBand, for 2.4–3
+   times the CPU per I/O; on a slow disk it gives nothing for 4.5
+   times the CPU.
+3. **The adaptive window keeps most of the gain and stops spinning on a
+   slow device:** 9–33% less CPU per I/O at QD1 across hosts, at most
+   about 5% slower than the fixed window. On fast paths its idle
+   stretches are shorter than the ceiling, so it stays near it and
+   saves less there; the spin itself still costs a core while it runs.
+4. **So:** adapting under `--spin-us` is the better default (for the
+   owner, I457); spending less per spin needs a spin that doesn't enter
+   the kernel.

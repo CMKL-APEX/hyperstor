@@ -856,6 +856,27 @@ status = "done"
 tests = ["hyperstor_reactor::tests::spinning_reactor_still_sleeps_and_wakes"]
 
 [[milestone.item]]
+what = "The reactor counts its passes, its calls into the kernel and its spins (hit or miss, time, window), exported by `hyperstord` as metrics"
+spec = ["D41", "I457"]
+status = "done"
+tests = ["hyperstor_reactor::tests::spins_are_counted_as_ended_by_work_or_by_a_sleep"]
+
+[[milestone.item]]
+what = "A cheaper reactor pass: one clock read per kernel call and per poll, a waker per task, the ready queue taken in one lock"
+spec = ["D41", "I457"]
+status = "done"
+tests = ["hyperstor_reactor::tests::a_task_keeps_one_waker_across_its_polls"]
+
+[[milestone.item]]
+what = "An adaptive spin window under `--spin-us` (halt-polling style), for measurements (`HS_SPIN_ADAPTIVE=1`); the default awaits the owner"
+spec = ["D41", "I457"]
+status = "partial"
+tests = [
+    "hyperstor_reactor::tests::the_adaptive_window_grows_toward_idle_it_would_catch_and_shrinks_past_the_ceiling",
+    "hyperstor_reactor::tests::an_adaptive_reactor_stops_spinning_when_idle_outlasts_the_ceiling",
+]
+
+[[milestone.item]]
 what = "Payloads not copied into each outgoing frame, once per replica, nor out of incoming ones: vectored sends (`SendMsg`) of owned or shared payloads, reads in place, a client's write sent from its own buffer; then zero-copy sends (`SEND_ZC`)"
 spec = ["D41", "I23", "I283", "I300", "I324"]
 status = "partial"
