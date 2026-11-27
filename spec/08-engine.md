@@ -425,8 +425,10 @@ each choice are in 02-benchmarks.md (2026-11-27 and 2026-11-28) and
 - **Format change:** one incompatible flag for all of it (D157), with
   64-bit physical blocks ending D270's 16 TiB per shard (D413), and a
   conversion an operator asks for, as D274's.
-- **Not yet settled:** snapshots and clones sharing ranges between
-  versions (reference counts, D44); the metadata flavour's buffered
-  messages (Bε-tree, D44); open time today (M4) and protection
-  information on the drives at hand (M7, G40); a check of D408's sizes
-  against real block traces.
+- **Not yet settled:** measured 2026-11-28 and open for the owner
+  (02-benchmarks.md; 05-decision-log.md points 374–377): snapshots as
+  version objects with a derived head map instead of ranges shared
+  with reference counts (D44); one copy-on-write B+tree before the
+  Bε-tree flavour (D44, G15); today's open time; protection
+  information on the drives at hand (G40). A check of D408's sizes
+  against real block traces waits for the trace license.
