@@ -1120,6 +1120,87 @@ impl CaService for Api {
         .into())
     }
 
+    async fn issue_host_certificate(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, pb::IssueHostCertificateRequest>,
+    ) -> ServiceResult<pb::IssueHostCertificateResponse> {
+        let name = req.name.to_string();
+        let target = format!("host {name}");
+        let caller = self.authorize_as(&ctx, "IssueHostCertificate", &target, Need::Identity)?;
+        let (signing, root) = self.signing()?;
+        let deny = |e: ConnectError| {
+            refused(&caller, "IssueHostCertificate", &target, &e);
+            e
+        };
+        // D386: a storage node's certificate, and no other, asks for the
+        // host it runs on. It may already name any host to its peers
+        // (D377), so this gives it nothing it lacks.
+        let node = ctx
+            .peer_certs()
+            .and_then(|c| c.first())
+            .and_then(|leaf| hyperstor_pki::identity_of(leaf))
+            .filter(|i| i.role == hyperstor_pki::Role::Node)
+            .and_then(|i| i.id.parse::<u32>().ok().map(|n| (n, i.cluster)));
+        let Some((node, cluster)) = node else {
+            return Err(deny(with_reason(
+                ConnectError::permission_denied(
+                    "only a storage node's certificate asks for its host's: a VM host joins with a host token",
+                ),
+                "permission_denied",
+            )));
+        };
+        if !crate::realms::valid_host(&name) {
+            return Err(deny(invalid(
+                format!("host name {name:?}: 1 to 64 letters, digits, '.', '-' and '_'"),
+                "invalid_argument",
+            )));
+        }
+        // The name the node reports (D348), where it has: one name per
+        // host, whoever asks.
+        let (map, ..) = self.published().await?;
+        if let Some(reported) = map.host_names.get(&node)
+            && *reported != name
+        {
+            return Err(deny(with_reason(
+                ConnectError::failed_precondition(format!(
+                    "node {node} runs on host {reported}, not {name}"
+                )),
+                "wrong_host",
+            )));
+        }
+        let who = hyperstor_pki::Identity {
+            cluster,
+            role: hyperstor_pki::Role::Host,
+            id: name.clone(),
+        };
+        let r = hyperstor_pki::sign_request(
+            &signing.ca,
+            req.csr,
+            &who,
+            &[],
+            &[],
+            hyperstor_pki::LEAF_DAYS,
+        );
+        audit(
+            &caller,
+            "IssueHostCertificate",
+            &target,
+            &match &r {
+                Ok(_) => format!("ok, for node {node}'s host"),
+                Err(e) => format!("failed: {e}"),
+            },
+        );
+        let certificate = r.map_err(|e| invalid(e, "bad_request"))?;
+        self.record_issued(&certificate, &caller).await;
+        Ok(pb::IssueHostCertificateResponse {
+            certificate,
+            root: root.to_string(),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn list_certificates(
         &self,
         ctx: RequestContext,
