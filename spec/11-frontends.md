@@ -157,12 +157,14 @@ vhost-user-blk for VMs, the NVMe-oF target, the host read cache, and later front
 
 ### 11.4 Later
 
-- **Kubernetes on glidex VMs.** A CSI driver in the style of cloud
-  providers' (AWS EBS): the controller calls glidex's API to create a
-  hyperstor disk and hot-plug it into the VM as vhost-user-blk. The
-  guest never reaches the storage network. `ReadOnlyMany` volumes are
-  read-only snapshot attachments, served by the host read cache. It
-  needs vhost-user-blk hot-plug in glidex (16-glidex.md §20).
+- **Kubernetes.** A CSI driver, designed in 31-csi.md §34 (D390): first
+  for nodes on the storage network, each volume a ublk device served by
+  the node plugin; then for Kubernetes on glidex VMs, where the controller
+  calls glidex's API to create a hyperstor disk and hot-plug it into the
+  VM as vhost-user-blk, so the guest never reaches the storage network.
+  `ReadOnlyMany` volumes are read-only snapshot attachments, served by
+  the host read cache. The second needs vhost-user-blk hot-plug in
+  glidex (16-glidex.md §20).
 - **NVMe emulation over vfio-user**, for guests that need a real NVMe
   device (some Windows and appliance images). For Linux guests,
   virtio-blk performs as well.

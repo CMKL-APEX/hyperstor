@@ -34,6 +34,7 @@ covered by tests that run on every change.
 | HS18: Pools and devices at run time | In progress |
 | HS19: Networks | In progress |
 | HS20: Data-path mutual TLS | In progress |
+| HS21: Kubernetes CSI driver | Planned |
 | AD0: Administration API, identities and CLI | In progress |
 | AD1: Installer and cluster join | In progress |
 | AD2: Management service and read-only web UI | In progress |
@@ -266,6 +267,17 @@ covered by tests that run on every change.
 | T2: `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
 | T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again | Done |
 | T3: the cost of encryption on a reactor, measured on the pilot's hosts (G69); an installer check that the kernel has TLS | Planned |
+
+## HS21: Kubernetes CSI driver
+
+| Feature | Status |
+|---|---|
+| C1: volumes on storage-network nodes: `hyperstor-csi` controller and node, filesystem and raw block, RWO and RWOP, expansion, stats, ids derived from CSI names, node identities, csi-sanity | Planned |
+| C2: snapshots and clones: snapshot names unique per volume, volumes from snapshots and from volumes | Planned |
+| C3: node plugin restarts keep their devices: ublk user recovery and the plugin's state file | Planned |
+| C4: ReadOnlyMany: read-only snapshot attachments with no lease, in the client and hyperstor-ublk | Planned |
+| C5: the image on GitHub's registry, the Helm chart, release CI, the Kubernetes suite on kind, the operator guide | Planned |
+| C6: Kubernetes on glidex VMs: the controller through glidex's API, hot-plugged disks found by serial | Planned |
 
 ## AD0: Administration API, identities and CLI
 

@@ -1696,6 +1696,40 @@ spec = ["30-data-path-tls.md §33.10", "G69", "D404"]
 status = "planned"
 
 [[milestone]]
+id = "HS21"
+title = "Kubernetes CSI driver"
+
+[[milestone.item]]
+what = "C1: volumes on storage-network nodes: `hyperstor-csi` controller and node, filesystem and raw block, RWO and RWOP, expansion, stats, ids derived from CSI names, node identities, csi-sanity"
+spec = ["31-csi.md §34.3", "31-csi.md §34.4", "31-csi.md §34.6", "D390", "D391", "D392", "D393", "D397", "D399", "D400", "D401"]
+status = "planned"
+
+[[milestone.item]]
+what = "C2: snapshots and clones: snapshot names unique per volume, volumes from snapshots and from volumes"
+spec = ["31-csi.md §34.5", "D398"]
+status = "planned"
+
+[[milestone.item]]
+what = "C3: node plugin restarts keep their devices: ublk user recovery and the plugin's state file"
+spec = ["31-csi.md §34.4", "D394", "G70"]
+status = "planned"
+
+[[milestone.item]]
+what = "C4: ReadOnlyMany: read-only snapshot attachments with no lease, in the client and hyperstor-ublk"
+spec = ["31-csi.md §34.5", "D395"]
+status = "planned"
+
+[[milestone.item]]
+what = "C5: the image on GitHub's registry, the Helm chart, release CI, the Kubernetes suite on kind, the operator guide"
+spec = ["31-csi.md §34.7", "31-csi.md §34.8", "D396", "G71"]
+status = "planned"
+
+[[milestone.item]]
+what = "C6: Kubernetes on glidex VMs: the controller through glidex's API, hot-plugged disks found by serial"
+spec = ["31-csi.md §34.9", "D390", "G72"]
+status = "planned"
+
+[[milestone]]
 id = "AD0"
 title = "Administration API, identities and CLI"
 

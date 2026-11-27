@@ -17,6 +17,7 @@
 - [Replication, recovery and failures](09-replication.md)
 - [Volume operations](10-volumes.md)
 - [Front ends](11-frontends.md)
+- [Kubernetes CSI driver](31-csi.md)
 - [GPU-direct storage](12-gpu.md)
 - [Internal protocol and transports](13-protocol.md)
 - [Networks](26-networks.md)
