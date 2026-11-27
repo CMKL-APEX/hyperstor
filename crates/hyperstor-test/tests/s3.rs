@@ -1038,7 +1038,7 @@ fn the_installer_binds_a_members_gateway_to_its_realm() {
     assert_eq!(at(&id1, &secret1, &["denied"]), "InvalidAccessKeyId");
 }
 
-/// Buckets as datasets (D387, D390, D391): CreateBucket asks the map
+/// Buckets as datasets (D387, D405, D406): CreateBucket asks the map
 /// service, so a name a volume of the key's project has is refused, and
 /// the project's `pool` holds the bucket's objects; `readonly=on` makes
 /// the gateway refuse writes while reads go on.

@@ -256,7 +256,7 @@ fn datasets_are_named_in_projects_and_inherit_properties() {
     c.hsfs(&["destroy", "acme"]).expect(2);
 }
 
-/// `readonly=on` (D390): the volume's primaries refuse clients' writes,
+/// `readonly=on` (D405): the volume's primaries refuse clients' writes,
 /// set on it or inherited from its project, while it still reads; the
 /// API refuses expanding and rolling it back; inherited back off, it
 /// takes writes again.

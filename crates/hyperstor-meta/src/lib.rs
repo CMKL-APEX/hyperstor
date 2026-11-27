@@ -453,7 +453,7 @@ pub enum Admin {
         revoked: Vec<certs::Revoked>,
         reply: hyperstor_reactor::chan::OneSender<Result<RevokedOn, String>>,
     },
-    /// Sets the read-only volumes (D390), by lineage and branch, and
+    /// Sets the read-only volumes (D405), by lineage and branch, and
     /// buckets, by tenant and name, answered once published. Replies with
     /// the working map's epoch.
     SyncReadonly {

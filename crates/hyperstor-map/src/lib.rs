@@ -445,11 +445,11 @@ pub struct ClusterMap {
     /// node reads the format.
     pub revoked: BTreeMap<String, RevokedCert>,
     /// Volumes whose dataset property `readonly` is on (29-hsfs.md §32.3,
-    /// D390), by lineage and branch, as their chunks are named: their
+    /// D405), by lineage and branch, as their chunks are named: their
     /// primaries refuse clients' writes. The map service works them out
     /// from the properties and the volumes.
     pub readonly: BTreeSet<(u128, u32)>,
-    /// Buckets whose `readonly` is on (D390), by tenant and name: S3
+    /// Buckets whose `readonly` is on (D405), by tenant and name: S3
     /// gateways refuse writes to their objects.
     pub readonly_buckets: BTreeSet<(u32, String)>,
     /// Devices an operator asked to convert to v0.0.8's shard format
@@ -1570,7 +1570,7 @@ impl ClusterMap {
         self.epoch
     }
 
-    /// Sets the read-only volumes and buckets (D390): true, and a new
+    /// Sets the read-only volumes and buckets (D405): true, and a new
     /// epoch, if that changes the map.
     pub fn set_readonly(
         &mut self,
@@ -2076,7 +2076,7 @@ impl ClusterMap {
         // project has moved; 22: pools that require capabilities (D371);
         // 23: the data path's TLS mode other than `off` (D373).
         // 24: revoked certificates (D384), only while there are any.
-        // 25: read-only volumes and buckets (D390), only while there are
+        // 25: read-only volumes and buckets (D405), only while there are
         // any.
         let format = if !self.readonly.is_empty() || !self.readonly_buckets.is_empty() {
             25
@@ -4395,7 +4395,7 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(DataTls::parse("on"), None);
     }
 
-    /// D390: read-only volumes travel in format 25, only while there are
+    /// D405: read-only volumes travel in format 25, only while there are
     /// any; a map without them keeps the format before.
     #[test]
     fn read_only_volumes_travel_only_while_there_are_any() {

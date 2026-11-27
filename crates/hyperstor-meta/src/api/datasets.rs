@@ -154,7 +154,7 @@ impl Api {
     }
 
     /// The volumes whose `readonly` is on, as their chunks are named
-    /// (D390): all but those a running copy or move writes to, which take
+    /// (D405): all but those a running copy or move writes to, which take
     /// it once it is done.
     #[allow(clippy::type_complexity)]
     async fn readonly_volumes(
@@ -219,7 +219,7 @@ impl Api {
         Ok((out, buckets))
     }
 
-    /// Puts the read-only volumes in the map (D390), answered once storage
+    /// Puts the read-only volumes in the map (D405), answered once storage
     /// nodes hold them.
     pub(super) async fn sync_readonly(&self) -> Result<(), ConnectError> {
         let (readonly, buckets) = self.readonly_volumes().await?;
@@ -238,7 +238,7 @@ impl Api {
         }
     }
 
-    /// Keeps the map's read-only volumes current on the leader (D390):
+    /// Keeps the map's read-only volumes current on the leader (D405):
     /// volumes made, cloned, copied or moved in a read-only project, and
     /// copies and moves that finished, are in it within 30 s.
     pub(super) async fn readonly_upkeep(self: Arc<Self>) {
@@ -255,7 +255,7 @@ impl Api {
         }
     }
 
-    /// Refuses `op` on volume `v` while its `readonly` is on (D390), as its
+    /// Refuses `op` on volume `v` while its `readonly` is on (D405), as its
     /// chunks' primaries refuse its writes: expanding, rolling back or
     /// flattening it would change what it reads.
     pub(super) async fn not_readonly(
@@ -606,7 +606,7 @@ impl DatasetService for Api {
         .await;
         let v = Self::audited(&who, "SetDatasetProperty", &target, r)?;
         // Storage nodes refuse a read-only volume's writes once they hold
-        // the map that says so (D390): answered then.
+        // the map that says so (D405): answered then.
         if req.name == "readonly" {
             self.sync_readonly().await?;
         }

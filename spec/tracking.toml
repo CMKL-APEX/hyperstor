@@ -1217,7 +1217,7 @@ tests = [
 
 [[milestone.item]]
 what = "hsfs H1, second part: `readonly=on` on a volume (set on it or inherited) makes its chunks' primaries refuse clients' writes while it still reads, and on a bucket its gateways refuse writes; both in the cluster map; expand, rollback and flatten refused; CreateBucket asks the map service (PrepareBucket) for the name among the project's datasets and the `pool`"
-spec = ["29-hsfs.md §32.3", "D387", "D390", "D391", "I460"]
+spec = ["29-hsfs.md §32.3", "D387", "D405", "D406", "I461"]
 status = "done"
 tests = [
     "datasets::a_read_only_volume_reads_and_refuses_writes",

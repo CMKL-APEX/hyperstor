@@ -1042,7 +1042,7 @@ fn allowed(caps: &[Capability], key: &WireKey, write: bool, now_unix: u64) -> Re
 }
 
 /// Why a write to `key` is refused, if it is a chunk of a volume whose
-/// `readonly` property is on (D390).
+/// `readonly` property is on (D405).
 fn read_only(map: &ClusterMap, key: &WireKey) -> Option<String> {
     if map.readonly.is_empty() {
         return None;
@@ -2529,7 +2529,7 @@ impl ShardState {
                 continue;
             }
             // A read-only volume's chunks take no client's writes of data
-            // (D390): dropping a snapshot's versions and flattening are the
+            // (D405): dropping a snapshot's versions and flattening are the
             // map service's to refuse. Peers (instance 0) carry what a
             // primary already decided.
             if instance != 0
