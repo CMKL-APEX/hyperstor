@@ -1643,8 +1643,16 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T2: the unauthenticated peers by address in `data-tls status`; a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity`"
-spec = ["30-data-path-tls.md §33.4", "30-data-path-tls.md §33.6", "D375", "D385"]
+what = "T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`)"
+spec = ["30-data-path-tls.md §33.4", "D373", "I455"]
+status = "done"
+tests = [
+    "hyperstor_ctl::tests::data_tls_status_names_who_would_be_cut_off",
+]
+
+[[milestone.item]]
+what = "T2: a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity`"
+spec = ["30-data-path-tls.md §33.6", "D375", "D385"]
 status = "planned"
 
 [[milestone.item]]

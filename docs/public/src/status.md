@@ -259,7 +259,8 @@ covered by tests that run on every change.
 | T2: authorization by certificate role on storage nodes and the map service (protocol version 10): clients', nodes' and the map service's messages, a node's reports only as itself, a host's name from its certificate, callers checking who answered; `require`, set only once every node that is up holds a certificate and refuses by it | Done |
 | T2: UDP pings keyed with the sealing key (protocol version 11), plain ones ignored in `require`; the TCP ping fallback authenticated | Done |
 | T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts | Done |
-| T2: the unauthenticated peers by address in `data-tls status`; a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
+| T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`) | Done |
+| T2: a `host` certificate for hyperstor-vhost on storage hosts that are no members; `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
 | T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
 
 ## AD0: Administration API, identities and CLI

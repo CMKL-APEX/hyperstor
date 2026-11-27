@@ -540,6 +540,13 @@ fn a_new_clusters_connections_authenticate() {
         |c: &Cluster| c.metric_sum("hyperstor_unauthenticated_connections_total", "");
     let s = c.ctl(&["data-tls", "status"]).ok();
     assert!(s.has("data path TLS: allow"), "{}", s.out);
+    // Every connection of a new cluster shows a certificate: the list of
+    // those that don't is empty, and says so.
+    assert!(
+        s.has("no address connected without a certificate"),
+        "{}",
+        s.out
+    );
     assert!(
         c.ctl(&["data-tls", "status", "--json"])
             .ok()

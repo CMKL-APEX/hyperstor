@@ -426,6 +426,16 @@ pub enum Msg {
         node: u32,
         name: String,
     },
+    /// Storage device to map service: the addresses whose connections it
+    /// served without a certificate in the last minutes, with how many
+    /// each (D373; 30-data-path-tls.md §33.4), every 10 s while the
+    /// cluster's mode is `allow`: who `require` would cut off. All of
+    /// them each time; an empty list clears the device's. Answered
+    /// `Noted`; an older map service refuses it as unknown.
+    Unauthenticated {
+        device: u32,
+        peers: Vec<(String, u32)>,
+    },
     /// Primary to backfill target: replace the object with the payload
     /// (empty: delete it) (09-replication.md §8.5).
     Push {
@@ -959,6 +969,7 @@ mod kind {
     pub const CAPABILITY: u16 = 102;
     pub const START_TLS: u16 = 103;
     pub const START_TLS_OK: u16 = 104;
+    pub const UNAUTHENTICATED: u16 = 105;
 }
 
 /// Who may send a message once connections authenticate (D377;
@@ -1071,6 +1082,7 @@ impl Msg {
             | Msg::EndpointDown { .. }
             | Msg::PortReport { .. }
             | Msg::NodeHost { .. }
+            | Msg::Unauthenticated { .. }
             | Msg::BackfillDone { .. }
             | Msg::DeviceFailed { .. }
             | Msg::MemberSlow { .. }
@@ -1114,6 +1126,7 @@ impl Msg {
             | Msg::DeviceSpace { device, .. }
             | Msg::DeviceKind { device, .. }
             | Msg::DeviceFormat { device, .. }
+            | Msg::Unauthenticated { device, .. }
             | Msg::PgSplit { device, .. } => Some(Claim::Device(*device)),
             Msg::PerfReport { report } => Some(Claim::Device(report.device)),
             _ => None,
@@ -1219,6 +1232,7 @@ impl Msg {
             Msg::StartTls => START_TLS,
             Msg::StartTlsOk => START_TLS_OK,
             Msg::NodeHost { .. } => NODE_HOST,
+            Msg::Unauthenticated { .. } => UNAUTHENTICATED,
             Msg::Lease { .. } => LEASE,
             Msg::LeaseOk { .. } => LEASE_OK,
             Msg::LeaseHeld { .. } => LEASE_HELD,
@@ -1405,6 +1419,11 @@ impl Msg {
             Msg::StartTls | Msg::StartTlsOk => {}
             Msg::NodeHost { node, name } => {
                 e.u32(*node).str(name);
+            }
+            Msg::Unauthenticated { device, peers } => {
+                e.u32(*device).seq(peers, |e, (addr, n)| {
+                    e.str(addr).u32(*n);
+                });
             }
             Msg::PortReport { node, ports } => {
                 e.u32(*node).seq(ports, |e, p| p.encode(e));
@@ -1910,6 +1929,10 @@ impl Msg {
             NODE_HOST => Msg::NodeHost {
                 node: d.u32()?,
                 name: d.str()?.to_string(),
+            },
+            UNAUTHENTICATED => Msg::Unauthenticated {
+                device: d.u32()?,
+                peers: d.seq(8, |d| Ok((d.str()?.to_string(), d.u32()?)))?,
             },
             PORT_REPORT => Msg::PortReport {
                 node: d.u32()?,
@@ -2844,6 +2867,10 @@ mod tests {
             Msg::NodeHost {
                 node: 2,
                 name: "storage-2".into(),
+            },
+            Msg::Unauthenticated {
+                device: 2000,
+                peers: vec![("192.0.2.7".into(), 3), ("2001:db8::7".into(), 1)],
             },
             Msg::HelloOk {
                 version: 1,

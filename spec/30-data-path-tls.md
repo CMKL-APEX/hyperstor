@@ -11,8 +11,8 @@ to run on real hosts; G67 holds on one host (I445). Stages T0 and T1 are
 built (01-implementation-notes.md I444, I445): connections authenticate
 in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
 connections are served by their certificate's role and `require` can be
-set (D377, I451), and pings are keyed (D379, I453); the list of
-unauthenticated peers is still to build. It delivers D25, which stays the rule.
+set (D377, I451), pings are keyed (D379, I453), and `data-tls status`
+lists who connects without a certificate (I455). It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -80,18 +80,19 @@ A cluster setting in the map, set with `hyperstorctl data-tls set`:
 | `allow` | asks whenever the peer speaks version 8 | authenticates who asks; still serves who doesn't |
 | `require` | asks, and drops a peer that refuses or speaks less | serves only `Hello`, `Ping` and `StartTls` before the handshake |
 
-`require` is refused by the map service until T2: without authorization
-by role it would promise a boundary that isn't there.
+`require` came with authorization by role (T2, I451): without it the
+mode would promise a boundary that isn't there.
 
 - An upgraded cluster starts `off`; a new install starts `allow`: the
   cluster file's `data-tls allow` line, which `hyperstor-install
   --all-in-one` writes, read when the first map is made.
-- **Before `require`**, the map service refuses the change while a node
-  that is up hasn't reported that it holds an identity and speaks
-  version 8. Clients can't be asked, so each node counts the
-  connections it serves unauthenticated, by peer address
-  (`hyperstor_unauthenticated_connections`), and `hyperstorctl data-tls
-  status` lists them: who would be cut off.
+- **Before `require`**, the map service asks every node that is up, and
+  refuses the change while one holds no identity or runs a build that
+  doesn't refuse by it (I451). Clients can't be asked, so each node
+  counts the connections it serves unauthenticated
+  (`hyperstor_unauthenticated_connections_total`) and tells the map
+  service their addresses; `hyperstorctl data-tls status` lists them:
+  who would be cut off (I455).
 - `require` to `allow` is always possible: the way back if a host was
   missed.
 - **Why three:** `allow` lets every host get its certificate and prove

@@ -69,6 +69,8 @@ enum MetaCmd {
     /// Forgets the primaries' space reports, as a new leader would.
     ForgetSpace,
     /// Splits a pool to the PG count given (D187).
+    /// The addresses nodes serve without a certificate (§33.4).
+    Unauthenticated(std::sync::mpsc::Sender<Vec<hyperstor_meta::UnauthenticatedPeer>>),
     /// Mirrors these revoked certificates into the map (D384).
     Revoke(
         Vec<hyperstor_meta::certs::Revoked>,
@@ -551,6 +553,9 @@ impl Cluster {
                         MetaCmd::DataTls(mode, tx) => {
                             let _ = tx.send(meta.set_data_tls(mode).await);
                         }
+                        MetaCmd::Unauthenticated(tx) => {
+                            let _ = tx.send(meta.unauthenticated_peers());
+                        }
                         MetaCmd::Revoke(list, tx) => {
                             let _ = tx.send(meta.revoke_on_data_path(list).await);
                         }
@@ -807,6 +812,13 @@ impl Cluster {
     ) -> Result<(u64, hyperstor_meta::DataTls), String> {
         let (tx, rx) = std::sync::mpsc::channel();
         assert!(self.meta_tx.send(MetaCmd::DataTls(mode, tx)).is_ok());
+        rx.recv().unwrap()
+    }
+
+    /// The addresses the leader has as served without a certificate.
+    fn unauthenticated(&self) -> Vec<hyperstor_meta::UnauthenticatedPeer> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        assert!(self.meta_tx.send(MetaCmd::Unauthenticated(tx)).is_ok());
         rx.recv().unwrap()
     }
 
@@ -10287,7 +10299,8 @@ fn a_pool_that_requires_capabilities_serves_only_what_a_client_shows() {
 /// authenticates and nodes say no when asked. In `allow`, nodes
 /// authenticate each other and the map service, a client with an identity
 /// is authenticated and one without is still served, and each node counts
-/// the connections it serves unauthenticated. I/O, replication, a node's
+/// the connections it serves unauthenticated and names their addresses to
+/// the map service. I/O, replication, a node's
 /// restart and the turn back to `off` go on throughout.
 #[test]
 fn connections_authenticate_when_the_cluster_allows_it() {
@@ -10419,11 +10432,39 @@ fn connections_authenticate_when_the_cluster_allows_it() {
                 // In `allow`, the client that came without an identity
                 // was served, and counted by the nodes it reached.
                 assert!(unauthenticated(&c) > in_allow, "{in_allow}");
+                // And named to the map service, by address, with the
+                // nodes that served it: within moments.
+                let t0 = std::time::Instant::now();
+                loop {
+                    let peers = c.unauthenticated();
+                    if let [p] = &peers[..]
+                        && p.addr == "127.0.0.1"
+                        && p.connections >= 1
+                        && !p.nodes.is_empty()
+                    {
+                        break;
+                    }
+                    assert!(
+                        t0.elapsed() < std::time::Duration::from_secs(20),
+                        "{peers:?}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
                 c.kill(1);
                 c.restart(1);
             }
             "off" => {
                 c.data_tls(DataTls::Off).unwrap();
+                // In `off` nobody shows a certificate: the list empties.
+                let t0 = std::time::Instant::now();
+                while !c.unauthenticated().is_empty() {
+                    assert!(
+                        t0.elapsed() < std::time::Duration::from_secs(20),
+                        "{:?}",
+                        c.unauthenticated()
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
             }
             _ => break,
         }
