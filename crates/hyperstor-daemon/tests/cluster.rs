@@ -10534,6 +10534,10 @@ fn sessions_stay_encrypted_on_networks_not_marked_trusted() {
     let lo = |trusted| {
         Some(hyperstor_meta::NetworkDef::parse("data", trusted, "subnet 127.0.0.0/8").unwrap())
     };
+    // Encryption is turned on once nodes take TLS, so each can be tried
+    // (D414).
+    let e = c.data_tls_encrypt(DataTls::Off, Some(true)).unwrap_err();
+    assert!(e.contains("set the mode to allow first"), "{e}");
     c.data_tls(DataTls::Allow).unwrap();
     c.network("lo", lo(false));
     let encrypted = |c: &Cluster| -> Vec<u64> {
@@ -10630,6 +10634,15 @@ fn sessions_stay_encrypted_on_networks_not_marked_trusted() {
     loop {
         match step_rx.recv().unwrap() {
             "encrypt" => {
+                // A node whose kernel lacks TLS can't keep an encrypted
+                // session: refused, named (D414).
+                c.older.set_no_ktls(1, true);
+                let e = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap_err();
+                assert!(
+                    e.contains("storage node(s) 1 couldn't keep an encrypted session"),
+                    "{e}"
+                );
+                c.older.set_no_ktls(1, false);
                 let (_, mode, was) = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap();
                 assert_eq!((mode, was), (DataTls::Allow, false));
             }

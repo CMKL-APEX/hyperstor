@@ -1706,9 +1706,13 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T3: an installer check that the kernel has TLS (D407); G69's cost is measured (I462)"
-spec = ["30-data-path-tls.md §33.10", "G69", "D407", "I462"]
-status = "planned"
+what = "T3: the installer loads the kernel's `tls` module and checks it (`ktls`); `--encrypt on` refused until every node that is up keeps an encrypted session (D414, I463); G69's cost is measured (I462)"
+spec = ["30-data-path-tls.md §33.10", "30-data-path-tls.md §33.11", "G69", "D407", "D414", "I462", "I463"]
+status = "done"
+tests = [
+    "install::check_reports_every_item",
+    "install::install_is_convergent_and_uninstall_keeps_configuration",
+]
 
 [[milestone]]
 id = "HS21"

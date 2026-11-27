@@ -267,7 +267,7 @@ covered by tests that run on every change.
 | T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`) | Done |
 | T2: `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
 | T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again | Done |
-| T3: an installer check that the kernel has TLS (D407); G69's cost is measured (I462) | Planned |
+| T3: the installer loads the kernel's `tls` module and checks it (`ktls`); `--encrypt on` refused until every node that is up keeps an encrypted session (D414, I463); G69's cost is measured (I462) | Done |
 
 ## HS21: Kubernetes CSI driver
 

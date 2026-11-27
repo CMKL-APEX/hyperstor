@@ -139,6 +139,15 @@ fn bad() -> io::Error {
     )
 }
 
+/// Whether this kernel has TLS as a TCP upper layer now: the `tls`
+/// module loaded, or built in. Linux loads it on demand only for a
+/// process with CAP_NET_ADMIN; without it, [`enable`] fails with ENOENT
+/// (D414).
+pub fn available() -> bool {
+    std::fs::read_to_string("/proc/sys/net/ipv4/tcp_available_ulp")
+        .is_ok_and(|u| u.split_whitespace().any(|n| n == "tls"))
+}
+
 /// Hands a kept session to the kernel: `TCP_ULP tls`, then the keys of
 /// each direction. On an error the connection is no longer usable (some
 /// of it may be set) and must be closed.

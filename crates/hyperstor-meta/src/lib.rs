@@ -4779,11 +4779,39 @@ impl Meta {
         Ok(())
     }
 
-    /// Whether sessions may be encrypted (D405), or why not: every
-    /// storage node that is up runs a build that keeps them, and so
-    /// reads the map's format 25. Each is asked its build with a `Hello`
-    /// on a connection of its own.
-    async fn may_encrypt(self: &Rc<Self>) -> Result<(), String> {
+    /// Whether sessions may be encrypted (D405, D414), or why not, in
+    /// mode `mode`: the mode is `allow` or `require` already, so nodes
+    /// take TLS; this member's kernel has TLS; and every storage node
+    /// that is up runs a build that keeps sessions, and so reads the
+    /// map's format 25, and keeps one now. Each is asked its build with
+    /// a `Hello` on a connection of its own, then asked to keep an
+    /// encrypted session on another: one whose kernel lacks the `tls`
+    /// module drops it (Linux loads the module only for a process with
+    /// CAP_NET_ADMIN, which the services lack).
+    async fn may_encrypt(self: &Rc<Self>, mode: DataTls) -> Result<(), String> {
+        let Some(tls) = self
+            .tls
+            .borrow()
+            .as_ref()
+            .map(|t| t.calling(false).encrypting(true))
+        else {
+            return Err("this map service member holds no certificate for the data path".into());
+        };
+        if mode == DataTls::Off
+            || self.published.borrow().data_tls == DataTls::Off
+            || self.map.borrow().data_tls == DataTls::Off
+        {
+            return Err(
+                "set the mode to allow first: encryption is turned on once nodes take TLS, and each is tried"
+                    .into(),
+            );
+        }
+        if !hyperstor_rpc::ktls::available() {
+            return Err(
+                "this map service member's kernel has no TLS loaded: modprobe tls (hyperstor-install loads it)"
+                    .into(),
+            );
+        }
         let targets: Vec<(u32, SocketAddr)> = {
             let map = self.published.borrow();
             map.devices
@@ -4795,6 +4823,7 @@ impl Meta {
         let asked: Vec<_> = targets
             .into_iter()
             .map(|(node, addr)| {
+                let tls = tls.clone();
                 let task = hyperstor_reactor::spawn(async move {
                     let hello = hyperstor_proto::Msg::Hello {
                         min_version: hyperstor_proto::OLDEST_VERSION,
@@ -4812,16 +4841,45 @@ impl Meta {
                     .ok()?;
                     let v = c.version();
                     c.kill();
-                    Some(v)
+                    if v < hyperstor_proto::ENCRYPT_VERSION {
+                        return Some((v, false));
+                    }
+                    // Kept, and a ping answered through it: a node that
+                    // failed to hand the session to its kernel has
+                    // dropped it by then.
+                    let kept = match hyperstor_rpc::Conn::open(
+                        addr,
+                        hyperstor_rpc::CONNECT_TIMEOUT,
+                        &hello,
+                        Some(&tls),
+                    )
+                    .await
+                    {
+                        Ok((c, _)) => {
+                            let ok = c.encrypted()
+                                && c.call_within(
+                                    &hyperstor_proto::Msg::Ping,
+                                    &[],
+                                    hyperstor_rpc::CONNECT_TIMEOUT,
+                                )
+                                .await
+                                .is_ok();
+                            c.kill();
+                            ok
+                        }
+                        Err(_) => false,
+                    };
+                    Some((v, kept))
                 });
                 (node, task)
             })
             .collect();
-        let (mut silent, mut old) = (Vec::new(), Vec::new());
+        let (mut silent, mut old, mut plain) = (Vec::new(), Vec::new(), Vec::new());
         for (node, task) in asked {
             match task.await {
                 None => silent.push(node.to_string()),
-                Some(v) if v < hyperstor_proto::ENCRYPT_VERSION => old.push(node.to_string()),
+                Some((v, _)) if v < hyperstor_proto::ENCRYPT_VERSION => old.push(node.to_string()),
+                Some((_, false)) => plain.push(node.to_string()),
                 Some(_) => {}
             }
         }
@@ -4829,6 +4887,12 @@ impl Meta {
             return Err(format!(
                 "storage node(s) {} run a build that can't encrypt sessions: upgrade them first",
                 old.join(", ")
+            ));
+        }
+        if !plain.is_empty() {
+            return Err(format!(
+                "storage node(s) {} couldn't keep an encrypted session: their kernel needs the tls module (modprobe tls; hyperstor-install check)",
+                plain.join(", ")
             ));
         }
         if !silent.is_empty() {
@@ -4861,7 +4925,7 @@ impl Meta {
             }
         }
         if encrypt == Some(true) && !self.map.borrow().data_tls_encrypt {
-            self.may_encrypt().await?;
+            self.may_encrypt(mode).await?;
             if !self.leads() {
                 return Err(self.not_leader());
             }
