@@ -72,6 +72,15 @@ pub struct ShardMetrics {
     /// Times the reactor's thread was held for [`crate::STALL`] or more,
     /// which delays every ping it answers (I188).
     pub stalls: AtomicU64,
+    /// The reactor's loop (D41), copied from `hyperstor_reactor::stats`
+    /// on every tick of the stall watch.
+    pub reactor_passes: AtomicU64,
+    pub reactor_enters: AtomicU64,
+    pub reactor_sleeps: AtomicU64,
+    pub spin_hits: AtomicU64,
+    pub spin_misses: AtomicU64,
+    pub spin_ns: AtomicU64,
+    pub spin_window_ns: AtomicU64,
     /// Reads abandoned on the read timeout (D190).
     pub read_timeouts: AtomicU64,
     /// Of those, reads a member's copy answered for the primary (D190).
@@ -110,6 +119,17 @@ pub struct ShardMetrics {
 impl ShardMetrics {
     pub fn add(c: &AtomicU64, n: u64) {
         c.fetch_add(n, Relaxed);
+    }
+
+    /// Copies the reactor's counters, which only grow.
+    pub fn note_reactor(&self, s: hyperstor_reactor::Stats) {
+        self.reactor_passes.store(s.passes, Relaxed);
+        self.reactor_enters.store(s.enters, Relaxed);
+        self.reactor_sleeps.store(s.sleeps, Relaxed);
+        self.spin_hits.store(s.spin_hits, Relaxed);
+        self.spin_misses.store(s.spin_misses, Relaxed);
+        self.spin_ns.store(s.spin_ns, Relaxed);
+        self.spin_window_ns.store(s.window_ns, Relaxed);
     }
 }
 
@@ -172,6 +192,30 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "counter",
         "Times the reactor's thread was held 100 ms or more, delaying every request and ping it serves.",
         &|m| vec![("", g(&m.stalls))],
+    );
+    family(
+        "hyperstor_reactor_passes_total",
+        "counter",
+        "Passes of the reactor's loop: the tasks ready run, then one call into the kernel.",
+        &|m| vec![("", g(&m.reactor_passes))],
+    );
+    family(
+        "hyperstor_reactor_enters_total",
+        "counter",
+        "The reactor's calls into the kernel, by kind: polls, which don't wait, and sleeps, which wait for a completion.",
+        &|m| {
+            let sleeps = g(&m.reactor_sleeps);
+            vec![
+                ("poll", g(&m.reactor_enters).saturating_sub(sleeps)),
+                ("sleep", sleeps),
+            ]
+        },
+    );
+    family(
+        "hyperstor_reactor_spins_total",
+        "counter",
+        "Times the reactor polled idle instead of sleeping (--spin-us), by how it ended: work came (hit) or the window ran out and it slept (miss).",
+        &|m| vec![("hit", g(&m.spin_hits)), ("miss", g(&m.spin_misses))],
     );
     family(
         "hyperstor_read_timeouts_total",
@@ -300,6 +344,24 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
         "Connections refused a request because their certificate's role may not send it, or because they showed none while the cluster requires authenticated connections.",
         &|m| vec![("", g(&m.refused))],
     );
+    o.push_str(
+        "# HELP hyperstor_reactor_spin_seconds_total Time the reactor spent polling idle instead of sleeping.\n# TYPE hyperstor_reactor_spin_seconds_total counter\n",
+    );
+    for (dev, m) in shards {
+        o.push_str(&format!(
+            "hyperstor_reactor_spin_seconds_total{{node=\"{node}\",device=\"{dev}\"}} {}\n",
+            g(&m.spin_ns) as f64 / 1e9
+        ));
+    }
+    o.push_str(
+        "# HELP hyperstor_reactor_spin_window_seconds The reactor's spin window now: --spin-us, or where the adaptive window stands.\n# TYPE hyperstor_reactor_spin_window_seconds gauge\n",
+    );
+    for (dev, m) in shards {
+        o.push_str(&format!(
+            "hyperstor_reactor_spin_window_seconds{{node=\"{node}\",device=\"{dev}\"}} {}\n",
+            g(&m.spin_window_ns) as f64 / 1e9
+        ));
+    }
     let mut hist = String::new();
     hist.push_str(
         "# HELP hyperstor_request_duration_seconds Time from a client request's arrival to its answer; writes include every replica.\n# TYPE hyperstor_request_duration_seconds histogram\n",
@@ -407,6 +469,10 @@ mod tests {
         assert!(t.contains("hyperstor_device_free_bytes{node=\"4\",device=\"4001\"} 1073741824\n"));
         assert!(t.contains("hyperstor_reactor_stalls_total{node=\"4\",device=\"4001\"} 0\n"));
         assert!(t.contains(
+            "hyperstor_reactor_enters_total{node=\"4\",device=\"4001\",kind=\"sleep\"} 0\n"
+        ));
+        assert!(t.contains("hyperstor_reactor_spin_seconds_total{node=\"4\",device=\"4001\"} 0\n"));
+        assert!(t.contains(
             "hyperstor_read_timeouts_total{node=\"4\",device=\"4001\",kind=\"from_member\"} 0\n"
         ));
         assert!(t.contains(
@@ -420,7 +486,7 @@ mod tests {
         ));
         assert!(t.contains("hyperstor_revoked_connections_total{node=\"4\",device=\"4000\"} 0\n"));
         assert!(t.contains("hyperstor_refused_connections_total{node=\"4\",device=\"4000\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 24);
+        assert_eq!(t.matches("# TYPE ").count(), 29);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {

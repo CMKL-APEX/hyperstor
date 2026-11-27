@@ -565,6 +565,11 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                         let _ = hyperstor_reactor::pin_to_cpu(c);
                     }
                     hyperstor_reactor::set_spin(spin);
+                    // For measurements only (HS5b): the window as a ceiling
+                    // the reactor adapts under.
+                    hyperstor_reactor::set_spin_adaptive(
+                        std::env::var_os("HS_SPIN_ADAPTIVE").is_some_and(|v| v == "1"),
+                    );
                     let may_format = sh.device.formats_itself();
                     let kind = sh.device.kind();
                     // A block device's drive is read for the leader (D220).
@@ -1759,6 +1764,7 @@ impl ShardState {
             let window = t.elapsed();
             let now = sched.as_ref().and_then(thread_sched);
             let slowest = hyperstor_reactor::take_slowest();
+            self.metrics.note_reactor(hyperstor_reactor::stats());
             let late = window.saturating_sub(TICK);
             if late >= STALL {
                 metrics::ShardMetrics::add(&self.metrics.stalls, 1);
