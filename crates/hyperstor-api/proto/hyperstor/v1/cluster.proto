@@ -117,9 +117,17 @@ service ClusterService {
   // again (the cluster's: `idle`, D238). Write.
   rpc SetLending(SetLendingRequest) returns (SetLendingResponse);
   // Sets whether connections on the storage network authenticate with
-  // the cluster's certificates (04-decisions.md D373): "off" or "allow".
-  // Connections already open stay as they are. Write.
+  // the cluster's certificates (04-decisions.md D373, D377): "off",
+  // "allow" or "require". "require" is refused unless the mode is
+  // "allow" and every storage node that is up holds a certificate and
+  // refuses by it. Connections already open stay open and are served by
+  // the new mode. Write.
   rpc SetDataTls(SetDataTlsRequest) returns (SetDataTlsResponse);
+
+  // That mode and, from the leader, the addresses storage nodes serve
+  // without a certificate while it is "allow" (30-data-path-tls.md
+  // §33.4): who "require" would cut off. Read.
+  rpc GetDataTls(GetDataTlsRequest) returns (GetDataTlsResponse);
 
   // An orchestrator claims a port for `ttl_secs` (26-networks.md §29.9,
   // D205, D239): exclusive, storage leaves it; shared, storage may stay;
@@ -1025,9 +1033,31 @@ message SetPortRoleRequest {
 }
 
 message SetDataTlsRequest {
-  // "off", "allow" or "require" (not offered yet: it comes with
-  // authorization by certificate role).
+  // "off", "allow" or "require".
   string mode = 1;
+}
+
+message GetDataTlsRequest {}
+
+// An address storage nodes served without a certificate in the last ten
+// minutes.
+message UnauthenticatedPeer {
+  // Its IP address.
+  string addr = 1;
+  // Connections from it served so, summed over the nodes.
+  uint32 connections = 2;
+  // The storage nodes that served it.
+  repeated uint32 nodes = 3;
+}
+
+message GetDataTlsResponse {
+  // "off", "allow" or "require".
+  string data_tls = 1 [json_name = "data_tls"];
+  // By address. Empty in "off", where nobody shows a certificate, and in
+  // "require", where such connections are refused.
+  repeated UnauthenticatedPeer unauthenticated = 2;
+  // Whether this member holds the nodes' reports: only the leader does.
+  bool unauthenticated_known = 3 [json_name = "unauthenticated_known"];
 }
 
 message SetDataTlsResponse {

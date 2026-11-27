@@ -478,6 +478,9 @@ pub enum Admin {
         any: bool,
         reply: hyperstor_reactor::chan::OneSender<Result<u64, String>>,
     },
+    /// The addresses storage nodes serve without a certificate (§33.4),
+    /// as the leader holds their reports; only the leader has them.
+    Unauthenticated(hyperstor_reactor::chan::OneSender<Result<Vec<UnauthenticatedPeer>, String>>),
     /// The ports nodes reported, as the leader holds them, with the
     /// published map; only the leader has them.
     Ports(hyperstor_reactor::chan::OneSender<Result<PortsView, String>>),
@@ -1006,6 +1009,9 @@ pub struct Meta {
     /// The revoked certificates the cluster API last gave (D384), for a
     /// member without a replicated store to read them from.
     revoked_given: RefCell<Vec<certs::Revoked>>,
+    /// Each device's last report of the addresses it serves without a
+    /// certificate (§33.4), and when it came: the leader's, in memory.
+    unauthenticated: RefCell<BTreeMap<u32, UnauthenticatedReport>>,
     /// Members' reports of marked PGs split (D187): the PG epoch they name
     /// and who reported.
     split_reports: RefCell<SplitReports>,
@@ -1116,6 +1122,27 @@ pub type Stuck = Vec<(u32, u32, u32, u64)>;
 /// How long a device's stuck report counts: devices send one about every
 /// second while any PG is stuck.
 const STUCK_FOR: Duration = Duration::from_secs(3);
+
+/// A device's report of the addresses it serves without a certificate,
+/// each with its connections, and when it came.
+type UnauthenticatedReport = (Instant, Vec<(String, u32)>);
+
+/// How many addresses one device's report may name: more is a flood,
+/// and the count per node says so already.
+pub const UNAUTHENTICATED_MAX: usize = 256;
+/// How long a device's report counts: three of its periods.
+const UNAUTHENTICATED_FOR: Duration = Duration::from_secs(30);
+
+/// An address storage nodes serve without a certificate (D373;
+/// 30-data-path-tls.md §33.4): who mode `require` would cut off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnauthenticatedPeer {
+    pub addr: String,
+    /// Connections from it served so, summed over the nodes.
+    pub connections: u32,
+    /// The storage nodes that served it.
+    pub nodes: Vec<u32>,
+}
 
 /// Where a revocation is in force on the data path (D384).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1311,6 +1338,7 @@ impl Meta {
             started: Cell::new(Instant::now()),
             acked: RefCell::new(HashMap::new()),
             revoked_given: RefCell::new(Vec::new()),
+            unauthenticated: RefCell::new(BTreeMap::new()),
             down_out: Cell::new(DOWN_OUT),
             down_since: RefCell::new(HashMap::new()),
             damping: RefCell::new(HashMap::new()),
@@ -3678,6 +3706,13 @@ impl Meta {
                 Admin::SetPortRole { port, role, reply } => {
                     self.reply_published(reply, self.set_port_role(&port, role), |e| e);
                 }
+                Admin::Unauthenticated(reply) => {
+                    let _ = reply.send(if self.leads() {
+                        Ok(self.unauthenticated_peers())
+                    } else {
+                        Err(self.not_leader())
+                    });
+                }
                 Admin::Ports(reply) => {
                     let _ = reply.send(if self.leads() {
                         Ok((self.ports_seen(), (*self.published.borrow()).clone()))
@@ -4462,6 +4497,41 @@ impl Meta {
         Ok(c)
     }
 
+    /// The addresses storage nodes that are up reported serving without
+    /// a certificate, by address, from reports no older than 30 s; none
+    /// unless the mode is `allow`.
+    pub fn unauthenticated_peers(&self) -> Vec<UnauthenticatedPeer> {
+        let map = self.published.borrow();
+        // Only `allow` serves such connections knowingly: in `off`
+        // nobody shows a certificate, in `require` they are refused. A
+        // report from before the change (a node restarted since sends no
+        // empty one) says nothing of now.
+        if map.data_tls != DataTls::Allow {
+            return Vec::new();
+        }
+        let mut by: BTreeMap<String, (u32, BTreeSet<u32>)> = BTreeMap::new();
+        for (dev, (at, peers)) in self.unauthenticated.borrow().iter() {
+            let Some(node) = map.devices.get(dev).map(|d| d.node) else {
+                continue;
+            };
+            if at.elapsed() > UNAUTHENTICATED_FOR || !map.nodes.get(&node).is_some_and(|n| n.up) {
+                continue;
+            }
+            for (addr, n) in peers {
+                let e = by.entry(addr.clone()).or_default();
+                e.0 = e.0.saturating_add(*n);
+                e.1.insert(node);
+            }
+        }
+        by.into_iter()
+            .map(|(addr, (connections, nodes))| UnauthenticatedPeer {
+                addr,
+                connections,
+                nodes: nodes.into_iter().collect(),
+            })
+            .collect()
+    }
+
     /// Mirrors the revoked certificates into the map (D384) and returns
     /// once storage nodes hold them, or can no longer serve by an older
     /// map, as a blocklisting does: where the list is now. `revoked` is
@@ -4806,6 +4876,7 @@ impl Meta {
                     | Msg::PgUsage { .. }
                     | Msg::PerfReport { .. }
                     | Msg::PortReport { .. }
+                    | Msg::Unauthenticated { .. }
                     | Msg::NodeHost { .. })
             )
         {
@@ -4921,6 +4992,18 @@ impl Meta {
                 if self.beats.borrow().contains_key(&node) {
                     self.fabric.borrow_mut().note(node, ports, Instant::now());
                 }
+                Msg::Noted {
+                    map_epoch: self.published.borrow().epoch,
+                }
+            }
+            // Who a device serves without a certificate (§33.4): its
+            // whole list each time, kept by the leader in memory.
+            Ok(Msg::Unauthenticated { device, mut peers }) => {
+                peers.truncate(UNAUTHENTICATED_MAX);
+                peers.retain(|(a, _)| a.len() <= 64);
+                self.unauthenticated
+                    .borrow_mut()
+                    .insert(device, (Instant::now(), peers));
                 Msg::Noted {
                     map_epoch: self.published.borrow().epoch,
                 }

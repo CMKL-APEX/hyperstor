@@ -1046,6 +1046,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("ClusterService.SetEndpoints", "device endpoints"),
     ("ClusterService.SetNetwork", "network set, network remove"),
     ("ClusterService.ListPorts", "port list"),
+    ("ClusterService.GetDataTls", "data-tls status"),
     ("ClusterService.SetPortRole", "port role"),
     ("ClusterService.SetLending", "port lending"),
     ("ClusterService.SetDataTls", "data-tls set"),
@@ -1406,6 +1407,40 @@ pub fn data_tls_text(mode: &str) -> String {
         "data path TLS: {}: {what}\n",
         if mode.is_empty() { "off" } else { mode }
     )
+}
+
+/// `hyperstorctl data-tls status`: the mode, and in `allow` who storage
+/// nodes serve without a certificate (30-data-path-tls.md §33.4).
+pub fn data_tls_status_text(r: &pb::GetDataTlsResponse) -> String {
+    let mut o = data_tls_text(&r.data_tls);
+    if r.data_tls != "allow" {
+        return o;
+    }
+    if !r.unauthenticated_known {
+        o.push_str(
+            "who connects without a certificate: only the map service's leader knows; ask it\n",
+        );
+        return o;
+    }
+    if r.unauthenticated.is_empty() {
+        o.push_str("no address connected without a certificate in the last ten minutes: `require` would cut nobody off that storage nodes have seen\n");
+        return o;
+    }
+    o.push_str(
+        "connected without a certificate in the last ten minutes (`require` would cut them off):\n",
+    );
+    let _ = writeln!(o, "{:<40} {:>11}  NODES", "ADDRESS", "CONNECTIONS");
+    for p in &r.unauthenticated {
+        let nodes: Vec<String> = p.nodes.iter().map(|n| n.to_string()).collect();
+        let _ = writeln!(
+            o,
+            "{:<40} {:>11}  {}",
+            p.addr,
+            p.connections,
+            nodes.join(",")
+        );
+    }
+    o
 }
 
 /// `hyperstorctl sealing-key list`.
@@ -2499,6 +2534,55 @@ mod tests {
     }
 
     use super::*;
+
+    /// §33.4: `data-tls status` names who `require` would cut off, in
+    /// `allow` only, and says when it can't know.
+    #[test]
+    fn data_tls_status_names_who_would_be_cut_off() {
+        let peer = |addr: &str, connections: u32, nodes: &[u32]| pb::UnauthenticatedPeer {
+            addr: addr.into(),
+            connections,
+            nodes: nodes.to_vec(),
+            ..Default::default()
+        };
+        let status = |mode: &str, known: bool, peers: Vec<pb::UnauthenticatedPeer>| {
+            data_tls_status_text(&pb::GetDataTlsResponse {
+                data_tls: mode.into(),
+                unauthenticated: peers,
+                unauthenticated_known: known,
+                ..Default::default()
+            })
+        };
+        let t = status(
+            "allow",
+            true,
+            vec![peer("192.0.2.7", 12, &[0, 2]), peer("2001:db8::7", 1, &[1])],
+        );
+        assert!(t.starts_with("data path TLS: allow: "), "{t}");
+        assert!(t.contains("`require` would cut them off"), "{t}");
+        let rows: Vec<Vec<&str>> = t
+            .lines()
+            .skip(3)
+            .map(|l| l.split_whitespace().collect())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                vec!["192.0.2.7", "12", "0,2"],
+                vec!["2001:db8::7", "1", "1"]
+            ],
+            "{t}"
+        );
+        // Nobody; a member that isn't the leader; and no list in the
+        // other modes, whatever came.
+        assert!(status("allow", true, vec![]).contains("no address connected without"));
+        let t = status("allow", false, vec![]);
+        assert!(t.contains("only the map service's leader knows"), "{t}");
+        for mode in ["off", "require"] {
+            let t = status(mode, true, vec![peer("192.0.2.7", 1, &[0])]);
+            assert_eq!(t.lines().count(), 1, "{t}");
+        }
+    }
 
     fn status(degraded: bool) -> pb::GetStatusResponse {
         let mut m = hyperstor_meta::parse_cluster(

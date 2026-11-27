@@ -431,8 +431,11 @@ To move a cluster to `require`:
 
 1. Set `allow`, and give every client a certificate (VM hosts join
    with a `host` token; see Installation).
-2. Watch `hyperstor_unauthenticated_connections_total` on every node:
-   while it rises, something still connects without one.
+2. Run `hyperstorctl data-tls status`: it lists the addresses storage
+   nodes served without a certificate in the last ten minutes, with
+   the nodes that served them. `hyperstor_unauthenticated_connections_total`
+   on each node counts the same connections; while it rises, something
+   still connects without one.
 3. `hyperstorctl data-tls set --mode require`. It is refused, with the
    nodes named, while a storage node that is up runs a release from
    before it or holds no certificate: that node would be cut off by

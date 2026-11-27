@@ -328,6 +328,8 @@ const UDP_PONG: [u8; 4] = *b"HSP!";
 const UDP_KEYED_PING: [u8; 4] = *b"HSK?";
 const UDP_KEYED_PONG: [u8; 4] = *b"HSK!";
 const UDP_PLAIN_LEN: usize = 12;
+/// How many addresses served without a certificate a device remembers.
+const UNAUTHENTICATED_KEPT: usize = 256;
 const UDP_KEYED_LEN: usize = 17 + hyperstor_pki::seal::PING_MAC_LEN;
 
 /// A keyed ping or answer.
@@ -680,6 +682,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().port_report(node, every));
                             spawn(st.clone().host_report(node));
                         }
+                        spawn(st.clone().unauthenticated_report());
                         rx.recv().await;
                         Ok::<(), String>(())
                     })?;
@@ -756,6 +759,10 @@ struct ShardState {
     udp_pings: RefCell<HashMap<u64, (SocketAddr, std::time::Instant, u32)>>,
     /// When each path last answered one of them in time.
     udp_pongs: RefCell<HashMap<SocketAddr, std::time::Instant>>,
+    /// The addresses whose connections this device served without a
+    /// certificate (D373): how many, and when last. Reported to the map
+    /// service ([`ShardState::unauthenticated_report`]).
+    unauthenticated: RefCell<HashMap<std::net::IpAddr, (u32, std::time::Instant)>>,
     batches: Cell<u64>,
     /// Backfills this primary is running: (pool, pg, target) -> whether a
     /// write or push to the target failed meanwhile (the copy may then be
@@ -1541,6 +1548,7 @@ impl ShardState {
             udp: RefCell::new(None),
             udp_pings: RefCell::new(HashMap::new()),
             udp_pongs: RefCell::new(HashMap::new()),
+            unauthenticated: RefCell::new(HashMap::new()),
             batches: Cell::new(0),
             backfills: RefCell::new(HashMap::new()),
             fill_inflight: RefCell::new(HashMap::new()),
@@ -2508,6 +2516,15 @@ impl ShardState {
             {
                 counted = true;
                 metrics::ShardMetrics::add(&self.metrics.unauthenticated, 1);
+                if let Ok(a) = s.peer_addr() {
+                    let mut seen = self.unauthenticated.borrow_mut();
+                    // A flood of addresses is the count's to show.
+                    if seen.len() < UNAUTHENTICATED_KEPT || seen.contains_key(&a.ip()) {
+                        let e = seen.entry(a.ip()).or_insert((0, std::time::Instant::now()));
+                        e.0 = e.0.saturating_add(1);
+                        e.1 = std::time::Instant::now();
+                    }
+                }
             }
             match msg {
                 Msg::StartTls => {
@@ -5592,6 +5609,48 @@ impl ShardState {
                 .client
                 .call_meta(&Msg::PortReport { node, ports })
                 .await;
+        }
+    }
+
+    /// Tells the map service which addresses this device served without
+    /// a certificate in the last ten minutes (D373; 30-data-path-tls.md
+    /// §33.4), while the cluster's mode is `allow`: the list an operator
+    /// reads before `require`. Every 10 s, and within a second of a new
+    /// address; once, empty, within a second of the mode leaving `allow`
+    /// or the last address ageing out. Best effort: an older map service refuses
+    /// it, and the count per node stays.
+    async fn unauthenticated_report(self: Rc<Self>) {
+        const EVERY: Duration = Duration::from_secs(10);
+        const KEPT_FOR: Duration = Duration::from_secs(600);
+        let mut sent = std::time::Instant::now();
+        let mut last: Vec<(String, u32)> = Vec::new();
+        loop {
+            sleep(Duration::from_secs(1)).await;
+            if self.cut_off() {
+                continue;
+            }
+            let allow = self.map().data_tls == hyperstor_meta::DataTls::Allow;
+            let mut peers: Vec<(String, u32)> = {
+                let mut seen = self.unauthenticated.borrow_mut();
+                seen.retain(|_, (_, at)| allow && at.elapsed() <= KEPT_FOR);
+                seen.iter().map(|(a, (n, _))| (a.to_string(), *n)).collect()
+            };
+            peers.sort();
+            let new_address = peers.iter().any(|(a, _)| !last.iter().any(|(b, _)| a == b));
+            let cleared = peers.is_empty() && !last.is_empty();
+            let due = sent.elapsed() >= EVERY && !peers.is_empty();
+            if !new_address && !cleared && !due {
+                continue;
+            }
+            sent = std::time::Instant::now();
+            let report = Msg::Unauthenticated {
+                device: self.me,
+                peers: peers.clone(),
+            };
+            // Taken or not (no leader, an older map service): the next
+            // is due in its time, not at once.
+            let _ = self.client.call_meta(&report).await;
+            last = peers;
         }
     }
 

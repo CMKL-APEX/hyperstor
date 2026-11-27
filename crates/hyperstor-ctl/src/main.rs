@@ -2680,10 +2680,10 @@ where
         }
         "data-tls status" => {
             let s = client
-                .get_status(pb::GetStatusRequest::default())
+                .get_data_tls(pb::GetDataTlsRequest::default())
                 .await?
                 .into_owned();
-            show(a, &s, || data_tls_text(&s.data_tls));
+            show(a, &s, || data_tls_status_text(&s));
             Next::Exit(0)
         }
         "data-tls set" => {

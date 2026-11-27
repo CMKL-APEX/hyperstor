@@ -2096,6 +2096,41 @@ impl ClusterService for Api {
         .into())
     }
 
+    async fn get_data_tls(
+        &self,
+        ctx: RequestContext,
+        _req: ServiceRequest<'_, pb::GetDataTlsRequest>,
+    ) -> ServiceResult<pb::GetDataTlsResponse> {
+        self.authorize(&ctx, "GetDataTls", "data path TLS", false)?;
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Unauthenticated(reply))
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        // Only the leader holds the reports; any member has the mode.
+        let peers = rx
+            .recv()
+            .await
+            .ok_or_else(|| ConnectError::unavailable("map service stopped"))?
+            .ok();
+        let (map, ..) = self.published().await?;
+        Ok(pb::GetDataTlsResponse {
+            data_tls: map.data_tls.as_str().into(),
+            unauthenticated_known: peers.is_some(),
+            unauthenticated: peers
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| pb::UnauthenticatedPeer {
+                    addr: p.addr,
+                    connections: p.connections,
+                    nodes: p.nodes,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into())
+    }
+
     async fn set_data_tls(
         &self,
         ctx: RequestContext,
