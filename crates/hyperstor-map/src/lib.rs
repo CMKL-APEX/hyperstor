@@ -83,7 +83,7 @@ impl DataTls {
 
 impl ClusterMap {
     /// Whether an authenticated session to or from `ip` stays encrypted
-    /// (D25, D390; 30-data-path-tls.md §33.9): the cluster encrypts, and
+    /// (D25, D402; 30-data-path-tls.md §33.9): the cluster encrypts, and
     /// `ip` is on no network marked trusted. An address on no network is
     /// encrypted: only a network the operator named can be marked
     /// trusted. A loopback address never leaves the host: encrypted only
@@ -464,7 +464,7 @@ pub struct ClusterMap {
     /// 30-data-path-tls.md §33.4).
     pub data_tls: DataTls,
     /// Whether authenticated sessions stay encrypted on networks not
-    /// marked trusted (D390; 30-data-path-tls.md §33.9): off in an
+    /// marked trusted (D402; 30-data-path-tls.md §33.9): off in an
     /// upgraded cluster until an operator turns it on.
     pub data_tls_encrypt: bool,
     /// Certificates and identities the data path refuses (D384), as the
@@ -2099,7 +2099,7 @@ impl ClusterMap {
         // project has moved; 22: pools that require capabilities (D371);
         // 23: the data path's TLS mode other than `off` (D373).
         // 24: revoked certificates (D384), only while there are any.
-        // 25: sessions encrypted on untrusted networks (D390), only while
+        // 25: sessions encrypted on untrusted networks (D402), only while
         // that is on.
         let format = if self.data_tls_encrypt {
             25
@@ -2873,7 +2873,7 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
             "cluster" if w.len() == 2 => map.cluster_id = num(w[1])? as u128,
             // data-tls off|allow|require [encrypt]: the mode a new cluster
             // starts in (D373, D380), and whether its sessions stay
-            // encrypted on networks not marked trusted (D390); a file
+            // encrypted on networks not marked trusted (D402); a file
             // without the line starts `off`.
             "data-tls" if w.len() == 2 || (w.len() == 3 && w[2] == "encrypt") => {
                 map.data_tls =
@@ -4409,7 +4409,7 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(DataTls::parse("on"), None);
     }
 
-    /// D390: the encryption switch travels in format 25, only while it
+    /// D402: the encryption switch travels in format 25, only while it
     /// is on, and the cluster file turns it on; what it encrypts is every
     /// address on no network marked trusted, never loopback, and nothing
     /// in mode `off`.

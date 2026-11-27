@@ -27,7 +27,7 @@ pub const MAGIC: u32 = 0x4853_5452; // "HSTR"
 /// [`Msg::LeasePromote`] (D351). 6: [`WireOp::ZeroRange`] in a client's
 /// operation lists (D357). 7: [`Msg::Capability`] and [`Code::Denied`]
 /// (D363, D371). 8: [`Msg::StartTls`] (D25, D373). 12:
-/// [`Msg::StartTlsOffer`] and [`Msg::StartTlsEncrypted`] (D391).
+/// [`Msg::StartTlsOffer`] and [`Msg::StartTlsEncrypted`] (D403).
 pub const VERSION: u16 = 12;
 /// The version whose storage nodes refuse by certificate role, and
 /// everything unauthenticated in mode `require` (D377), and key their
@@ -39,7 +39,7 @@ pub const AUTHZ_VERSION: u16 = 11;
 /// certificates (format 24; D384) and refuse them.
 pub const REVOKED_VERSION: u16 = 9;
 /// The first version that decodes [`Msg::StartTlsOffer`], and may keep
-/// a session encrypted (D391; 30-data-path-tls.md §33.9).
+/// a session encrypted (D403; 30-data-path-tls.md §33.9).
 pub const ENCRYPT_VERSION: u16 = 12;
 /// The first version that decodes [`Msg::StartTls`] (D373).
 pub const TLS_VERSION: u16 = 8;
@@ -415,7 +415,7 @@ pub enum Msg {
     StartTls,
     StartTlsOk,
     /// [`Msg::StartTls`] to a peer whose `HelloOk` answered
-    /// [`ENCRYPT_VERSION`] or more (D391; 30-data-path-tls.md §33.9):
+    /// [`ENCRYPT_VERSION`] or more (D403; 30-data-path-tls.md §33.9):
     /// `encrypt` when the caller's map says the address it dialled is on
     /// a network not marked trusted and the cluster encrypts there.
     /// Answered `StartTlsOk` (the session turns back to plaintext),

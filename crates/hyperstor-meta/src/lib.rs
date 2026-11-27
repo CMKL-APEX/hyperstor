@@ -435,7 +435,7 @@ pub enum Admin {
     /// map's epoch and the mode before.
     SetDataTls {
         mode: DataTls,
-        /// Whether sessions stay encrypted off trusted networks (D390);
+        /// Whether sessions stay encrypted off trusted networks (D402);
         /// None leaves it.
         encrypt: Option<bool>,
         reply: hyperstor_reactor::chan::OneSender<Result<(u64, DataTls, bool), String>>,
@@ -4474,7 +4474,7 @@ impl Meta {
             c.kill();
         }
         // One in plaintext from before its sessions were encrypted is
-        // made again (D390).
+        // made again (D402).
         if let Some(c) = self.conns.borrow().get(&addr)
             && hyperstor_client::plaintext_from_before(&self.map.borrow(), addr, c)
         {
@@ -4778,7 +4778,7 @@ impl Meta {
         Ok(())
     }
 
-    /// Whether sessions may be encrypted (D390), or why not: every
+    /// Whether sessions may be encrypted (D402), or why not: every
     /// storage node that is up runs a build that keeps them, and so
     /// reads the map's format 25. Each is asked its build with a `Hello`
     /// on a connection of its own.
@@ -4841,7 +4841,7 @@ impl Meta {
 
     /// Sets the data path's TLS mode (D373; 30-data-path-tls.md §33.4),
     /// and with `encrypt` whether sessions stay encrypted on networks not
-    /// marked trusted (D390): the working map's epoch, and the mode and
+    /// marked trusted (D402): the working map's epoch, and the mode and
     /// the switch before. Connections already open stay as they are; each
     /// new one follows the map, and callers call again a peer they reach
     /// in plaintext where sessions are now encrypted.
@@ -5360,7 +5360,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
             // certificate was last checked against the revoked list at.
             let mut peer: Option<hyperstor_rpc::tls::Peer> = None;
             let mut checked = 0;
-            // The caller offered to keep its session (D391).
+            // The caller offered to keep its session (D403).
             let mut offered = false;
             // Logged once it is refused something (D377).
             let mut refused = false;
@@ -5425,7 +5425,7 @@ pub async fn serve(listener: hyperstor_reactor::net::TcpListener, meta: Rc<Meta>
                             return;
                         }
                         // In plaintext, where the address is now
-                        // encrypted (D390): dropped, and called again.
+                        // encrypted (D402): dropped, and called again.
                         if offered
                             && !p.encrypted
                             && s.local_addr().is_ok_and(|a| map.encrypts(a.ip()))

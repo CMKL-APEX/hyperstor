@@ -1969,6 +1969,6 @@ hosts' kernel (I460).
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 354 | When encryption starts: behind a cluster setting, off for an upgraded cluster and on for a new install, with addresses on no network encrypted (recommended); D25 as written, from the roll; or only on networks named and not marked trusted | Behind a setting, as recommended | D390 |
-| 355 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D391 |
-| 356 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D392 |
+| 361 | When encryption starts: behind a cluster setting, off for an upgraded cluster and on for a new install, with addresses on no network encrypted (recommended); D25 as written, from the roll; or only on networks named and not marked trusted | Behind a setting, as recommended | D402 |
+| 362 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D403 |
+| 363 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D404 |

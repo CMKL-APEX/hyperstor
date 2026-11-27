@@ -111,7 +111,7 @@ pub struct ShardMetrics {
     pub unauthenticated: AtomicU64,
     /// Connections dropped for a revoked certificate (D384).
     pub revoked: AtomicU64,
-    /// Connections served whose session stayed encrypted (D390).
+    /// Connections served whose session stayed encrypted (D402).
     pub encrypted: AtomicU64,
     /// Connections refused a request by their certificate's role, or for
     /// showing none in mode `require` (D377).

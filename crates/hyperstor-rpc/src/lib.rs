@@ -161,7 +161,7 @@ struct Inner {
     /// Who the peer proved to be in the TLS handshake ([`Conn::open`]);
     /// None on a connection that didn't authenticate.
     peer: RefCell<Option<tls::Peer>>,
-    /// The session stayed TLS, in kernel TLS (D390, D391).
+    /// The session stayed TLS, in kernel TLS (D402, D403).
     encrypted: Cell<bool>,
 }
 
@@ -176,7 +176,7 @@ pub struct CallerTls {
     /// encrypted when `encrypt` says it must be.
     pub required: bool,
     /// The address dialled is one whose sessions stay encrypted
-    /// (`ClusterMap::encrypts`; D390).
+    /// (`ClusterMap::encrypts`; D402).
     pub encrypt: bool,
 }
 
@@ -230,7 +230,7 @@ impl TlsIdentity {
 }
 
 impl CallerTls {
-    /// With the session kept encrypted when `encrypt` (D390).
+    /// With the session kept encrypted when `encrypt` (D402).
     pub fn encrypting(mut self, encrypt: bool) -> CallerTls {
         self.encrypt = encrypt;
         self
@@ -242,7 +242,7 @@ impl CallerTls {
 pub struct Answering {
     /// `hyperstor_pki::data_server_config`.
     pub config: std::sync::Arc<rustls::ServerConfig>,
-    /// This end's map says the session stays encrypted (D390): it does,
+    /// This end's map says the session stays encrypted (D402): it does,
     /// whatever the caller says, if the caller speaks
     /// [`hyperstor_proto::ENCRYPT_VERSION`].
     pub encrypt: bool,
@@ -264,7 +264,7 @@ pub type AnswererTls = Option<Answering>;
 /// unauthenticated.
 ///
 /// The session stays encrypted, in kernel TLS, if the caller offered to
-/// or `tls.encrypt` says so and the caller can (D391). A caller of a
+/// or `tls.encrypt` says so and the caller can (D403). A caller of a
 /// version before that, where `tls.encrypt` and `tls.required`, is sent
 /// `refusal`: in `require` it is then served nothing.
 ///
@@ -320,7 +320,7 @@ pub async fn answer_start_tls(
     }))
 }
 
-/// Hands a kept session to kernel TLS (D392).
+/// Hands a kept session to kernel TLS (D404).
 fn encrypt_kept(s: &TcpStream, kept: &tls::Kept) -> Result<(), RpcError> {
     use std::os::fd::AsRawFd;
     ktls::enable(s.as_raw_fd(), &kept.secrets)
@@ -624,7 +624,7 @@ impl Conn {
                     ))
                 };
                 if version >= hyperstor_proto::TLS_VERSION {
-                    // D391: a peer that can keep the session is offered
+                    // D403: a peer that can keep the session is offered
                     // to; an older one can't, and in `require` a session
                     // that must be encrypted isn't made with it.
                     let request = if version >= hyperstor_proto::ENCRYPT_VERSION {
@@ -690,7 +690,7 @@ impl Conn {
         self.inner.peer.borrow().as_ref().map(|p| p.who.clone())
     }
 
-    /// Whether the session stayed TLS (D390): every byte since the
+    /// Whether the session stayed TLS (D402): every byte since the
     /// handshake encrypted, by kernel TLS.
     pub fn encrypted(&self) -> bool {
         self.inner.encrypted.get()

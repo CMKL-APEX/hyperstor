@@ -1678,7 +1678,7 @@ status = "planned"
 
 [[milestone.item]]
 what = "T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again"
-spec = ["30-data-path-tls.md §33.11", "D25", "D390", "D391", "D392", "G68", "I460"]
+spec = ["30-data-path-tls.md §33.11", "D25", "D402", "D403", "D404", "G68", "I460"]
 status = "done"
 tests = [
     "hyperstor_rpc::ktls::tests::kernel_tls_carries_the_reactors_reads_and_writes",
@@ -1692,7 +1692,7 @@ tests = [
 
 [[milestone.item]]
 what = "T3: the cost of encryption on a reactor, measured on the pilot's hosts (G69); an installer check that the kernel has TLS"
-spec = ["30-data-path-tls.md §33.10", "G69", "D392"]
+spec = ["30-data-path-tls.md §33.10", "G69", "D404"]
 status = "planned"
 
 [[milestone]]

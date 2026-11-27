@@ -42,7 +42,7 @@ Messages, and TCP, RoCEv2 and InfiniBand transports. Part of the hyperstor desig
   TLS 1.3 handshake, after which each side sends `close_notify` and
   frames go on in plaintext (30-data-path-tls.md §33.3). A peer without
   an identity, or in a cluster whose mode is `off`, answers `Error`.
-- **Sessions that stay encrypted** (version 12, D391, D392, I460).
+- **Sessions that stay encrypted** (version 12, D403, D404, I460).
   `StartTlsOffer { encrypt }` in place of `StartTls` to a peer of
   version 12, answered `StartTlsEncrypted` when either side's map says
   the address is encrypted: the handshake's session then stays, in

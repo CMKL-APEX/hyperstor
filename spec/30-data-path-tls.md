@@ -5,15 +5,15 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380, D382–D386 and D390–D392 are settled with the owner
-(05-decision-log.md points 335–347, 349, 350 and 354–356, 2026-11-25 to 27). G67 and G68
+Status: **design.** D372–D380, D382–D386 and D402–D404 are settled with the owner
+(05-decision-log.md points 335–347, 349, 350 and 361–363, 2026-11-25 to 27). G67 and G68
 hold on one host (I445, I460); G69 is to run on the pilot's hosts. Stages T0
 and T1 are built (01-implementation-notes.md I444, I445): connections
 authenticate in mode `allow`. Of T2, revoked certificates are refused (D384, I450),
 connections are served by their certificate's role and `require` can be
 set (D377, I451), pings are keyed (D379, I453), and `data-tls status`
 lists who connects without a certificate (I455). Of T3, sessions stay
-encrypted in kernel TLS where the cluster says (D390–D392, I460). It delivers D25, which stays the rule.
+encrypted in kernel TLS where the cluster says (D402–D404, I460). It delivers D25, which stays the rule.
 
 ## 33. Data-path mutual TLS
 
@@ -206,7 +206,7 @@ answer could make a dead node look alive.
 | T0 | Certificates everywhere: `node` certificates on member hosts, `host` tokens and `--role vhost --join` | — |
 | T1 | `--identity` on every data-path binary, the handshake, modes `off` and `allow`, identities kept with connections, the unauthenticated-connection count | T0, G67 |
 | T2 | `require`, authorization by role (§33.5), the host name from the certificate, keyed pings (§33.7) | T1 |
-| T3 | Encryption on networks not marked trusted, in kernel TLS from the rustls handshake (D390–D392, §33.11); records in userspace only if a host lacks kernel TLS | T2, G68, G69 |
+| T3 | Encryption on networks not marked trusted, in kernel TLS from the rustls handshake (D402–D404, §33.11); records in userspace only if a host lacks kernel TLS | T2, G68, G69 |
 
 Milestone HS20 (17-milestones.md §21).
 
@@ -226,9 +226,9 @@ Milestone HS20 (17-milestones.md §21).
   reads and writes on an untrusted network, userspace records against
   kernel TLS against plaintext, on the pilot's hosts.
 
-### 33.11 Encryption (D390–D392)
+### 33.11 Encryption (D402–D404)
 
-**When.** A cluster setting beside the mode (D390): `hyperstorctl
+**When.** A cluster setting beside the mode (D402): `hyperstorctl
 data-tls set --mode allow --encrypt on`, or `data-tls allow encrypt` in
 the cluster file, which `hyperstor-install --all-in-one` writes. Off in
 an upgraded cluster. Once on, and the mode isn't `off`, a session stays
@@ -248,7 +248,7 @@ TLS unless its address is on a network marked trusted (26-networks.md
   build from before version 12: it couldn't keep a session, nor read
   the map's format 25.
 
-**Who decides** (D391; protocol version 12):
+**Who decides** (D403; protocol version 12):
 
 1. A caller of version 12 sends `StartTlsOffer { encrypt }` in place of
    `StartTls`: `encrypt` where its map says the address it dialled is
@@ -271,7 +271,7 @@ has the caller's `Finished`, and the caller sends nothing after its
 `Finished` until it has read that byte: neither side holds a record it
 hasn't processed. Session tickets are off (§33.3), so no record follows.
 
-**Kernel TLS** (D392). Both sides take the session's keys and record
+**Kernel TLS** (D404). Both sides take the session's keys and record
 numbers from rustls (`dangerous_extract_secrets`) and give them to the
 kernel: `TCP_ULP tls`, then `TLS_TX` and `TLS_RX`, for AES-128-GCM,
 AES-256-GCM or ChaCha20-Poly1305. The reactor's sends and receives then

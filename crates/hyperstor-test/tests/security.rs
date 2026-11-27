@@ -540,7 +540,7 @@ fn a_new_clusters_connections_authenticate() {
         |c: &Cluster| c.metric_sum("hyperstor_unauthenticated_connections_total", "");
     let s = c.ctl(&["data-tls", "status"]).ok();
     assert!(s.has("data path TLS: allow"), "{}", s.out);
-    // And it encrypts off trusted networks (D390); its own addresses are
+    // And it encrypts off trusted networks (D402); its own addresses are
     // loopback, on no network, so its sessions stay plaintext.
     assert!(s.has("sessions stay encrypted"), "{}", s.out);
     // Every connection of a new cluster shows a certificate: the list of

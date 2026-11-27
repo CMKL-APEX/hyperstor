@@ -4810,7 +4810,7 @@ export type SetDataTlsRequest = Message<"hyperstor.v1.SetDataTlsRequest"> & {
 
   /**
    * Whether authenticated sessions stay encrypted on networks not marked
-   * trusted (D390; 30-data-path-tls.md §33.9). Absent: as it is. Turning
+   * trusted (D402; 30-data-path-tls.md §33.9). Absent: as it is. Turning
    * it on is refused while a storage node that is up runs a build that
    * can't.
    *
@@ -4832,7 +4832,7 @@ export type SetDataTlsRequestJson = {
 
   /**
    * Whether authenticated sessions stay encrypted on networks not marked
-   * trusted (D390; 30-data-path-tls.md §33.9). Absent: as it is. Turning
+   * trusted (D402; 30-data-path-tls.md §33.9). Absent: as it is. Turning
    * it on is refused while a storage node that is up runs a build that
    * can't.
    *
@@ -4959,7 +4959,7 @@ export type GetDataTlsResponse = Message<"hyperstor.v1.GetDataTlsResponse"> & {
   unauthenticatedKnown: boolean;
 
   /**
-   * Whether sessions stay encrypted on networks not marked trusted (D390).
+   * Whether sessions stay encrypted on networks not marked trusted (D402).
    *
    * @generated from field: bool encrypt = 4;
    */
@@ -4993,7 +4993,7 @@ export type GetDataTlsResponseJson = {
   unauthenticated_known?: boolean;
 
   /**
-   * Whether sessions stay encrypted on networks not marked trusted (D390).
+   * Whether sessions stay encrypted on networks not marked trusted (D402).
    *
    * @generated from field: bool encrypt = 4;
    */
@@ -5026,7 +5026,7 @@ export type SetDataTlsResponse = Message<"hyperstor.v1.SetDataTlsResponse"> & {
   was: string;
 
   /**
-   * Whether sessions were encrypted before (D390).
+   * Whether sessions were encrypted before (D402).
    *
    * @generated from field: bool was_encrypt = 3 [json_name = "was_encrypt"];
    */
@@ -5052,7 +5052,7 @@ export type SetDataTlsResponseJson = {
   was?: string;
 
   /**
-   * Whether sessions were encrypted before (D390).
+   * Whether sessions were encrypted before (D402).
    *
    * @generated from field: bool was_encrypt = 3 [json_name = "was_encrypt"];
    */

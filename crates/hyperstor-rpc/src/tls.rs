@@ -52,7 +52,7 @@ pub struct Peer {
     /// When it was issued (Unix seconds): an identity's revocation covers
     /// certificates issued until then.
     pub issued_unix: u64,
-    /// The session stayed TLS, in kernel TLS (D390): set once it is.
+    /// The session stayed TLS, in kernel TLS (D402): set once it is.
     pub encrypted: bool,
 }
 
@@ -604,7 +604,7 @@ mod tests {
         });
     }
 
-    /// D391: a session stays encrypted, in kernel TLS, when the caller
+    /// D403: a session stays encrypted, in kernel TLS, when the caller
     /// offers to or the answerer's map says so; either way requests and
     /// answers of every size go through it. A session neither side wants
     /// encrypted turns back to plaintext.
@@ -672,7 +672,7 @@ mod tests {
         });
     }
 
-    /// D391: in `require`, an answerer whose map says a session must be
+    /// D403: in `require`, an answerer whose map says a session must be
     /// encrypted refuses a caller that can only ask `StartTls`; in
     /// `allow` it serves it in plaintext, authenticated.
     #[test]

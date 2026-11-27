@@ -184,7 +184,7 @@
 //!   [--encrypt on|off]`: whether connections on the storage network
 //!   authenticate with the cluster's certificates (D373;
 //!   30-data-path-tls.md §33.4), and whether their sessions stay
-//!   encrypted on networks not marked trusted (D390, §33.9).
+//!   encrypted on networks not marked trusted (D402, §33.9).
 //! - `sealing-key list`, `sealing-key rotate`: the keys that seal NFS
 //!   stateids and dataset capabilities (D133, D363); a rotation makes a
 //!   new one and keeps the one before it valid;
@@ -363,7 +363,7 @@ struct Args {
     /// `data-tls set`: off, allow or require (D373).
     mode: Option<String>,
     /// `data-tls set --encrypt on|off`: sessions stay encrypted on
-    /// networks not marked trusted (D390).
+    /// networks not marked trusted (D402).
     encrypt: Option<bool>,
     /// `network set`: `subnet IP/LEN` or `ib PREFIX` (D284).
     matches: Option<String>,
