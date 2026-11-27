@@ -11,6 +11,8 @@
 //! Output is Markdown table rows. Files are preallocated so that writes
 //! don't allocate filesystem blocks.
 
+mod cpus;
+
 use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
 use rand::rngs::SmallRng;
@@ -501,6 +503,9 @@ fn commit_suite(path: &Path, secs: f64) {
 fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
     use hyperstor_daemon::*;
     use hyperstor_meta::{ClusterMap, replicated_pool};
+    // The client's CPU first, then each node's reactors (#450).
+    let plan = cpus::for_run(1 + 3 * reactors as usize);
+    let mut node_cpus = plan[1..].iter().copied();
     let meta_l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let meta = meta_l.local_addr().unwrap();
     let mut map = ClusterMap::new(1);
@@ -526,7 +531,6 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
             hyperstor_meta::serve(hyperstor_reactor::net::TcpListener::from_std(meta_l), meta).await
         })
     });
-    let mut cpu = 2;
     let nodes: Vec<NodeHandle> = listeners
         .into_iter()
         .enumerate()
@@ -554,12 +558,7 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
                     }
                 })
                 .collect();
-            let cpus = (0..reactors as usize)
-                .map(|_| {
-                    cpu += 1;
-                    cpu
-                })
-                .collect();
+            let cpus = node_cpus.by_ref().take(reactors as usize).collect();
             start(NodeConfig {
                 no_discard: Vec::new(),
                 endpoints: Vec::new(),
@@ -604,15 +603,16 @@ fn cluster_suite(where_: &str, reactors: u32, secs: f64) {
         })
         .collect();
     let label = format!("3 nodes x {reactors} reactor(s), size 3, {where_}");
-    client_workload(meta, &label, secs);
+    client_workload(meta, &label, secs, plan[0]);
     for n in nodes {
         n.stop();
     }
 }
 
 /// Fills eight 64 MiB volumes in pool 1, then runs random and sequential
-/// reads and writes against the cluster whose map service is at `meta`.
-fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
+/// reads and writes against the cluster whose map service is at `meta`,
+/// from a reactor pinned to `cpu`.
+fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64, cpu: usize) {
     use std::cell::RefCell;
     use std::rc::Rc;
     let label = label.to_string();
@@ -623,7 +623,7 @@ fn client_workload(meta: std::net::SocketAddr, label: &str, secs: f64) {
             .unwrap_or(0),
     ));
     hyperstor_reactor::block_on(async move {
-        let _ = hyperstor_reactor::pin_to_cpu(1);
+        let _ = hyperstor_reactor::pin_to_cpu(cpu);
         let cl = hyperstor_client::Client::connect(meta, 1).await.unwrap();
         let vols = 8u128;
         let span = 64u64 << 20; // per volume
@@ -969,15 +969,16 @@ fn adminload_suite(secs: f64) {
         })
     };
     header();
+    let cpu = cpus::for_run(1)[0];
     for round in 1..=2 {
-        client_workload(meta, &format!("idle, round {round}"), secs);
+        client_workload(meta, &format!("idle, round {round}"), secs, cpu);
         let stop = Arc::new(AtomicBool::new(false));
         let threads = 4u64;
         let t = Instant::now();
         let hs: Vec<_> = (0..threads)
             .map(|_| caller(rate / threads, stop.clone()))
             .collect();
-        client_workload(meta, &format!("API {rate}/s, round {round}"), secs);
+        client_workload(meta, &format!("API {rate}/s, round {round}"), secs, cpu);
         stop.store(true, Ordering::Relaxed);
         let mut lats = Lat(hs.into_iter().flat_map(|h| h.join().unwrap()).collect());
         let n = lats.0.len() as u64;
@@ -2404,7 +2405,7 @@ fn main() {
                 .and_then(|a| a.parse().ok())
                 .expect("map service address");
             header();
-            client_workload(meta, &format!("remote {meta}"), secs);
+            client_workload(meta, &format!("remote {meta}"), secs, cpus::for_run(1)[0]);
         }
         Some("decisions") => {
             // hyperstor-bench decisions <scratch dir with 6 GiB free>

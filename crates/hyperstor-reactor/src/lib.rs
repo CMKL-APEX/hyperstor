@@ -123,22 +123,52 @@ pub fn take_slowest() -> Slowest {
     current().slowest.take()
 }
 
+/// What the reactor on this thread has done since it started (D41): the
+/// passes of its loop, its calls into the kernel, and its spins, the
+/// stretches it polled idle instead of sleeping (`set_spin`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Passes of the loop: the tasks ready run, then one `io_uring_enter`.
+    pub passes: u64,
+    /// `io_uring_enter` calls from the loop; one a pass.
+    pub enters: u64,
+    /// Of those, the ones that waited for a completion.
+    pub sleeps: u64,
+    /// Spins that ended with work: a completion or a task woken.
+    pub spin_hits: u64,
+    /// Spins whose window ran out, followed by a sleep.
+    pub spin_misses: u64,
+    /// Time spent spinning, hits and misses, in nanoseconds.
+    pub spin_ns: u64,
+    /// The spin window now, in nanoseconds: `set_spin`'s, or where the
+    /// adaptive window stands.
+    pub window_ns: u64,
+}
+
+/// The [`Stats`] of the reactor on this thread so far.
+pub fn stats() -> Stats {
+    current().stats.get()
+}
+
 pub(crate) struct Inner {
     ring: RefCell<IoUring>,
     ops: RefCell<Vec<Option<OpSlot>>>,
     free_ops: RefCell<Vec<usize>>,
-    tasks: RefCell<Vec<Option<(Task, Site)>>>,
+    /// Each task with where it was spawned and its waker, made once.
+    tasks: RefCell<Vec<Option<(Task, Site, Waker)>>>,
     free_tasks: RefCell<Vec<usize>>,
     shared: Arc<Shared>,
     efd_buf: RefCell<Box<[u8; 8]>>,
     /// Operations submitted but not yet completed (abandoned ones included).
     in_flight: Cell<usize>,
     slowest: Cell<Slowest>,
+    stats: Cell<Stats>,
 }
 
 thread_local! {
     static CURRENT: RefCell<Option<Rc<Inner>>> = const { RefCell::new(None) };
     static SPIN: Cell<std::time::Duration> = const { Cell::new(std::time::Duration::ZERO) };
+    static SPIN_ADAPTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Adaptive polling (04-decisions.md D41): after any activity, the reactor on
@@ -150,6 +180,37 @@ thread_local! {
 /// the reactor's next pass, so a task may change it.
 pub fn set_spin(spin: std::time::Duration) {
     SPIN.with(|s| s.set(spin));
+}
+
+/// Makes `set_spin`'s window a ceiling the reactor on this thread adapts
+/// under, as KVM's halt polling does: after an idle stretch longer than
+/// the window but within the ceiling (a longer window would have caught
+/// it) the window doubles, from [`SPIN_GROW_START`]; after one longer than
+/// the ceiling (no window would have) it halves, to zero under the start.
+/// Off by default.
+pub fn set_spin_adaptive(on: bool) {
+    SPIN_ADAPTIVE.with(|s| s.set(on));
+}
+
+/// The smallest adaptive window; below it the reactor doesn't spin.
+pub const SPIN_GROW_START: std::time::Duration = std::time::Duration::from_micros(10);
+
+/// The adaptive window after an idle stretch of `idle` (see
+/// [`set_spin_adaptive`]).
+fn adapt_window(
+    window: std::time::Duration,
+    ceiling: std::time::Duration,
+    idle: std::time::Duration,
+) -> std::time::Duration {
+    if idle <= window {
+        window
+    } else if idle <= ceiling {
+        (window * 2).max(SPIN_GROW_START).min(ceiling)
+    } else if window / 2 < SPIN_GROW_START {
+        std::time::Duration::ZERO
+    } else {
+        window / 2
+    }
 }
 
 pub(crate) fn current() -> Rc<Inner> {
@@ -184,6 +245,7 @@ impl Inner {
             efd_buf: RefCell::new(Box::new([0; 8])),
             in_flight: Cell::new(0),
             slowest: Cell::new(Slowest::default()),
+            stats: Cell::new(Stats::default()),
         });
         inner.arm_eventfd();
         Ok(inner)
@@ -285,24 +347,28 @@ impl Inner {
                 t.len() - 1
             }
         };
-        self.tasks.borrow_mut()[id] = Some((fut, site));
-        self.shared.push(id);
-        id
-    }
-
-    fn poll_task(&self, id: usize) {
-        let Some((mut fut, site)) = self.tasks.borrow_mut().get_mut(id).and_then(Option::take)
-        else {
-            return; // already finished, or a stale wake-up
-        };
         let waker = Waker::from(Arc::new(TaskWaker {
             task: id,
             shared: self.shared.clone(),
         }));
+        self.tasks.borrow_mut()[id] = Some((fut, site, waker));
+        self.shared.push(id);
+        id
+    }
+
+    /// Polls task `id` once. `t` is when the poll starts, and becomes when
+    /// it ended: one clock read a poll (D41), the next poll's start.
+    fn poll_task(&self, id: usize, t: &mut std::time::Instant) {
+        let Some((mut fut, site, waker)) =
+            self.tasks.borrow_mut().get_mut(id).and_then(Option::take)
+        else {
+            return; // already finished, or a stale wake-up
+        };
         let mut cx = Context::from_waker(&waker);
-        let t = std::time::Instant::now();
         let r = fut.as_mut().poll(&mut cx);
-        let took = t.elapsed();
+        let end = std::time::Instant::now();
+        let took = end - *t;
+        *t = end;
         let mut s = self.slowest.get();
         if s.poll.is_none_or(|(d, _)| took > d) {
             s.poll = Some((took, site));
@@ -310,7 +376,7 @@ impl Inner {
         }
         match r {
             Poll::Ready(()) => self.free_tasks.borrow_mut().push(id),
-            Poll::Pending => self.tasks.borrow_mut()[id] = Some((fut, site)),
+            Poll::Pending => self.tasks.borrow_mut()[id] = Some((fut, site, waker)),
         }
     }
 
@@ -462,26 +528,49 @@ where
         *c.borrow_mut() = Some(inner.clone());
     });
     let main = spawn(fut);
-    let mut last_activity = std::time::Instant::now();
+    // The tasks to poll this pass, taken from the ready queue in one lock.
+    let mut batch: Vec<usize> = Vec::new();
+    // The clock is read once after each call into the kernel and once
+    // after each task's poll (D41); the spin window, the longest poll and
+    // the longest enter are all measured from these reads.
+    let mut now = std::time::Instant::now();
+    let mut last_activity = now;
+    // Since when the reactor has been polling idle, while it spins.
+    let mut spinning: Option<std::time::Instant> = None;
+    // Since when it has been idle, spinning or asleep (the adaptive window).
+    let mut idle_since: Option<std::time::Instant> = None;
+    let mut window = SPIN.with(|s| s.get());
     let out = loop {
         // Read each pass: a task may turn it on or off (D293).
-        let spin = SPIN.with(|s| s.get());
+        let ceiling = SPIN.with(|s| s.get());
+        let adaptive = SPIN_ADAPTIVE.with(|s| s.get());
+        if !adaptive || window > ceiling {
+            window = ceiling;
+        }
+        let spin = window;
+        let mut st = inner.stats.get();
+        st.passes += 1;
         // Run the tasks that are ready now. Tasks woken while they run
         // (including ones that yield) wait for the next pass, after I/O
         // completions have been collected: running until the queue is
         // empty would let a yielding task starve all I/O.
-        let n = inner.shared.ready.lock().unwrap().len();
-        if n > 0 {
-            last_activity = std::time::Instant::now();
-        }
-        for _ in 0..n {
-            let next = inner.shared.ready.lock().unwrap().pop_front();
-            match next {
-                Some(id) => inner.poll_task(id),
-                None => break,
+        batch.extend(inner.shared.ready.lock().unwrap().drain(..));
+        if !batch.is_empty() {
+            last_activity = now;
+            end_spin(&mut st, &mut spinning, now, true);
+            if let Some(from) = idle_since.take()
+                && adaptive
+            {
+                window = adapt_window(window, ceiling, now.duration_since(from));
             }
+            let mut t = std::time::Instant::now();
+            for id in batch.drain(..) {
+                inner.poll_task(id, &mut t);
+            }
+            now = t;
         }
         if let Some(v) = main.state.borrow_mut().0.take() {
+            inner.stats.set(st);
             break v;
         }
         // Submit, and sleep in the kernel until something completes, unless
@@ -489,13 +578,25 @@ where
         {
             let ring = inner.ring.borrow_mut();
             let idle = inner.shared.ready.lock().unwrap().is_empty();
-            let t = std::time::Instant::now();
-            let r = if idle && (spin.is_zero() || last_activity.elapsed() >= spin) {
+            let sleep = idle && (spin.is_zero() || now.duration_since(last_activity) >= spin);
+            if sleep {
+                end_spin(&mut st, &mut spinning, now, false);
+                st.sleeps += 1;
+            } else if idle && spinning.is_none() {
+                spinning = Some(now);
+            }
+            if idle && idle_since.is_none() {
+                idle_since = Some(now);
+            }
+            st.enters += 1;
+            let before = now;
+            let r = if sleep {
                 ring.submit_and_wait(1)
             } else {
                 ring.submit()
             };
-            inner.note_enter(t.elapsed());
+            now = std::time::Instant::now();
+            inner.note_enter(now - before);
             match r {
                 Ok(_) => {}
                 Err(e) if e.raw_os_error() == Some(libc::EINTR) => {}
@@ -504,13 +605,21 @@ where
             }
         }
         if inner.complete() > 0 {
-            last_activity = std::time::Instant::now();
+            last_activity = now;
+            end_spin(&mut st, &mut spinning, now, true);
+            if let Some(from) = idle_since.take()
+                && adaptive
+            {
+                window = adapt_window(window, ceiling, now.duration_since(from));
+            }
         }
+        st.window_ns = window.as_nanos() as u64;
+        inner.stats.set(st);
     };
     // Drop the remaining tasks while the reactor is still current (their
     // operations unregister themselves), then wait out operations still
     // in the kernel so no buffer is freed under it.
-    let tasks: Vec<(Task, Site)> = inner.tasks.borrow_mut().drain(..).flatten().collect();
+    let tasks: Vec<(Task, Site, Waker)> = inner.tasks.borrow_mut().drain(..).flatten().collect();
     drop(tasks);
     while inner.in_flight.get() > 0 {
         {
@@ -521,6 +630,23 @@ where
     }
     CURRENT.with(|c| *c.borrow_mut() = None);
     out
+}
+
+/// Ends the spin in progress, if any: with work (`hit`) or a sleep.
+fn end_spin(
+    st: &mut Stats,
+    spinning: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+    hit: bool,
+) {
+    if let Some(from) = spinning.take() {
+        if hit {
+            st.spin_hits += 1;
+        } else {
+            st.spin_misses += 1;
+        }
+        st.spin_ns += now.duration_since(from).as_nanos() as u64;
+    }
 }
 
 /// Turns a negative io_uring result into an error.
@@ -543,6 +669,23 @@ pub fn pin_to_cpu(cpu: usize) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The CPUs the calling thread may run on (its affinity, as `taskset` or
+/// a cgroup's cpuset leave it), in ascending order.
+pub fn allowed_cpus() -> io::Result<Vec<usize>> {
+    // SAFETY: cpu_set_t is plain data; sched_getaffinity writes at most
+    // its size, and CPU_ISSET reads within it for indices below
+    // CPU_SETSIZE.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((0..libc::CPU_SETSIZE as usize)
+            .filter(|&c| libc::CPU_ISSET(c, &set))
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -621,6 +764,116 @@ mod tests {
             assert!(t.elapsed() >= std::time::Duration::from_millis(19));
         });
         set_spin(std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn spins_are_counted_as_ended_by_work_or_by_a_sleep() {
+        use std::time::Duration;
+        set_spin(Duration::from_millis(5));
+        block_on(async {
+            let s0 = stats();
+            // A timer inside the window: the reactor polls until it fires.
+            crate::time::sleep(Duration::from_millis(1)).await;
+            let s1 = stats();
+            assert!(s1.spin_hits > s0.spin_hits, "{s0:?} {s1:?}");
+            assert!(s1.passes > s0.passes && s1.enters > s0.enters, "{s1:?}");
+            // A timer past the window: it polls the window out, then sleeps.
+            crate::time::sleep(Duration::from_millis(30)).await;
+            let s2 = stats();
+            assert!(s2.spin_misses > s1.spin_misses, "{s1:?} {s2:?}");
+            assert!(s2.sleeps > s1.sleeps, "{s2:?}");
+            assert!(s2.spin_ns - s1.spin_ns >= 4_000_000, "{s1:?} {s2:?}");
+            // Far fewer passes than a spin through the whole 30 ms would take.
+            assert!(s2.enters >= s2.sleeps, "{s2:?}");
+        });
+        set_spin(Duration::ZERO);
+        // Without a spin, an idle reactor only sleeps.
+        block_on(async {
+            let s0 = stats();
+            crate::time::sleep(Duration::from_millis(5)).await;
+            let s1 = stats();
+            assert_eq!(
+                (s1.spin_hits, s1.spin_misses),
+                (s0.spin_hits, s0.spin_misses)
+            );
+            assert!(s1.sleeps > s0.sleeps, "{s1:?}");
+        });
+    }
+
+    #[test]
+    fn the_adaptive_window_grows_toward_idle_it_would_catch_and_shrinks_past_the_ceiling() {
+        use std::time::Duration;
+        let us = Duration::from_micros;
+        let c = us(200);
+        // Caught: unchanged.
+        assert_eq!(adapt_window(us(40), c, us(30)), us(40));
+        // Missed, but within the ceiling: doubles, from the start, to the ceiling.
+        assert_eq!(adapt_window(Duration::ZERO, c, us(50)), SPIN_GROW_START);
+        assert_eq!(adapt_window(us(40), c, us(60)), us(80));
+        assert_eq!(adapt_window(us(160), c, us(190)), c);
+        // Past the ceiling: halves, then off.
+        assert_eq!(adapt_window(c, c, us(900)), us(100));
+        assert_eq!(adapt_window(us(15), c, us(900)), Duration::ZERO);
+        assert_eq!(adapt_window(Duration::ZERO, c, us(900)), Duration::ZERO);
+        // No ceiling, no spin.
+        assert_eq!(
+            adapt_window(Duration::ZERO, Duration::ZERO, us(5)),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn an_adaptive_reactor_stops_spinning_when_idle_outlasts_the_ceiling() {
+        use std::time::Duration;
+        set_spin(Duration::from_millis(2));
+        set_spin_adaptive(true);
+        block_on(async {
+            // Every idle stretch 10 ms, past the 2 ms ceiling: the window
+            // halves to zero within a few, and then the reactor only sleeps.
+            for _ in 0..12 {
+                crate::time::sleep(Duration::from_millis(10)).await;
+            }
+            let s0 = stats();
+            assert_eq!(s0.window_ns, 0, "{s0:?}");
+            for _ in 0..5 {
+                crate::time::sleep(Duration::from_millis(10)).await;
+            }
+            let s1 = stats();
+            assert_eq!(s1.spin_ns, s0.spin_ns, "{s0:?} {s1:?}");
+            // Short idle stretches within the ceiling grow it again.
+            for _ in 0..20 {
+                crate::time::sleep(Duration::from_micros(300)).await;
+            }
+            let s2 = stats();
+            assert!(s2.window_ns > 0, "{s2:?}");
+            assert!(s2.spin_hits > s1.spin_hits, "{s1:?} {s2:?}");
+        });
+        set_spin_adaptive(false);
+        set_spin(Duration::ZERO);
+    }
+
+    #[test]
+    fn a_task_keeps_one_waker_across_its_polls() {
+        // The reactor makes a task's waker once, when it is spawned, and
+        // polls it with that one every time (I457).
+        block_on(async {
+            let mut first: Option<Waker> = None;
+            let mut polls = 0;
+            std::future::poll_fn(|cx| {
+                polls += 1;
+                match &first {
+                    None => first = Some(cx.waker().clone()),
+                    Some(w) => assert!(w.will_wake(cx.waker()), "a new waker on poll {polls}"),
+                }
+                if polls < 5 {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
+        });
     }
 
     #[test]
