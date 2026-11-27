@@ -1960,6 +1960,18 @@ its node's certificate, whose host name isn't checked (I454).
 |---|---|---|---|
 | 350 | How such a host gets a `host` certificate: the installer asks the cluster API with the node's certificate, for the host name that node reports (recommended); a `host` token as VM hosts use, a manual step on every storage host; or leave it showing the node's | The node asks the API | D386 |
 
+## Datasets, stage H1: before building (2026-11-27)
+
+The first cut of dataset names and properties (29-hsfs.md §32.2, §32.3).
+Two facts changed the second question as first asked: volume names were
+never unique, and `CopyVolume` with no name reused its source's.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 351 | Which properties act in H1: all kept, inherited and shown, with `pool` acting and the rest marked not enforced yet (recommended); only those enforced settable; or names only | All kept; `pool` acts (`readonly` and `reads` were offered as acting too: `reads` has no replica reads to act on, and `readonly` needs leases and gateways to know it, the next part) | D388 |
+| 352 | Two datasets of one project with one name: refuse new ones, copies named by none get `NAME-copy`, volumes in no project exempt (recommended); allow and qualify; or refuse everywhere, copies too | Refuse; copies get `-copy` | D387 |
+| 353 | Ship the `hsfs` binary in H1, checking the name half of G64 now (recommended), or only `hyperstorctl dataset` until G64 is whole | Ship it; check the name now | D389 |
+
 ## A Kubernetes CSI driver (31-csi.md, 2026-11-27)
 
 Asked to plan CSI support, with what is built (ublk, leases, management

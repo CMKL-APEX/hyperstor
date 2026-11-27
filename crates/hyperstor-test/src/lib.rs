@@ -1197,6 +1197,16 @@ impl Cluster {
         self.ctl_via(Via::Tls(&self.pki()), args)
     }
 
+    /// `hsfs` (D361) as the administrator, over mutual TLS: hyperstorctl
+    /// run by that name, as the installer's link runs it.
+    pub fn hsfs(&self, args: &[&str]) -> Run {
+        use std::os::unix::process::CommandExt;
+        let mut c = Command::new(self.bin.join("hyperstorctl"));
+        c.arg0("hsfs");
+        c.args(["--api", &self.api, "--tls", self.pki().to_str().unwrap()]);
+        run_ctl(c, args)
+    }
+
     pub fn ctl_via(&self, via: Via, args: &[&str]) -> Run {
         let mut c = Command::new(self.bin.join("hyperstorctl"));
         match via {

@@ -88,7 +88,7 @@ in, so run it from `target/release` after `cargo build --release`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, `hyperstor-mgmt`, `hyperstor-authd`, and `hyperstor-install` itself |
+| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, `hyperstor-mgmt`, `hyperstor-authd`, and `hyperstor-install` itself; `hsfs`, a link to `hyperstorctl` |
 | `/etc/systemd/system/hyperstor-authd.socket`, `.service`; `/etc/pam.d/hyperstor`; `/etc/hyperstor/authd.json` | The PAM helper for people's logins ([hyperstor-authd](hyperstor-authd.md)), socket-activated, on the map service's host |
 | `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes; pool 1 (`vol`, replicated) and pool 2 (`cache`, a cache pool with one copy) |
 | `/etc/hyperstor/meta.env`, `mgmt.env`, `node-N.env` | Each service's options |

@@ -37,6 +37,7 @@ use std::sync::Arc;
 
 mod admin;
 mod audit;
+mod datasets;
 mod metrics;
 mod ops;
 mod perf;
@@ -3539,15 +3540,34 @@ impl ClusterService for Api {
         } else {
             Some(parse_volume_id(req.id)?)
         };
+        // Naming no pool: its project's or tenant's `pool` property (D360).
+        let pool = match req.pool {
+            hyperstor_map::META_POOL => match self.default_pool(tenant, project).await? {
+                Some(p) => p,
+                None => {
+                    return Err(with_reason(
+                        ConnectError::invalid_argument(
+                            "name a pool, or set the pool property of the volume's project \
+                             or tenant",
+                        ),
+                        "no_pool",
+                    ));
+                }
+            },
+            p => p,
+        };
+        // A dataset's name is unique in its project (D360, I459).
+        self.name_free(tenant, project, req.name, &who, "CreateVolume", &target)
+            .await?;
         // Only in a pool the tenant's realm may use (D249, D258).
         let realms = self.realms().await?;
         let realm = realms.realm_of(tenant);
-        if !realms.may_use(realm, req.pool) {
+        if !realms.may_use(realm, pool) {
             let why = format!(
                 "realm {} of tenant {} may not use pool {}",
                 realms.name(realm),
                 tenant,
-                req.pool
+                pool
             );
             audit(&who, "CreateVolume", &target, &format!("failed: {why}"));
             return Err(with_reason(
@@ -3555,13 +3575,13 @@ impl ClusterService for Api {
                 "pool_not_in_realm",
             ));
         }
-        let r = match self.full_pools().await.remove(&req.pool) {
+        let r = match self.full_pools().await.remove(&pool) {
             Some(why) => Some(Err((crate::VolumeFault::Full, why))),
             None => {
                 let (reply, rx) = oneshot();
                 self.tx
                     .send(Admin::CreateVolume {
-                        pool: req.pool,
+                        pool,
                         size: req.size,
                         name: req.name.to_string(),
                         id,
@@ -3898,9 +3918,13 @@ impl ClusterService for Api {
         if self.volume_any(new_id).await.is_ok() {
             refuse(F::Exists, format!("volume {new_id:032x} exists"))?;
         }
+        // The copy is a dataset of the volume's project: its name is
+        // unique there, so one named by none is `NAME-copy` (D360, I459).
         let name = if req.name.is_empty() {
-            v.name.clone()
+            self.free_name(v.tenant, v.project, &v.name, "copy").await?
         } else {
+            self.name_free(v.tenant, v.project, req.name, &who, "CopyVolume", &target)
+                .await?;
             req.name.to_string()
         };
         let op = self
@@ -4266,6 +4290,22 @@ impl Api {
                 self.volume_in(&scope, *id, &who, rpc, &target).await?
             }
         }
+        // A clone is a dataset of its project: its name is unique there
+        // (D360, I459).
+        if let crate::SnapOp::Clone {
+            id, name, owner, ..
+        } = &op
+        {
+            let (tenant, project) = match owner {
+                Some(o) => *o,
+                None => {
+                    let v = self.volume_any(*id).await?;
+                    (v.tenant, v.project)
+                }
+            };
+            self.name_free(tenant, project, name, &who, rpc, &target)
+                .await?;
+        }
         // Snapshots and clones make more to keep: none in a full pool.
         let full = match &op {
             crate::SnapOp::Create { id, .. } | crate::SnapOp::Clone { id, .. } => {
@@ -4573,6 +4613,7 @@ pub fn spawn(
                 let router = s3::register(api.clone(), router);
                 let router = realms::register(api.clone(), router);
                 let router = tenants::register(api.clone(), router);
+                let router = datasets::register(api.clone(), router);
                 let router = trust::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);

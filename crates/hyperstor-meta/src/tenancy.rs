@@ -480,7 +480,8 @@ pub fn delete_tenant(db: &Db, id: u32, holds: &[String]) -> Result<(), Error> {
             .map_err(StoreError::from)?;
         t.remove(format!("{PROJECT}{}", tenant.default_project).as_str())
             .map_err(StoreError::from)?;
-        Ok(())
+        crate::datasets::drop_level(t, crate::datasets::Level::Project(tenant.default_project))?;
+        crate::datasets::drop_level(t, crate::datasets::Level::Tenant(id))
     })
 }
 
@@ -595,7 +596,7 @@ pub fn delete_project(db: &Db, id: u32, holds: &[String]) -> Result<(), Error> {
         }
         t.remove(format!("{PROJECT}{id}").as_str())
             .map_err(StoreError::from)?;
-        Ok(())
+        crate::datasets::drop_level(t, crate::datasets::Level::Project(id))
     })
 }
 

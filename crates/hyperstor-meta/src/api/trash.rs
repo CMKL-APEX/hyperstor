@@ -114,7 +114,31 @@ impl TrashService for Api {
         let scope = self.scope(reach).await?;
         self.volume_in(&scope, id, &who, "RestoreFromTrash", &target)
             .await?;
-        let name = (!req.name.is_empty()).then(|| req.name.to_string());
+        // A volume back from the trash is a dataset of its project again:
+        // its name is unique there, so one whose name was taken meanwhile
+        // comes back as `NAME-restored`, as in its pool (D360, I459).
+        let name = if epoch.is_some() {
+            (!req.name.is_empty()).then(|| req.name.to_string())
+        } else {
+            let v = self.volume_any(id).await?;
+            if req.name.is_empty() {
+                let free = self
+                    .free_name(v.tenant, v.project, &v.name, "restored")
+                    .await?;
+                (free != v.name).then_some(free)
+            } else {
+                self.name_free(
+                    v.tenant,
+                    v.project,
+                    req.name,
+                    &who,
+                    "RestoreFromTrash",
+                    &target,
+                )
+                .await?;
+                Some(req.name.to_string())
+            }
+        };
         let r = self.trash_op(TrashOp::Restore { id, epoch, name }).await;
         audit(
             &who,
