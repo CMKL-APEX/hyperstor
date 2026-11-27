@@ -542,8 +542,11 @@ fn storage_hosts_join_with_tokens() {
         hyperstor_pki::Role::Host
     );
     // Listed with the node's that asked, and audited; kept by later runs.
-    let certs = ctl(&bin, &api, &pki, &["cert", "list"]).ok();
-    assert!(certs.has(&format!("/host/{name} ")), "{}", certs.out);
+    let listed = ctl(&bin, &api, &pki, &["cert", "list"]).ok();
+    assert!(
+        listed.has(&format!("/host/{name} ")),
+        "host {name} isn't among the certificates listed"
+    );
     let kept = std::fs::read_to_string(h0.join("host.crt")).unwrap();
     install(&host0, &["--vhost"]);
     assert_eq!(std::fs::read_to_string(h0.join("host.crt")).unwrap(), kept);
