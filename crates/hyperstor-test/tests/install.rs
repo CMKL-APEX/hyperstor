@@ -38,7 +38,8 @@ fn check_reports_every_item() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for item in [
-        "kernel", "io_uring", "memlock", "cpus", "nvme", "clock", "disk", "ports", "systemd",
+        "kernel", "io_uring", "memlock", "cpus", "nvme", "clock", "disk", "ports", "ktls",
+        "systemd",
     ] {
         let line = text
             .lines()
@@ -70,7 +71,8 @@ fn check_reports_every_item() {
         assert!(c["detail"].is_string(), "{c}");
     }
     for item in [
-        "kernel", "io_uring", "memlock", "cpus", "nvme", "clock", "disk", "ports", "systemd",
+        "kernel", "io_uring", "memlock", "cpus", "nvme", "clock", "disk", "ports", "ktls",
+        "systemd",
     ] {
         assert!(
             checks.iter().any(|c| c["name"] == item),
@@ -119,6 +121,7 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
         "/etc/systemd/system/hyperstord@.service",
         "/etc/systemd/system/hyperstor-renew.timer",
         "/etc/hyperstor/install.conf",
+        "/etc/modules-load.d/hyperstor-tls.conf",
     ] {
         assert!(first.has(f), "{f} not reported as written:\n{}", first.out);
     }
@@ -162,6 +165,7 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
             .join("etc/systemd/system/hyperstor-renew.timer")
             .exists()
     );
+    assert!(!root.join("etc/modules-load.d/hyperstor-tls.conf").exists());
     assert!(
         root.join("etc/hyperstor/cluster.txt").exists(),
         "configuration is kept"

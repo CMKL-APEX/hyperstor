@@ -1085,6 +1085,29 @@ fn checks(root: &Path, s: &Settings) -> Vec<Finding> {
         (false, None) => note(Level::Info, "rootkey", "no root CA key on this host".into()),
     }
 
+    // Kernel TLS, for sessions encrypted off trusted networks (D405,
+    // D414). Without it the cluster runs, but encryption can't be
+    // turned on.
+    if ktls_loaded() {
+        note(Level::Ok, "ktls", "the kernel's TLS is loaded".into());
+    } else if Command::new("modinfo")
+        .args(["-n", "tls"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        note(
+            Level::Info,
+            "ktls",
+            "the tls module isn't loaded; install loads it, and at every boot".into(),
+        );
+    } else {
+        note(
+            Level::Warn,
+            "ktls",
+            "this kernel has no tls module: sessions with this host can't be encrypted (data-tls set --encrypt on is refused)".into(),
+        );
+    }
+
     if Path::new("/run/systemd/system").exists() {
         note(Level::Ok, "systemd", "running".into());
     } else {
@@ -1234,6 +1257,19 @@ const LIBBLKID_COPY_DIR: &str = "/usr/local/lib";
 const LIBBLKID_HOOK: &str = "/usr/local/lib/hyperstor/libblkid-hook";
 /// Runs the hook after every dpkg run of apt's.
 const LIBBLKID_APT_CONF: &str = "/etc/apt/apt.conf.d/80hyperstor-libblkid";
+
+/// Loads the kernel's TLS module at boot (D414).
+const KTLS_MODULES_LOAD: &str = "/etc/modules-load.d/hyperstor-tls.conf";
+const KTLS_MODULES_LOAD_CONF: &str = "# Written by hyperstor-install (D414): kernel TLS, for sessions\n\
+     # encrypted off trusted networks (D405).\n\
+     tls\n";
+
+/// Whether this kernel has TLS as a TCP upper layer now: the module
+/// loaded, or built in.
+fn ktls_loaded() -> bool {
+    fs::read_to_string("/proc/sys/net/ipv4/tcp_available_ulp")
+        .is_ok_and(|u| u.split_whitespace().any(|n| n == "tls"))
+}
 
 /// The apt configuration that runs the hook; a missing hook (removed by
 /// hand) or a failing one never fails apt.
@@ -4569,6 +4605,23 @@ fn install(
     if real && !run("chown", &["hyperstor:hyperstor", &s.data_dir]) {
         fail("chown of the data directory failed");
     }
+    // Kernel TLS (D414): Linux loads the `tls` module on demand only for
+    // a process with CAP_NET_ADMIN, which the services lack; loaded here
+    // and at every boot, sessions can be encrypted (D405). A kernel
+    // without it isn't an error: the map service refuses to turn
+    // encryption on until every node keeps an encrypted session.
+    if converge(
+        &under(root, KTLS_MODULES_LOAD),
+        KTLS_MODULES_LOAD_CONF.as_bytes(),
+        0o644,
+    ) {
+        changed.push(KTLS_MODULES_LOAD.into());
+    }
+    if real && !ktls_loaded() && !run("modprobe", &["tls"]) {
+        println!(
+            "warning: modprobe tls failed: this host's sessions can't be encrypted (hyperstor-install check)"
+        );
+    }
 
     // 3. Certificates (§23.8), then configuration and units.
     let mut restart: Vec<String> = Vec::new();
@@ -5853,6 +5906,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         }
     }
     for p in [
+        KTLS_MODULES_LOAD,
         LIBBLKID_APT_CONF,
         LIBBLKID_HOOK,
         &format!("/{LIBBLKID_MARK}"),
