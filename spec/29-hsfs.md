@@ -48,7 +48,7 @@ filesystem ([00-filesystem.md](00-filesystem.md) F1–F12), volumes
 - A child filesystem is a directory of its parent with its own
   properties, snapshots and usage. Crossing into it is like crossing a
   mount: a rename or hard link across the boundary is refused (`EXDEV`).
-- Existing commands stay: `hyperstorctl volume …` is the dataset
+- Existing commands stay: `hsctl volume …` is the dataset
   commands with `type=volume`.
 - A name is unique in its project (D387): a new volume, clone or bucket
   may not take one another dataset there has; a copy named by none is
@@ -110,8 +110,8 @@ hsfs mount name /path           hsfs unmount /path
 
 **The name (D361).** The filesystem, its mount type
 (`mount -t fuse.hsfs`) and the command are `hsfs`. `hsfs` is a small
-binary over the same cluster API as `hyperstorctl dataset`, which stays
-for scripts that already use `hyperstorctl`. Never `zfs`: OpenZFS
+binary over the same cluster API as `hsctl dataset`, which stays
+for scripts that already use `hsctl`. Never `zfs`: OpenZFS
 installs that command on the same hosts, and its semantics differ where
 it matters (one host against many).
 

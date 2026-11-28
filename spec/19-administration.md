@@ -1,13 +1,13 @@
 # Administration: installer, API, CLI, UI and security
 
-How hyperstor is installed, administered and secured: the installer, the cluster API, `hyperstorctl`, the management service and web UI, and the identities and checks behind them. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
+How hyperstor is installed, administered and secured: the installer, the cluster API, `hsctl`, the management service and web UI, and the identities and checks behind them. Part of the hyperstor design; sections keep their numbers across documents, so `§N` in one document is the same section everywhere (see [README.md](README.md)).
 
 Status: **draft, partly built.** D50–D55 were settled with the owner on 2026-10-21
 ([05-decision-log.md](05-decision-log.md)); D56–D60 were made while drafting
 and are open for review. Host checks G17 and G18 are open. Built so far
 (01-implementation-notes.md I41–I56): the cluster API on the map service,
 over mutual TLS with identities and roles, audited and rate-limited, with a break-glass local socket; the root and intermediate
-CAs and leaf certificates; `hyperstorctl` (status, nodes, pools, PGs,
+CAs and leaf certificates; `hsctl` (status, nodes, pools, PGs,
 devices out and in, an I/O test); metrics on storage nodes' admin
 ports; and `hyperstor-install` with host checks, the all-in-one trial
 cluster, multi-host installs from a shared cluster file (before join
@@ -57,8 +57,8 @@ section refines 15-operations.md §16, §18 and §19, which point here.
 | Layer | Processes | Callers | Credential |
 |---|---|---|---|
 | Data | `hyperstord`, `hyperstor-vhost`, `hyperstor-gw`, `hyperstor-s3` | clients, peers | mTLS (D25); RDMA only after an authenticated TCP session (§19) |
-| Cluster API | `hyperstor-meta` members | `hyperstor-mgmt`, the glidex control plane, `hyperstorctl`, nodes, hosts | client certificate (§23.8); peer uid on the local socket |
-| Human edge | `hyperstor-mgmt` (standalone only) | browsers, `hyperstorctl` with a token | session cookie or `hst_` token (§23.9) |
+| Cluster API | `hyperstor-meta` members | `hyperstor-mgmt`, the glidex control plane, `hsctl`, nodes, hosts | client certificate (§23.8); peer uid on the local socket |
+| Human edge | `hyperstor-mgmt` (standalone only) | browsers, `hsctl` with a token | session cookie or `hst_` token (§23.9) |
 
 Why three layers (D50): the Raft members stay small and machine-only,
 with no browser, PAM or IdP code in them; the human edge is stateless
@@ -172,7 +172,7 @@ CRC32C (I403).
 
 #### 23.4.2 Bootstrap and join
 
-1. `hyperstorctl cluster init` on the first meta host creates the root
+1. `hsctl cluster init` on the first meta host creates the root
    and intermediate CAs (§23.8), the first meta member, and prints the
    UI's one-time claim URL (§23.7) and a join command.
 2. A **join token** is single-use, expires in 1 h by default, and is
@@ -182,7 +182,7 @@ CRC32C (I403).
    token. The key never leaves the node. The intermediate signs a node
    certificate for the role the token allows (node, meta member, mgmt,
    s3 gateway).
-4. `hyperstorctl token create --role …` makes more tokens;
+4. `hsctl token create --role …` makes more tokens;
    `token list` and `token revoke` manage them.
 5. Tokens are rows of the map service's replicated store (D81), made,
    used and revoked by the leader (D82). Before the group has a map, the
@@ -250,7 +250,7 @@ them:
   that host, and a proxy or tunnel pointed at it must be pointed at
   another member's (§23.7).
 
-Why the installer, not `hyperstorctl`: each change starts, stops and
+Why the installer, not `hsctl`: each change starts, stops and
 deletes services, keys and data on the host itself, which only the
 installer does there; the map service's part (`AddMember`,
 `RemoveMember`, a node's certificate) goes through the cluster API, so
@@ -300,7 +300,13 @@ with id 4, then a demote of member 3's host to storage only.
 
 ### 23.6 CLI
 
-`hyperstorctl` covers every operation of the cluster API (D55).
+`hsctl` covers every operation of the cluster API (D55).
+
+- **Its name** (D422, I469): `hsctl`, `hyperstorctl` before v0.0.9.
+  `hyperstor-install` keeps `/usr/local/bin/hyperstorctl` as a link to
+  it, and `hsctl` reads `hyperstorctl.conf` while `hsctl.conf` is
+  missing. *Why:* scripts and glidex releases from before keep working
+  through an upgrade; a later release drops the link.
 
 - **Generated from the protos**: one command per RPC. A CI check fails
   when an RPC has no command, so the CLI and the UI never drift apart.
@@ -309,7 +315,7 @@ with id 4, then a demote of member 3's host to storage only.
   | Where | Transport | Credential |
   |---|---|---|
   | On a meta host | `api.sock` | peer uid (`SO_PEERCRED`); members of `hyperstor-admin` only |
-  | Operator's machine, standalone | HTTPS to `hyperstor-mgmt` | `hst_` token from `hyperstorctl auth login` (OIDC device flow or PAM), server certificate pinned on first use as `gxctl` (glidex security.md decision 18) |
+  | Operator's machine, standalone | HTTPS to `hyperstor-mgmt` | `hst_` token from `hsctl auth login` (OIDC device flow or PAM), server certificate pinned on first use as `gxctl` (glidex security.md decision 18) |
   | Node or automation | gRPC to meta | client certificate (§23.8) |
 
 - **Break-glass:** the local socket works with mgmt, OIDC and the
@@ -317,14 +323,14 @@ with id 4, then a demote of member 3's host to storage only.
 - **Output:** tables for people; `-o json|yaml` for scripts; stable
   exit codes and the API's error reasons.
 - **Long operations** print an operation id; `--wait` follows progress
-  from the watch stream, and `hyperstorctl op watch <id>` reattaches.
+  from the watch stream, and `hsctl op watch <id>` reattaches.
 - **Safety:** destructive commands confirm or take `--yes`; they need
   step-up (§23.9.2); drain, rebalance and pool delete support
   `--dry-run`, which prints what would move or be removed.
 - Shell completion and `--help` come from the proto comments.
 - **Under glidex**, the everyday path is `gxctl datastore …`
   (16-glidex.md §17), so Cedar applies once. When glidex manages the
-  cluster, `hyperstorctl` on a glidex node reaches only the local
+  cluster, `hsctl` on a glidex node reaches only the local
   socket (break-glass) and read-only status; other admin calls are
   refused with a reason pointing to `gxctl`.
 
@@ -350,7 +356,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
   allowlist, Origin check, CSRF on cookie calls, `SameSite=Strict`
   cookies, CSP without inline scripts, HSTS with a configured
   certificate, self-signed certificate by default with first-use
-  pinning in `hyperstorctl`.
+  pinning in `hsctl`.
 - **Reaches the leader itself** (D276): mgmt asks the member list
   every 5 s, and as soon as a call meets a member that doesn't lead,
   and sends every call to the leader first, then to the others. Every
@@ -389,7 +395,7 @@ meta's ReDB through a dedicated table written only by mgmt's identity.
 | Security | users, roles, tokens, site policies, certificates | grant, revoke, rotate intermediate |
 | Audit | every mutation (§23.9.4) | filter, export |
 
-- **Every action shows its `hyperstorctl` command**, so the UI teaches
+- **Every action shows its `hsctl` command**, so the UI teaches
   the CLI.
 - **Charts** come from mgmt's sampled counters (1 s to 5 s, kept 1 h).
   Grafana dashboards ship as JSON for longer history.
@@ -526,7 +532,7 @@ admin error; a day's grace costs only space, and the space is visible.
     their parts;
   - a read merges a day's parts by key (the time counted down, so
     newest first); the cursor is the day and the last key, opaque to
-    hyperstorctl and the UI;
+    hsctl and the UI;
   - a day written before parts is one object, `audit/YYYY-MM-DD`,
     read and pruned with the rest;
   - refusals of one principal's operation with one error code are
@@ -565,19 +571,19 @@ evidence.
 
 | Step | Delivers | Depends on |
 |---|---|---|
-| AD0 | connectrpc on meta, `hyperstor.v1` protos with `buf` checks, leaf identities and the two-level CA, `hyperstorctl` generated from the protos, the local socket | HS1 |
+| AD0 | connectrpc on meta, `hyperstor.v1` protos with `buf` checks, leaf identities and the two-level CA, `hsctl` generated from the protos, the local socket | HS1 |
 | AD1 | `hyperstor-install` with `check`, join tokens, `--all-in-one` | AD0 |
 | AD2 | `hyperstor-mgmt` read-only: health, map, metrics, watch fan-out; UI pages without actions | AD0; `glidex-auth` extracted (a glidex change) |
 | AD3 | UI and CLI writes, Cedar roles, step-up, trash, audit, operations | AD2 |
 | AD4 | glidex: a tenant's volumes, buckets, keys and usage per project inline in glidex's UI through mgmt's API, and links from each hyperstor datastore to its mgmt (D310; was a Storage section and `storage-admin` role in glidex's UI) | AD5 |
-| AD5 | People from glidex directories (§23.12): `glidex-trust` extracted, offers, redeem and the feed, logins through a directory, grants from the feed, `hyperstorctl` logins, the account picker, reports | AD3, HS15's records (20-tenants.md §24.9) |
+| AD5 | People from glidex directories (§23.12): `glidex-trust` extracted, offers, redeem and the feed, logins through a directory, grants from the feed, `hsctl` logins, the account picker, reports | AD3, HS15's records (20-tenants.md §24.9) |
 
 ### 23.12 People from glidex directories (D305–D311)
 
 Settled 2026-11-12 (05-decision-log.md points 267–273). Built: the
 trust, offers, redeems and ends, the feed and what it makes, and reports
 (I380, #360 stage 4); logins through a directory in a browser and by
-`hyperstorctl auth login`, its access and API tokens, roles from its
+`hsctl auth login`, its access and API tokens, roles from its
 links and, for the operator tenant's members, from here, and partitions
 past `max_staleness` (I387, stage 5); hyperstor's half of AD4 and the
 driver's binding (I395, stage 6). The choices made while building them
@@ -618,7 +624,7 @@ cluster, through glidex's own handshake and feed:
 | Step | glidex (19-tenancy.md) | hyperstor |
 |---|---|---|
 | Cluster key | a cluster's ES256 key, sealed by the host, signing every request to a directory (D63) | the same, made by the map service's leader on first use (I380), kept in the map service sealed with the cluster key (D162); any mgmt signs with it |
-| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hyperstorctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate; the web UI's Tenancy page makes one too, and an offer through mgmt naming no pin takes the SHA-256 of mgmt's own `--web-tls` certificate, never what a browser was served (D343) |
+| Offer | `gxctl admission offer --tenant --directory --cap` prints a `gxo_` token (D64) | `hsctl admission offer --tenant SLUG --directory ISSUER [--realm R] --cap POOL=BYTES,…`, the same token, naming mgmt's address and certificate; the web UI's Tenancy page makes one too, and an offer through mgmt naming no pin takes the SHA-256 of mgmt's own `--web-tls` certificate, never what a browser was served (D343) |
 | Redeem | the tenant's admin runs `gxctl tenant opt-in --offer` at the directory (D65) | unchanged: the directory redeems at mgmt, which pins the directory's keys; the first redeemed offer of a directory makes its realm (or links the one named) |
 | Feed | the cluster pulls the filtered snapshot every 30 s (D67) and keeps it as a read-only replica (D68) | mgmt with the map service's leader on its host pulls it (D276 finds it) and writes the replica, with the offers and trust records, as rows of the map service's settings table (`trust/…`); the map service checks redeems and ends, which mgmt relays (D315); every mgmt reads them |
 | Reports | admission, cap, counts of VMs, disks, networks (D70) | admission, caps per pool, counts of volumes, buckets and bytes per tenant and per linked project, trash counting to a project (D423), so the directory refuses deleting a project that holds storage here (glidex D89); glidex shows them on the tenant's page (a glidex change) |
@@ -632,11 +638,11 @@ instead trust the directory once:
 
 | Step | hyperstor | glidex (glidex#523) |
 |---|---|---|
-| Directory offer | `hyperstorctl admission offer --directory ISSUER [--realm R] --cap POOL=BYTES,… [--admit open\|approval]`, no `--tenant`; the Tenancy page's Directories tab too (security administrators) | the `gxo_` token gains `scope: "directory"` and no `tenant`; one with no `scope` is a tenant offer |
+| Directory offer | `hsctl admission offer --directory ISSUER [--realm R] --cap POOL=BYTES,… [--admit open\|approval]`, no `--tenant`; the Tenancy page's Directories tab too (security administrators) | the `gxo_` token gains `scope: "directory"` and no `tenant`; one with no `scope` is a tenant offer |
 | Redeem | the map service checks it (D315) and stores the `TrustedDirectory` with no tenant, its realm (made, or the one named), admission setting and default caps; a directory already trusted by tenant offers gains them, if issuer and keys match | the directory's owner (`gxctl directory trust-cluster --offer`, `directory.tenants`, step-up); `POST /trust/v1/redeem` with no `tenant`; one directory-level `TrustedCluster` and OIDC client registration |
-| Opt-in | `POST /trust/v1/admit {tenant}`, signed by the directory: `open` admits it with a copy of the default caps (D347); `approval` keeps it pending (in the directory's record, `trust/dir/<trusted id>`, one entry per tenant, I416) for `hyperstorctl admission pending\|approve\|reject` or the Directories tab; answers `admitted` or `pending`, and the reports carry it after | the tenant's admin (`gxctl tenant opt-in <t> --cluster ID`, `tenant.clusters`, step-up), for clusters its directory trusts as a whole |
+| Opt-in | `POST /trust/v1/admit {tenant}`, signed by the directory: `open` admits it with a copy of the default caps (D347); `approval` keeps it pending (in the directory's record, `trust/dir/<trusted id>`, one entry per tenant, I416) for `hsctl admission pending\|approve\|reject` or the Directories tab; answers `admitted` or `pending`, and the reports carry it after | the tenant's admin (`gxctl tenant opt-in <t> --cluster ID`, `tenant.clusters`, step-up), for clusters its directory trusts as a whole |
 | Feed | unchanged: it makes the tenants admitted (§24.9) | a tenant is in the snapshot only once admitted, so a pending tenant's members aren't sent |
-| Settings | `hyperstorctl admission directory --directory <issuer or id> [--admit …] [--cap …]`, or the Directories tab; defaults apply to later admissions only | — |
+| Settings | `hsctl admission directory --directory <issuer or id> [--admit …] [--cap …]`, or the Directories tab; defaults apply to later admissions only | — |
 | Ending | a tenant as now; the directory as a whole by either side (`POST /trust/v1/end` with no tenant): every admission ends, its tenants unlinked (D316); the directory stays trusted when its last tenant leaves | `gxctl directory untrust-cluster` |
 
 Why: each tenant still decides whether its members and projects reach
@@ -646,7 +652,7 @@ anyone may make a tenant (glidex D82). Open for review while building:
 a limit on the tenants a directory admits by opt-in.
 
 The operator's own directory is trusted the same way when the operator
-takes the cluster over (`hyperstorctl cluster set-operator`, as glidex's
+takes the cluster over (`hsctl cluster set-operator`, as glidex's
 `gxctl cluster set-operator`, §12.1), so operator staff sign in with
 their organization's IdP. The cluster side of all this is in
 `glidex-control-plane` today; it moves into a crate, `glidex-trust`
@@ -671,9 +677,9 @@ audit and get wrong.
   `amr` says whether the login was multi-factor; step-up asks the
   directory for a fresh login (`max_age`, `prompt=login`), so a passkey
   answers it as a password does (glidex passkeys P5).
-- **CLI:** `hyperstorctl --mgmt URL` takes a directory's access token
+- **CLI:** `hsctl --mgmt URL` takes a directory's access token
   (`aud` = this cluster, glidex D55), checked offline as for a session.
-  `hyperstorctl auth login --directory URL` gets one by the directory's
+  `hsctl auth login --directory URL` gets one by the directory's
   device grant and keeps its refresh token, as `gxctl auth login`;
   `gxctl auth token --cluster ID` hands one over too. A glidex API token
   (`gxt_`) that lists this cluster is accepted from its hash in the
@@ -739,8 +745,8 @@ half builds on:
 
 | What | How |
 |---|---|
-| The driver's identity | as now: `hyperstorctl token create --role mgmt --name NAME`, joined by `TokenService.Join`, `hyperstor://<cluster>/mgmt/NAME`, over mutual TLS to the cluster API (not mgmt). It may not be named `dashboard` or `web`, and never reads mgmt's rows or acts for a person (I396). |
-| Binding it | `hyperstorctl realm client --client NAME --realm R[,R...]` (`RealmService.SetClientRealms`); `--realm any` unbinds. The directories' realms, and `default` for its shared image volumes. Unbound, it acts in the whole cluster as before. |
+| The driver's identity | as now: `hsctl token create --role mgmt --name NAME`, joined by `TokenService.Join`, `hyperstor://<cluster>/mgmt/NAME`, over mutual TLS to the cluster API (not mgmt). It may not be named `dashboard` or `web`, and never reads mgmt's rows or acts for a person (I396). |
+| Binding it | `hsctl realm client --client NAME --realm R[,R...]` (`RealmService.SetClientRealms`); `--realm any` unbinds. The directories' realms, and `default` for its shared image volumes. Unbound, it acts in the whole cluster as before. |
 | Calls it makes | `ClusterService.ListVolumes`, `CreateVolume`, `CloneVolume`, `CreateSnapshot`, `ListSnapshots`, `DeleteVolume`, `ExpandVolume`, `GetStatus` (still allowed bound, for its pools' space), `TrashService.ListTrash` and `PurgeFromTrash`: bound, each reaches only its realms' tenants and projects. |
 | A disk's project | `CreateVolume.directory_project` and `CloneVolume.directory_project` (strings): glidex's project id, resolved to the project linked to it among those the call reaches. Not with `project`. The shared image volume names no project (it lands in `default`, which the client must be bound to); each disk is a clone of its snapshot in its own project (D300). |
 | Refusal reasons (`ErrorInfo.reason`) | `outside_realm` (a project, volume or call outside its realms), `tenant_required` (no project, and `default` not bound), `not_found` (no project linked to that id within reach, or a volume outside it), `ambiguous_project` (an unbound client trusted by two directories using the same id), `invalid_argument` (`project` and `directory_project` both). |
@@ -757,7 +763,7 @@ cluster is a cluster to them.
 
 **Tests:** `glidex-trust` gets a fake directory (issuer, JWKS, token
 endpoint, feed), as `glidex-tls` has a fake tailscaled; `hyperstor-test`
-signs in through it in a browser test and with `hyperstorctl`, checks
+signs in through it in a browser test and with `hsctl`, checks
 grants from the feed, a disabled user, a partition past
 `max_staleness`, and a local login while the directory is down. One
 ignored test runs against a real glidex directory on a pilot host.
@@ -765,7 +771,7 @@ ignored test runs against a real glidex directory on a pilot host.
 **Order of work (AD5):** `glidex-trust` extracted (a glidex change);
 the cluster key, offers, redeem and the feed replica; browser logins
 through a directory; grants from the feed with `role@tenant` and
-`role@project` (with HS15's records); `hyperstorctl` logins; the
+`role@project` (with HS15's records); `hsctl` logins; the
 account picker; reports; the driver's projects and identity binding.
 
 ## Decisions and host checks

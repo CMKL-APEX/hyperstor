@@ -6,7 +6,7 @@
 //! `CF-Connecting-IP`, else the last `X-Forwarded-For` entry; from anyone
 //! else those headers are ignored, as anyone can send them. With
 //! `--proxy-only`, other connections are refused, except from loopback
-//! (`hyperstorctl --mgmt` on the host).
+//! (`hsctl --mgmt` on the host).
 
 use std::net::{IpAddr, SocketAddr};
 

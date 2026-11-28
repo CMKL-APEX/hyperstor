@@ -37,12 +37,12 @@ What v0.0.8 has:
 - **Networks** (HS19): named networks per subnet, nodes serving each
   device on them, clients picking theirs.
 - **Administration** (AD0–AD3): the cluster API over mutual TLS,
-  `hyperstorctl`, `hyperstor-install` (a trial cluster, hosts joined with
+  `hsctl`, `hyperstor-install` (a trial cluster, hosts joined with
   tokens, a host made a map service member or storage only), and
   `hyperstor-mgmt` with password and OIDC logins, roles, a React web UI,
   the trash, the audit log and long operations.
 
-Devices formatted before v0.0.8 keep working; `hyperstorctl device
+Devices formatted before v0.0.8 keep working; `hsctl device
 upgrade` converts them to the new format once every node runs v0.0.8
 ([upgrading](docs/public/src/admin-guide/upgrading.md)). The public
 [status page](docs/public/src/status.md) lists every item. The design is
@@ -110,7 +110,7 @@ GitHub Pages from `main` ([`docs/README.md`](docs/README.md)).
 | `docs/` | Public documentation (users, administrators), the landing page, and the books' build configuration |
 | `scripts/` | CI checks: spec consistency, implementation tracking, documentation |
 | `.github/workflows/` | CI and documentation publishing |
-| `crates/` | Rust crates (`spec/15-operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, fabric (networks and ports), kv (key-value ranges), meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), vhost (`hyperstor-vhost`), s3 (`hyperstor-s3`), bench; for administration api (cluster API), pki, ctl (`hyperstorctl`), install (`hyperstor-install`), mgmt (`hyperstor-mgmt`, with the web UI in `crates/hyperstor-mgmt/ui`), authd (`hyperstor-authd`), smart (`hyperstor-smart`, NVMe health); and test (end-to-end suite) |
+| `crates/` | Rust crates (`spec/15-operations.md` §18.1): codec, engine, placement, map (cluster map), proto, reactor, rpc, fabric (networks and ports), kv (key-value ranges), meta (map service), daemon (`hyperstord`), client, ublk (`hyperstor-ublk`), vhost (`hyperstor-vhost`), s3 (`hyperstor-s3`), bench; for administration api (cluster API), pki, ctl (`hsctl`), install (`hyperstor-install`), mgmt (`hyperstor-mgmt`, with the web UI in `crates/hyperstor-mgmt/ui`), authd (`hyperstor-authd`), smart (`hyperstor-smart`, NVMe health); and test (end-to-end suite) |
 | `deploy/` | Prometheus and Grafana configuration for the storage nodes' metrics |
 | `LICENSES/` | License texts and copyright notice |
 

@@ -384,7 +384,7 @@ impl Realms {
             return Err(refused(
                 "outside_realm",
                 format!(
-                    "host {host} joined before and is bound to no realm, so it serves every realm's volumes: an administrator binds it (hyperstorctl realm host) or makes its token"
+                    "host {host} joined before and is bound to no realm, so it serves every realm's volumes: an administrator binds it (hsctl realm host) or makes its token"
                 ),
             ));
         }

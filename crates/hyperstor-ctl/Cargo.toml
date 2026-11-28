@@ -1,13 +1,13 @@
 [package]
 name = "hyperstor-ctl"
-description = "hyperstorctl: manage and test a hyperstor cluster through the cluster API"
+description = "hsctl: manage and test a hyperstor cluster through the cluster API"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [[bin]]
-name = "hyperstorctl"
+name = "hsctl"
 path = "src/main.rs"
 
 [dependencies]

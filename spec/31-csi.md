@@ -47,10 +47,10 @@ for both kinds of cluster.
 ### 34.2 Who calls whom (D393)
 
 - **The controller is a management client** (19-administration.md
-  §23.12): `hyperstorctl token create --role mgmt --name k8s-<cluster>`,
+  §23.12): `hsctl token create --role mgmt --name k8s-<cluster>`,
   joined once, its certificate and key in a Kubernetes Secret, over
   mutual TLS to the cluster API (not mgmt). The operator binds it to the
-  realms the Kubernetes cluster may use (`hyperstorctl realm client`,
+  realms the Kubernetes cluster may use (`hsctl realm client`,
   D327); bound, it reaches only their tenants and projects
   (`outside_realm` otherwise). Each Kubernetes cluster gets its own.
 - **A StorageClass names where volumes go:** `project` (a hyperstor
@@ -83,7 +83,7 @@ for both kinds of cluster.
   only stages a volume after its attachment elsewhere is gone, or after
   it force-detached a lost node, and the blocklist round fences that
   node before this one writes (D399). A hold by anything else
-  (`vhost:`, `hyperstorctl`) is refused, `FAILED_PRECONDITION`, naming
+  (`vhost:`, `hsctl`) is refused, `FAILED_PRECONDITION`, naming
   it.
 - **`NodePublishVolume`:** a bind mount of the staging path (filesystem)
   or of the device (raw block), read-only where asked.

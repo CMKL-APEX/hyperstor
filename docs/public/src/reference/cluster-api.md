@@ -1,7 +1,7 @@
 # Cluster API
 
 `hyperstor-meta --api ADDR` serves the cluster API, `hyperstor.v1`, which
-[`hyperstorctl`](hyperstorctl.md) uses. One service answers the
+[`hsctl`](hsctl.md) uses. One service answers the
 [Connect protocol](https://connectrpc.com/docs/protocol) (JSON or
 protobuf over HTTP/1.1 or HTTP/2), gRPC and gRPC-Web, so any of these
 work: `curl`, `grpcurl` (with the proto file), generated clients.
@@ -22,14 +22,14 @@ a client certificate issued by the cluster's CA, whose identity
 
 | Role | May |
 |---|---|
-| `admin` (`hyperstorctl`), `mgmt` | Everything |
+| `admin` (`hsctl`), `mgmt` | Everything |
 | `node`, `meta` | `meta` also `GetClusterKey`; both also `GetSealingKeys`. Read (`GetStatus`, `ListPgs`, `ListVolumes`, `ListTokens`, `GetOperation`, `ListOperations`, `DrainNode` with `dry_run`), and renew their own certificate |
 | `host` | Renew its own certificate; nothing else |
 | `s3` (`hyperstor-s3`) | Read, `GetS3Gateway` (S3's keys with their secrets) and `PrepareBucket` (no other role may call them), and renew its own certificate |
 | `metrics` | Read `GET /metrics` (below) and renew its own certificate; nothing else |
 
 A certificate of another cluster is refused, and so is a revoked one:
-`RevokeCertificate` (`hyperstorctl cert revoke`) puts its serial on a
+`RevokeCertificate` (`hsctl cert revoke`) puts its serial on a
 list every map service member checks, on the API and between members,
 until the certificate would have expired. Where the data path's TLS
 mode isn't `off`, the cluster map carries the list and storage nodes
@@ -172,7 +172,7 @@ values are left out of answers.
 | `ListSealingKeys` | `{}` | `keys`, oldest first: `id` (1 to 255), `seq`, `created_unix`, `created_by`, `current` (the newest, which seals). Never a key's bytes |
 | `RotateSealingKey` | `{}`. On the leader; audited | `keys` valid now: the new one last, the one before it still valid, older ones dropped |
 | `GetSealingKeys` | `{}`. Storage nodes (`node` certificates) and map service members (`meta`, for the storage nodes on their hosts) only. The first call in a cluster makes the first key, on the leader | `keys` with their 32 bytes (`id`, `seq`, `key`), oldest first; `failed_precondition` (`no_cluster_key`) where the member answering can't open them |
-| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`, `api_address`: its cluster API as it recorded when it last led, empty if it hasn't; from the leader, `matched` and `behind`: the last entry it knows the member holds and how many it is behind; `heard_ms`: since the member last answered the answering one's Raft calls), `me`, and the answering member's `term`, `last_log_index`, `applied` and, on the leader, `quorum_ack_ms`: since a majority last answered it. `hyperstorctl member list` shows each member as *in step*, *behind* (over 1000 entries) or *no reply* (none for 1 s) |
+| `ListMembers` (`MemberService`) | `{}` | `members` (`id`, `raft_address`, `map_address`, `voter`, `leader`, `api_address`: its cluster API as it recorded when it last led, empty if it hasn't; from the leader, `matched` and `behind`: the last entry it knows the member holds and how many it is behind; `heard_ms`: since the member last answered the answering one's Raft calls), `me`, and the answering member's `term`, `last_log_index`, `applied` and, on the leader, `quorum_ack_ms`: since a majority last answered it. `hsctl member list` shows each member as *in step*, *behind* (over 1000 entries) or *no reply* (none for 1 s) |
 | `AddMember` | `id`, `raft_address`, `map_address`, `catch_up_secs` | `members`. On the leader; answers once the member has the log and votes. `catch_up_secs` (0: 120 s) bounds the wait; past it, `failed_precondition` (`member_change`) and the member stays a learner, which a repeat with the same addresses waits for again |
 | `RemoveMember` | `id`, optionally `force` | `members`. On the leader; refused below three voters without `force` |
 | `GetMapBackup` (`MapService`) | `{}` | `backup` (bytes), `cluster_id`, `epoch`. Administrators only: it holds the token and certificate records |

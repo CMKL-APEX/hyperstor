@@ -111,9 +111,26 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
     let _one = one_at_a_time();
     let s = Scratch::new("converge");
     let root = s.path("root");
+    // As an installer before D422 left a host: hsctl was `hyperstorctl`,
+    // its configuration `hyperstorctl.conf`.
+    for (old, text) in [
+        ("usr/local/bin/hyperstorctl", "an old binary"),
+        ("etc/hyperstor/hyperstorctl.conf", "api 127.0.0.1:1\n"),
+    ] {
+        std::fs::create_dir_all(root.join(old).parent().unwrap()).unwrap();
+        std::fs::write(root.join(old), text).unwrap();
+    }
     let first = install(&root, &["--all-in-one", "--nodes", "2", "--size-gib", "1"]);
+    // The old name is a link to hsctl now, and the old configuration
+    // gone.
+    assert_eq!(
+        std::fs::read_link(root.join("usr/local/bin/hyperstorctl")).unwrap(),
+        std::path::Path::new("hsctl")
+    );
+    assert!(!root.join("etc/hyperstor/hyperstorctl.conf").exists());
+    assert!(root.join("etc/hyperstor/hsctl.conf").exists());
     for f in [
-        "/usr/local/bin/hyperstorctl",
+        "/usr/local/bin/hsctl",
         "/usr/local/bin/hyperstor-install",
         "/etc/hyperstor/cluster.txt",
         "/etc/hyperstor/node-1.env",
@@ -158,7 +175,11 @@ fn install_is_convergent_and_uninstall_keeps_configuration() {
     );
 
     install_cmd(&root, "uninstall", &[]).ok();
-    assert!(!root.join("usr/local/bin/hyperstorctl").exists());
+    assert!(!root.join("usr/local/bin/hsctl").exists());
+    assert!(
+        std::fs::symlink_metadata(root.join("usr/local/bin/hyperstorctl")).is_err(),
+        "the old name's link goes too"
+    );
     assert!(!root.join("usr/local/bin/hyperstor-install").exists());
     assert!(
         !root
@@ -242,7 +263,7 @@ fn a_missing_binary_installs_nothing() {
         "hyperstor-install",
         "hyperstor-meta",
         "hyperstord",
-        "hyperstorctl",
+        "hsctl",
         "hyperstor-mgmt",
         "hyperstor-authd",
         "hyperstor-vhost",
@@ -355,7 +376,7 @@ fn cluster_file_install_across_hosts() {
     let api = format!("127.0.0.1:{api_port}");
     let pki = meta_root.join("etc/hyperstor/pki");
     let ctl = |args: &[&str]| {
-        let o = Command::new(bin.join("hyperstorctl"))
+        let o = Command::new(bin.join("hsctl"))
             .env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
             .args(["--api", &api, "--tls", pki.to_str().unwrap()])
             .args(args)
@@ -380,7 +401,7 @@ fn cluster_file_install_across_hosts() {
 /// Endpoints from the cluster file (26-networks.md §29.5, D207): each
 /// storage host's installer gives `hyperstord` its devices' endpoints on
 /// network `fast` (a second loopback address here) and the network, and
-/// the nodes replicate to each other there. `hyperstorctl io-test
+/// the nodes replicate to each other there. `hsctl io-test
 /// --networks fast` reaches them there too (D340).
 #[test]
 fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
@@ -473,7 +494,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     let api = format!("127.0.0.1:{api_port}");
     let pki = meta_root.join("etc/hyperstor/pki");
     let ctl = |args: &[&str]| {
-        let o = Command::new(bin.join("hyperstorctl"))
+        let o = Command::new(bin.join("hsctl"))
             .env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
             .args(["--api", &api, "--tls", pki.to_str().unwrap()])
             .args(args)
@@ -484,10 +505,10 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
             String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
         )
     };
-    // A hyperstorctl run, and the endpoints on network `fast` it held
+    // A hsctl run, and the endpoints on network `fast` it held
     // connections to while it ran.
     let ctl_sockets = |args: &[&str]| {
-        let mut child = Command::new(bin.join("hyperstorctl"))
+        let mut child = Command::new(bin.join("hsctl"))
             .env("HYPERSTOR_TIMEOUT", CTL_TIMEOUT)
             .args(["--api", &api, "--tls", pki.to_str().unwrap()])
             .args(args)
@@ -510,7 +531,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     let (code, out) = ctl(&["status", "--wait", "30"]);
     assert_eq!(code, Some(0), "{out}");
     // At the devices' addresses (and whatever the host's own
-    // hyperstorctl.conf says, kept out by `none`).
+    // hsctl.conf says, kept out by `none`).
     let (code, out, used) = ctl_sockets(&["io-test", "--mib", "64", "--networks", "none"]);
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("at the devices' addresses"), "{out}");
@@ -519,7 +540,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     // 16 chunks over 32 PGs, so every node is a replica of some.
     let want: std::collections::BTreeSet<u16> = (0..3).map(|n| base + 8 + n).collect();
     let seen = established_on([127, 0, 0, 2]);
-    // D340: hyperstorctl on network `fast` reaches every node at its
+    // D340: hsctl on network `fast` reaches every node at its
     // endpoint there, the primaries of the PGs it writes.
     let (code, out, used) = ctl_sockets(&["io-test", "--mib", "64", "--networks", "fast"]);
     assert_eq!(code, Some(0), "{out}");
@@ -535,7 +556,7 @@ fn storage_nodes_replicate_over_endpoints_from_the_cluster_file() {
     assert!(want.is_subset(&seen), "{want:?} not all in {seen:?}");
     assert!(
         want.is_subset(&used),
-        "hyperstorctl's endpoints {used:?}, not all of {want:?}"
+        "hsctl's endpoints {used:?}, not all of {want:?}"
     );
 }
 
@@ -1078,7 +1099,7 @@ fn a_host_a_bound_client_joins_is_bound_to_its_realms() {
     assert!(!hosts_of("acme").contains(&name) && !hosts_of("other").contains(&name));
 }
 
-/// `hyperstorctl --identity DIR` (D385, I454): the commands that move data
+/// `hsctl --identity DIR` (D385, I454): the commands that move data
 /// show storage nodes the host's own certificate, and the nodes hold them
 /// to the host's realms though the tool names no host: a volume of its
 /// realm is written, another realm's isn't. With the administrator's

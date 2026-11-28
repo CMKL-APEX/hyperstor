@@ -13,7 +13,7 @@ one client at a time (see [Concepts](../concepts.md#volumes)), and in
 
 Volumes are made, snapshotted, cloned and deleted through the client
 library, or by administrators with
-[`hyperstorctl`](../reference/hyperstorctl.md) and the web UI (see
+[`hsctl`](../reference/hsctl.md) and the web UI (see
 [Volumes and snapshots](../admin-guide/managing.md#volumes-and-snapshots)).
 Block devices for remote hosts (NVMe over TCP) and a filesystem are
 planned (see [Status](../status.md)).

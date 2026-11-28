@@ -1916,7 +1916,7 @@ async fn create_bucket(
             ApiError::new(
                 503,
                 "ServiceUnavailable",
-                "no default placement: an administrator sets one (hyperstorctl s3 placement set --name default)",
+                "no default placement: an administrator sets one (hsctl s3 placement set --name default)",
             )
         } else {
             ApiError::new(

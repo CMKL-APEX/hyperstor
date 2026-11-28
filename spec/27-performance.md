@@ -2,7 +2,7 @@
 
 Where a cluster's load is, what its drives say of themselves, and what to
 do about either: what storage devices measure and report, what the map
-service's leader keeps, the views in the web UI and `hyperstorctl`, and
+service's leader keeps, the views in the web UI and `hsctl`, and
 the Advisor's rules. Part of the hyperstor design; sections keep their
 numbers across documents, so `§N` in one document is the same section
 everywhere (see [README.md](README.md)).
@@ -156,7 +156,7 @@ snoozed for a day in the browser that shows it.
 | Volumes | The busiest volumes now; **Move to pool**, or copy, with its command |
 | Overview | Requests per second over 15 minutes, the slowest device's p99, the top 3 findings |
 | Advisor | Every finding, with its numbers, what to do and its command |
-| `hyperstorctl` | `pg-grid --heat read\|write [--pg N]`, `perf [--device D]`, `top-volumes [--limit N]`, `advise` |
+| `hsctl` | `pg-grid --heat read\|write [--pg N]`, `perf [--device D]`, `top-volumes [--limit N]`, `advise` |
 
 Charts are plain SVG in the page's colours; each view polls only while
 shown (every 5 s; findings every 10 s).

@@ -17,20 +17,20 @@ usage: hyperstor-ublk attach --meta ADDR[,ADDR...] --id ID [--take-over] [--pree
 | Option | Default | Meaning |
 |---|---|---|
 | `--meta ADDR[,ADDR...]` | | The map service's members (its `--listen` addresses) |
-| `--id ID` | | The volume (32 hexadecimal digits, as `hyperstorctl volumes` shows) |
+| `--id ID` | | The volume (32 hexadecimal digits, as `hsctl volumes` shows) |
 | `--take-over` | off | The volume's holder died or is cut off: wait until its lease runs out (up to 4 s), then blocklist it and take the lease |
 | `--preempt` | off | Take the volume from a holder that is still running: blocklist it first, so its writes are refused |
 | `--depth N` | 64 | Requests the device takes at once (1–4096) |
-| `--host NAME` | its hostname | The name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
+| `--host NAME` | its hostname | The name it gives storage nodes, by which a host is bound to realms (`hsctl realm host`) |
 | `--identity DIR` | none | The host's identity on the storage network: `host.crt` and `host.key` in `DIR` (a host joined with `hyperstor-install --role vhost --join`), else `node.crt` or `api.crt` (a storage or map service host), with `root.crt`. With it, each connection to a storage node or the map service starts TLS where the cluster's mode allows. `hyperstor-install` sets it where the host has an identity |
 | `--dev N` | | `delete`: the device's number, as in `/dev/ublkbN` |
 
 Without `--take-over` or `--preempt`, `attach` is refused while another
 client has the volume attached. A volume can't be deleted while it is
-attached, unless with `hyperstorctl delete-volume --force`.
+attached, unless with `hsctl delete-volume --force`.
 
 ```sh
-id=$(hyperstorctl create-volume --size 10G --name scratch | awk '{print $2}')
+id=$(hsctl create-volume --size 10G --name scratch | awk '{print $2}')
 sudo hyperstor-ublk attach --meta 192.0.2.10:8849 --id "$id" &
 sudo mkfs.ext4 /dev/ublkb0 && sudo mount /dev/ublkb0 /mnt
 ```

@@ -28,12 +28,7 @@ fn the_leader_shows_where_the_load_is() {
     let stop = Arc::new(AtomicBool::new(false));
     let reader = {
         let (stop, out) = (stop.clone(), c.scratch.path("back.raw"));
-        let (bin, api, pki, id) = (
-            c.bin.join("hyperstorctl"),
-            c.api.clone(),
-            c.pki(),
-            id.clone(),
-        );
+        let (bin, api, pki, id) = (c.bin.join("hsctl"), c.api.clone(), c.pki(), id.clone());
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 let _ = std::process::Command::new(&bin)

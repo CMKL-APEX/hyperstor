@@ -1,4 +1,4 @@
-//! `hyperstorctl auth login --directory ISSUER`: a person of a trusted
+//! `hsctl auth login --directory ISSUER`: a person of a trusted
 //! glidex directory signs in for the command line (19-administration.md
 //! §23.12, D307), by the directory's device grant as glidex's own CLI
 //! does (`gxctl auth login`, glidex D55): an access token for this
@@ -270,7 +270,7 @@ pub fn device_login(
         .as_str()
         .or(v["verification_uri"].as_str())
         .unwrap_or("the directory's device page");
-    eprintln!("hyperstorctl: open {page} and confirm the code {user_code}");
+    eprintln!("hsctl: open {page} and confirm the code {user_code}");
     let mut wait = v["interval"].as_u64().unwrap_or(5).max(1);
     let until = now() + v["expires_in"].as_u64().unwrap_or(600);
     let res = resource(cluster_id);

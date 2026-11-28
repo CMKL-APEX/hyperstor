@@ -14,7 +14,7 @@ A Hyperstor cluster today is:
 - where S3 clients reach the cluster, the **S3 gateway**
   (`hyperstor-s3`), one or more per realm;
 - **clients**: programs using the client library, `hyperstor-ublk` and
-  `hyperstorctl`.
+  `hsctl`.
 
 The cluster is described by one text file, the
 [cluster file](../reference/cluster-file.md), read by the map service at

@@ -33,7 +33,7 @@ pub enum Role {
     Meta,
     /// The management service (`hyperstor-mgmt`) or glidex's control plane.
     Mgmt,
-    /// An administrator's tool, `hyperstorctl`.
+    /// An administrator's tool, `hsctl`.
     Admin,
     /// A bare-metal host that attaches exported volumes.
     Host,

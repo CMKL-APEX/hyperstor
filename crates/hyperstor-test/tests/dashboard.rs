@@ -239,10 +239,10 @@ fn people_log_in_and_do_what_their_roles_allow() {
     // A fresh login can.
     let (code, _, b) = c.as_session(&ann, "POST", delete, &del);
     assert_eq!(code, 200, "{b}");
-    // hyperstorctl through mgmt, as ann with her token: the same roles,
-    // the same step-up, the API's refusals as hyperstorctl shows them.
+    // hsctl through mgmt, as ann with her token: the same roles,
+    // the same step-up, the API's refusals as hsctl shows them.
     let ctl = |args: &[&str], token: &str| {
-        let o = std::process::Command::new(c.bin.join("hyperstorctl"))
+        let o = std::process::Command::new(c.bin.join("hsctl"))
             .args(["--mgmt", &c.mgmt_url()])
             .arg("--mgmt-ca")
             .arg(c.pki().join("root.crt"))
@@ -270,7 +270,7 @@ fn people_log_in_and_do_what_their_roles_allow() {
     assert!(code == 4 && out.contains("(reauth_required)"), "{out}");
     let (code, out) = ctl(&["status"], "hst_not-a-token");
     assert!(code == 4 && out.contains("(unauthenticated)"), "{out}");
-    let out = std::process::Command::new(c.bin.join("hyperstorctl"))
+    let out = std::process::Command::new(c.bin.join("hsctl"))
         .args(["--mgmt", "http://192.0.2.1:8852", "status"])
         .env("HYPERSTOR_TOKEN", &token)
         .output()
@@ -619,7 +619,7 @@ fn roles_on_a_realm_reach_only_it() {
     );
     assert_eq!(c.as_session(&cy, "DELETE", "/auth/users/bob", "").0, 403);
 
-    // hyperstorctl through mgmt, with bob's token, and ann's narrowed to
+    // hsctl through mgmt, with bob's token, and ann's narrowed to
     // a realm with --in-realm.
     let token_of = |s: &Session| {
         let (code, _, b) = c.as_session(s, "POST", "/auth/tokens", r#"{"name":"t","days":1}"#);
@@ -627,7 +627,7 @@ fn roles_on_a_realm_reach_only_it() {
         json(&b)["token"].as_str().unwrap().to_string()
     };
     let ctl = |args: &[&str], token: &str| {
-        let o = std::process::Command::new(c.bin.join("hyperstorctl"))
+        let o = std::process::Command::new(c.bin.join("hsctl"))
             .args(["--mgmt", &c.mgmt_url()])
             .arg("--mgmt-ca")
             .arg(c.pki().join("root.crt"))

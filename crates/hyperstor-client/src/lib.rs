@@ -328,7 +328,7 @@ pub fn refuse_revoked(c: &Conn, addr: std::net::SocketAddr) -> RpcError {
 ///   `allow` everything, as before authentication (a migration state).
 /// - `host`, `s3`, `admin` and `mgmt` certificates send clients'
 ///   messages only. `mgmt` because a management client moves volume
-///   data with its own certificate today (`hyperstorctl write-volume`,
+///   data with its own certificate today (`hsctl write-volume`,
 ///   glidex's image import); see I451.
 /// - A `node` certificate sends those and nodes' messages, its reports
 ///   only as its own node: a report's node, or its device's node by

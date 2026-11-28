@@ -873,7 +873,7 @@ async fn serve(
                         return;
                     };
                     if check_peer(s.get_ref().1.peer_certificates(), &t.cluster, &db).is_err() {
-                        // Named by address: `hyperstorctl cert list` has the
+                        // Named by address: `hsctl cert list` has the
                         // certificates.
                         eprintln!(
                             "hyperstor-meta: refused a member connection from {}: its certificate is revoked, another cluster's, or not a member's",

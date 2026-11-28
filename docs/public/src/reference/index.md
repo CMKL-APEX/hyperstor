@@ -6,7 +6,7 @@
 | [hyperstor-meta](hyperstor-meta.md) | The map service's options |
 | [hyperstord](hyperstord.md) | The storage node's options |
 | [hyperstor-bench](hyperstor-bench.md) | The load generator's modes |
-| [hyperstorctl](hyperstorctl.md) | Managing and testing a cluster |
+| [hsctl](hsctl.md) | Managing and testing a cluster |
 | [hyperstor-ublk](hyperstor-ublk.md) | A volume as a Linux block device |
 | [hyperstor-vhost](hyperstor-vhost.md) | Volumes as virtual machines' disks, over vhost-user-blk |
 | [hyperstor-s3](hyperstor-s3.md) | The S3 gateway: buckets and objects over HTTPS |

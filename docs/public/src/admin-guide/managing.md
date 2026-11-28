@@ -1,6 +1,6 @@
 # Managing a cluster
 
-`hyperstorctl` talks to the [cluster API](../reference/cluster-api.md).
+`hsctl` talks to the [cluster API](../reference/cluster-api.md).
 On a host set up with `hyperstor-install` it finds the API by itself;
 elsewhere, give `--api IP:PORT` or set `HYPERSTOR_API`.
 
@@ -14,7 +14,7 @@ and a grid of their PGs, volumes with their snapshots and clones, the
 trash, operations, the map service's members, tenancy (realms, tenants
 and projects, glidex directories and offers), security (people and
 roles, API tokens, join tokens, certificates) and the audit log. Each
-action acts as the person logged in, and shows its `hyperstorctl`
+action acts as the person logged in, and shows its `hsctl`
 command. Without `--ui`, a built-in dashboard only shows: health with
 its reasons, I/O rates, space, pools with their PG states (and each PG's
 acting and up sets), and every storage node with its state, last
@@ -97,7 +97,7 @@ its placements, its people's grants and the operations on its volumes,
 and nothing of the cluster as a whole; the UI starts them in their
 realm. Volumes, the trash and operations show each one's realm. Pools, devices, nodes and
 hosts stay yours. To see what they see, pick the realm in the UI's
-realm picker, or use `hyperstorctl --mgmt URL --in-realm acme`.
+realm picker, or use `hsctl --mgmt URL --in-realm acme`.
 
 The exact list is in [hyperstor-mgmt](../reference/hyperstor-mgmt.md#logins).
 Deleting, rolling back, purging, removing or converting a device, making tokens,
@@ -109,21 +109,21 @@ idle.
 **API tokens.** For scripts, each person makes API tokens for
 themselves on the UI's Security page (90 days by default, a year at
 most). A token acts with its owner's roles, but never counts as a fresh
-login. `hyperstorctl` uses one through mgmt with `--mgmt`, so the map
+login. `hsctl` uses one through mgmt with `--mgmt`, so the map
 service's audit names the person rather than a certificate:
 
 ```sh
 # the token in a file only you can read
-hyperstorctl --mgmt https://192.0.2.10:8852 --token-file ~/.hyperstor-token status
+hsctl --mgmt https://192.0.2.10:8852 --token-file ~/.hyperstor-token status
 ```
 
 `HYPERSTOR_MGMT` can stand for `--mgmt`. What needs a fresh login is
 refused that way with `(reauth_required)`: do it on the UI, or with the
 administrator's certificate. See
-[hyperstorctl](../reference/hyperstorctl.md).
+[hsctl](../reference/hsctl.md).
 
 The web UI does what this page and [Pools and devices](pools-and-devices.md)
-do with `hyperstorctl`, each
+do with `hsctl`, each
 action on the page of what it changes, showing the command it stands
 for: on **Nodes**, adding a device, setting its weight or class, taking
 it out or in, removing it (its plan first) and draining a node; on
@@ -144,11 +144,11 @@ counts against the pool, for the pool's grace period (a day by default).
 Then the map service purges it.
 
 ```sh
-hyperstorctl delete-volume --id ID        # → the trash, purged in a day
-hyperstorctl trash list
-hyperstorctl trash restore --id ID        # back, under its name
-hyperstorctl trash purge --id ID --wait 600   # gone now (a fresh login, through mgmt)
-hyperstorctl trash settings --pool 1 --grace 604800   # keep a week
+hsctl delete-volume --id ID        # → the trash, purged in a day
+hsctl trash list
+hsctl trash restore --id ID        # back, under its name
+hsctl trash purge --id ID --wait 600   # gone now (a fresh login, through mgmt)
+hsctl trash settings --pool 1 --grace 604800   # keep a week
 ```
 
 A restored volume whose name another volume took meanwhile comes back
@@ -171,9 +171,9 @@ went. Each record goes to the service's journal at once, and to the
 cluster's audit log in `.meta` within a second, kept a year by default:
 
 ```sh
-hyperstorctl audit list --since 1d --op DeleteVolume
-hyperstorctl audit list --principal user:ann --json
-hyperstorctl audit settings --retention-days 730
+hsctl audit list --since 1d --op DeleteVolume
+hsctl audit list --principal user:ann --json
+hsctl audit settings --retention-days 730
 journalctl -u hyperstor-meta -u hyperstor-mgmt | grep '"audit":1'
 ```
 
@@ -186,7 +186,7 @@ recorded, and when the minute ends one `Refused` record says how many
 more there were. The journal has every one:
 
 ```sh
-hyperstorctl audit list --op Refused
+hsctl audit list --op Refused
 ```
 
 The map service records its own changes of leader, as `hyperstor-meta`:
@@ -195,13 +195,13 @@ leader before it, and a leader that sees another take over, or none,
 records `LeaderLost`:
 
 ```sh
-hyperstorctl audit list --since 7d --op LeaderElected
+hsctl audit list --since 7d --op LeaderElected
 ```
 
 ## Health
 
 ```sh
-hyperstorctl status
+hsctl status
 ```
 
 ```text
@@ -221,22 +221,22 @@ POOL NAME         KIND       SIZE MIN   PGS  CHUNK  CLEAN DEGRADED  BACKFILL INA
 | `warn` | Something is down, out, degraded or backfilling, a node flaps, a device is past `nearfull` or `backfillfull`, a device's drive isn't answering, cache PGs wait for a down node, or scrub found PGs whose copies it couldn't repair (`inconsistent`); data is still writable | 1 |
 | `error` | Some PG has fewer copies than the pool's minimum, or no primary: writes to it stop. Or a device is past `full`: it refuses new data | 1 |
 
-The exit status makes `hyperstorctl status` usable in scripts and
-monitoring checks; `--json` gives the whole answer. `hyperstorctl status
+The exit status makes `hsctl status` usable in scripts and
+monitoring checks; `--json` gives the whole answer. `hsctl status
 --wait 60` waits up to a minute for health to become `ok`, for example
 right after an install or bringing a device back in.
 
-Space: `hyperstorctl pools` shows each pool's usable free and total
-space, after its copies or erasure coding, and `hyperstorctl nodes` each
+Space: `hsctl pools` shows each pool's usable free and total
+space, after its copies or erasure coding, and `hsctl nodes` each
 device's raw free and total space. The web UI shows the same as bars on
 the Pools and Nodes pages and under each pool on the Overview, amber
 from 85 % used and red from 95 %. Devices report their space to the map
 service's leader every 5 seconds; until each has, its figures show `-`.
 Any member answers with them: one that doesn't lead asks the leader,
-so `hyperstorctl` gives the same figures wherever it runs.
+so `hsctl` gives the same figures wherever it runs.
 
-`hyperstorctl nodes`, `pools` and `pgs --pool 1` show the details;
-`pgs --pool 1 --pg 17` shows one PG. `hyperstorctl pg-grid --pool 1`
+`hsctl nodes`, `pools` and `pgs --pool 1` show the details;
+`pgs --pool 1 --pg 17` shows one PG. `hsctl pg-grid --pool 1`
 prints a character per PG, 64 to a line (`.` clean, `d` degraded, `b`
 backfilling, `X` inactive), as the web UI's grid shows them in colour:
 
@@ -251,7 +251,7 @@ the states again (a byte per PG) only when the cluster map has changed.
 The UI also shades each cell by how much data the PG holds: the more,
 the more solid its colour. Each PG's primary reports the bytes its copy
 holds every 30 seconds, and the shading is its share of the pool's
-fullest PG, so pale cells next to solid ones show an uneven pool. Hover over a cell for its state and approximate size. `hyperstorctl
+fullest PG, so pale cells next to solid ones show an uneven pool. Hover over a cell for its state and approximate size. `hsctl
 pg-grid --usage` adds a digit per PG, `0` for the least data to `9` for
 the most (`?` before the PG's primary has reported):
 
@@ -294,7 +294,7 @@ its peers wait. Each storage node logs:
 
 ### The map service's members
 
-`hyperstorctl member list`, asked of the leader, shows how far each
+`hsctl member list`, asked of the leader, shows how far each
 member is behind the leader's log and its state; the web UI's Members
 page shows the same, with the term:
 
@@ -329,17 +329,17 @@ page: [Pools and devices](pools-and-devices.md).
 
 ## Draining a node
 
-`hyperstorctl drain --node N` takes every device of node N out and
+`hsctl drain --node N` takes every device of node N out and
 follows its PGs as an operation, until none lives on the node and none
 is still moving: then the node can be switched off or serviced.
 
 ```sh
-hyperstorctl drain --node 3 --dry-run   # what would move; nothing changes
-hyperstorctl drain --node 3 --wait 600  # drain and follow it to the end
-hyperstorctl op list                    # running and recent operations
-hyperstorctl op watch --id ID           # follow one
-hyperstorctl op cancel --id ID          # stop; the devices come back in
-hyperstorctl in --node 3                # after the service
+hsctl drain --node 3 --dry-run   # what would move; nothing changes
+hsctl drain --node 3 --wait 600  # drain and follow it to the end
+hsctl op list                    # running and recent operations
+hsctl op watch --id ID           # follow one
+hsctl op cancel --id ID          # stop; the devices come back in
+hsctl in --node 3                # after the service
 ```
 
 `drain` prints each PG that moves, with its acting set before and where
@@ -357,9 +357,9 @@ operation failed or was cancelled, for scripts.
 A certificate that leaked, or a host that is gone, is revoked by serial:
 
 ```sh
-hyperstorctl cert list                       # certificates issued through the API
-hyperstorctl cert show --file /path/node.crt # a certificate file's serial
-hyperstorctl cert revoke --serial SERIAL
+hsctl cert list                       # certificates issued through the API
+hsctl cert show --file /path/node.crt # a certificate file's serial
+hsctl cert revoke --serial SERIAL
 ```
 
 Every map service member then refuses it, on the cluster API and
@@ -368,7 +368,7 @@ The local socket on a map service host needs no certificate, so
 revoking the administrator's own never locks root out.
 
 Storage nodes refuse it too, where connections authenticate (the
-data path's TLS mode is `allow`; `hyperstorctl data-tls status`). The
+data path's TLS mode is `allow`; `hsctl data-tls status`). The
 list travels in the cluster map, and the command answers once every
 storage node that is up holds it. From then:
 
@@ -397,8 +397,8 @@ other with the cluster's certificates. The cluster's mode says how far
 that goes:
 
 ```sh
-hyperstorctl data-tls status
-hyperstorctl data-tls set --mode allow      # or off, or require
+hsctl data-tls status
+hsctl data-tls set --mode allow      # or off, or require
 ```
 
 | Mode | A connection that shows a certificate | One that shows none |
@@ -430,8 +430,8 @@ unless the cluster encrypts. To encrypt on every network you haven't
 marked trusted:
 
 ```sh
-hyperstorctl network list                         # mark fast fabrics trusted first
-hyperstorctl data-tls set --mode allow --encrypt on
+hsctl network list                         # mark fast fabrics trusted first
+hsctl data-tls set --mode allow --encrypt on
 ```
 
 | Address | Encrypted once `--encrypt on` |
@@ -468,12 +468,12 @@ To move a cluster to `require`:
 
 1. Set `allow`, and give every client a certificate (VM hosts join
    with a `host` token; see Installation).
-2. Run `hyperstorctl data-tls status`: it lists the addresses storage
+2. Run `hsctl data-tls status`: it lists the addresses storage
    nodes served without a certificate in the last ten minutes, with
    the nodes that served them. `hyperstor_unauthenticated_connections_total`
    on each node counts the same connections; while it rises, something
    still connects without one.
-3. `hyperstorctl data-tls set --mode require`. It is refused, with the
+3. `hsctl data-tls set --mode require`. It is refused, with the
    nodes named, while a storage node that is up runs a release from
    before it or holds no certificate: that node would be cut off by
    its peers, or would go on serving anyone. The map service asks
@@ -487,15 +487,15 @@ each in its log. `allow` turns it back at any time.
 ## Volumes and snapshots
 
 ```sh
-hyperstorctl create-volume --size 10G --name db      # prints its id
-hyperstorctl volumes --pool 1
-hyperstorctl snapshot create --id ID --name nightly
-hyperstorctl snapshot list --id ID
-hyperstorctl snapshot group --ids ID1,ID2 --name db  # one instant for both
-hyperstorctl clone-volume --id ID --epoch E --name test-copy
-hyperstorctl rollback-volume --id ID --epoch E       # the volume must be detached
-hyperstorctl flatten-volume --id CLONE --wait 3600  # so its parents can go
-hyperstorctl snapshot delete --id ID --epoch E
+hsctl create-volume --size 10G --name db      # prints its id
+hsctl volumes --pool 1
+hsctl snapshot create --id ID --name nightly
+hsctl snapshot list --id ID
+hsctl snapshot group --ids ID1,ID2 --name db  # one instant for both
+hsctl clone-volume --id ID --epoch E --name test-copy
+hsctl rollback-volume --id ID --epoch E       # the volume must be detached
+hsctl flatten-volume --id CLONE --wait 3600  # so its parents can go
+hsctl snapshot delete --id ID --epoch E
 ```
 
 A snapshot of an attached volume pauses its client's writes while it is
@@ -503,9 +503,9 @@ cut, at most 2 s. A snapshot that a clone or a rollback still reads from
 can't be deleted (reason `in_use`): flatten or delete the clone first.
 To test a volume as a block device on a host, serve it with
 [`hyperstor-ublk`](../reference/hyperstor-ublk.md). All options are in
-the [`hyperstorctl` reference](../reference/hyperstorctl.md).
+the [`hsctl` reference](../reference/hsctl.md).
 
-`hyperstorctl expand-volume --id ID --size 20G` grows a volume (never
+`hsctl expand-volume --id ID --size 20G` grows a volume (never
 shrinks it); a client that has it attached sees the new size once it
 attaches again. `write-volume` and `read-volume` copy a file into or
 out of a detached volume, such as a disk image.
@@ -515,8 +515,8 @@ Deleting a volume or a snapshot moves it to [the trash](#the-trash).
 ### Space
 
 ```sh
-hyperstorctl space              # every pool: per tenant, per project, per volume
-hyperstorctl space --pool 1
+hsctl space              # every pool: per tenant, per project, per volume
+hsctl space --pool 1
 ```
 
 Each volume's space is counted in bytes of one copy (a pool keeping 3
@@ -548,8 +548,8 @@ glidex.
 ### Copying and moving between pools
 
 ```sh
-hyperstorctl copy-volume --id ID --epoch E --pool 3 --name db-copy --wait 3600
-hyperstorctl move-volume --id ID --pool 3 --wait 3600
+hsctl copy-volume --id ID --epoch E --pool 3 --name db-copy --wait 3600
+hsctl move-volume --id ID --pool 3 --wait 3600
 ```
 
 `copy-volume` makes a new volume in another pool from a volume's
@@ -563,7 +563,7 @@ for it; a move then deletes the data in the old pool.
 
 ## Object storage
 
-The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
+The web UI's **Object storage** page, and `hsctl s3`, manage S3
 ([installing gateways](installation.md#s3-gateways)):
 
 - **Buckets**, every tenant's, named `tenant/bucket`: two tenants may
@@ -575,8 +575,8 @@ The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
   the cluster when asked, so the list needs the storage path up.
 
   ```bash
-  hyperstorctl s3 bucket list                       # or --tenant N
-  hyperstorctl s3 bucket delete --tenant 1 --name photos
+  hsctl s3 bucket list                       # or --tenant N
+  hsctl s3 bucket delete --tenant 1 --name photos
   ```
 
 - **Access keys**, each for one tenant: the secret is shown once, when
@@ -587,12 +587,12 @@ The web UI's **Object storage** page, and `hyperstorctl s3`, manage S3
   `LocationConstraint` names another. Buckets keep the pools they were
   made in.
 - **Realms** are listed; they are made and changed on the
-  [Tenancy](#tenancy) page or with `hyperstorctl realm`
+  [Tenancy](#tenancy) page or with `hsctl realm`
   ([Realms](installation.md#realms)).
 
 ## Tenancy
 
-The web UI's **Tenancy** page manages what `hyperstorctl realm`,
+The web UI's **Tenancy** page manages what `hsctl realm`,
 `tenant`, `project` and `admission` do. It is one of the cluster's
 pages: pick *Whole cluster* in the header's realm picker to see it.
 Each action shows its command, and what needs a login of the last 10
@@ -619,7 +619,7 @@ minutes asks for one.
   directory, with a link to the tenant's or project's page there. Their
   names, realm and which tenant a project belongs to come from the
   directory, so they are changed there: the cluster refuses renaming,
-  moving or deleting them, from the page and from `hyperstorctl` alike
+  moving or deleting them, from the page and from `hsctl` alike
   (`from_directory`). Once the trust ends, or the directory unlinks a
   project that still holds volumes, they are local and managed here. A
   project you make here in such a tenant is local too.
@@ -657,12 +657,12 @@ A dataset is a volume or a bucket (and, once hsfs's filesystems are
 built, a filesystem), named `tenant/project/name`. Properties set on a
 tenant apply to all its projects and datasets, those set on a project
 to its datasets, unless set below. `hsfs`, installed beside
-`hyperstorctl`, takes the same commands in the order `zfs` users type
+`hsctl`, takes the same commands in the order `zfs` users type
 them:
 
 ```sh
-hsfs list acme                      # hyperstorctl dataset list --under acme
-hsfs set pool=fast acme/ml          # hyperstorctl dataset set --dataset acme/ml --property pool=fast
+hsfs list acme                      # hsctl dataset list --under acme
+hsfs set pool=fast acme/ml          # hsctl dataset set --dataset acme/ml --property pool=fast
 hsfs get all acme/ml/train-disk     # each value and where it comes from
 hsfs inherit pool acme/ml           # back to the tenant's
 ```
@@ -747,14 +747,14 @@ client, and give it to the client, which enrols with it (it makes its
 own key and pins the cluster's root):
 
 ```sh
-(umask 077; sudo hyperstorctl token create --role mgmt --name glidex > token)
-# on the client's side: hyperstorctl enroll --file token --api 192.0.2.10:8850 --out DIR
+(umask 077; sudo hsctl token create --role mgmt --name glidex > token)
+# on the client's side: hsctl enroll --file token --api 192.0.2.10:8850 --out DIR
 ```
 
 ## Testing I/O
 
 ```sh
-hyperstorctl io-test --mib 64
+hsctl io-test --mib 64
 ```
 
 writes 64 MiB of random data to a new volume of the first pool (or
@@ -767,12 +767,12 @@ end-to-end check; for measurements use
 ## Load and drives
 
 ```sh
-hyperstorctl pg-grid --pool 1 --heat read   # a digit per PG: reads per second
-hyperstorctl pg-grid --pool 1 --heat write --pg 7   # and that PG's busiest volumes
-hyperstorctl top-volumes                    # volumes sending most requests now
-hyperstorctl perf                           # each device's last minute
-hyperstorctl perf --device 1002             # its drive and 5-s windows
-hyperstorctl advise                         # what stands out, and what to do
+hsctl pg-grid --pool 1 --heat read   # a digit per PG: reads per second
+hsctl pg-grid --pool 1 --heat write --pg 7   # and that PG's busiest volumes
+hsctl top-volumes                    # volumes sending most requests now
+hsctl perf                           # each device's last minute
+hsctl perf --device 1002             # its drive and 5-s windows
+hsctl advise                         # what stands out, and what to do
 ```
 
 Every 5 s each storage device tells the map service's leader what its
@@ -847,10 +847,10 @@ hyperstor_requests_total{node="0",device="0",kind="push"} 0
 | `hyperstor_checkpoint_damage_total` | Damaged checkpoint pages and directories the device's checkpoint scrub found and rewrote (see [Troubleshooting](troubleshooting.md)). Any rise means the device's media is failing somewhere |
 | `hyperstor_map_epoch` | The cluster map epoch the node holds; nodes behind the others haven't heard of a change |
 | `hyperstor_sealing_keys` | Sealing keys the node holds (one per node, without a `device` label): 1, or 2 after a rotation. 0 means the cluster API hasn't answered the node since it started; absent on a node started without `--api` |
-| `hyperstor_encrypted_connections_total` | Connections the device's reactor served whose session stayed encrypted after the handshake, in kernel TLS: those on networks not marked trusted, once the cluster encrypts there (`hyperstorctl data-tls status`) |
+| `hyperstor_encrypted_connections_total` | Connections the device's reactor served whose session stayed encrypted after the handshake, in kernel TLS: those on networks not marked trusted, once the cluster encrypts there (`hsctl data-tls status`) |
 | `hyperstor_revoked_connections_total` | Connections the device's reactor dropped because the caller showed a revoked certificate, at the handshake or once it was revoked. A rise after a revocation is the revoked holder still trying |
 | `hyperstor_refused_connections_total` | Connections the device's reactor refused a request: their certificate's role may not send it, or they showed none while the mode is `require` |
-| `hyperstor_unauthenticated_connections_total` | Connections the device's reactor served a request on without a TLS handshake. While the cluster's mode is `allow` (`hyperstorctl data-tls status`), a rise names a client or node without a certificate: who would be cut off if connections had to authenticate |
+| `hyperstor_unauthenticated_connections_total` | Connections the device's reactor served a request on without a TLS handshake. While the cluster's mode is `allow` (`hsctl data-tls status`), a rise names a client or node without a certificate: who would be cut off if connections had to authenticate |
 
 Gauges are updated once a second. `GET /health` answers `ok` while the
 process runs. The port has no authentication: it only reads, but keep
@@ -865,16 +865,16 @@ and nothing else. Make it on the Prometheus host:
 
 ```sh
 # An administrator, anywhere:
-hyperstorctl token create --role metrics --name prometheus > metrics.token
+hsctl token create --role metrics --name prometheus > metrics.token
 # On the Prometheus host, with the token copied there:
-hyperstorctl --api MEMBER:8850 enroll --file metrics.token --out /etc/prometheus/hyperstor
+hsctl --api MEMBER:8850 enroll --file metrics.token --out /etc/prometheus/hyperstor
 ```
 
 The certificate lives 30 days. Renew it from a daily timer or cron
 job; it renews only in the last third of its life:
 
 ```sh
-hyperstorctl --api MEMBER:8850 --tls /etc/prometheus/hyperstor cert renew
+hsctl --api MEMBER:8850 --tls /etc/prometheus/hyperstor cert renew
 ```
 
 `deploy/prometheus/hyperstor.yml` has the scrape job (`hyperstor-meta`).

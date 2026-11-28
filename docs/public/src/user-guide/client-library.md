@@ -85,7 +85,7 @@ disk.detach().await?;
   size is a multiple of 4096. A retried create is recognised, not
   doubled. `volume(id)`, `list_volumes(pool)`, `expand_volume(id, size)`
   (volumes don't shrink) and `delete_volume(id)` manage them;
-  `hyperstorctl` does the same for administrators.
+  `hsctl` does the same for administrators.
 - A `Volume`'s `state` is `Active`, `Trashed` (see [The trash](#the-trash))
   or `Deleting` (a delete under way, or one that stopped half-way:
   delete it again to finish).
@@ -161,7 +161,7 @@ client.delete_snapshot(v.id, snap.epoch).await?;
 ## The trash
 
 `delete_volume(id)` and `delete_snapshot(id, epoch)` delete at once. The
-cluster API, `hyperstorctl` and the web UI move what they delete to the
+cluster API, `hsctl` and the web UI move what they delete to the
 [trash](../concepts.md#the-trash) instead, where the map service purges
 it after the pool's grace period. A program can do the same:
 

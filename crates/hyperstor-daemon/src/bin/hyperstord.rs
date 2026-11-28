@@ -19,7 +19,7 @@
 //! a liveness answer (`GET /health`) there, from a thread of its own
 //! (19-administration.md §23.3).
 //! Scrub follows each pool's settings in the map (04-decisions.md D224;
-//! `hyperstorctl scrub set`): the `--scrub-hours` and `--hole-repair` of
+//! `hsctl scrub set`): the `--scrub-hours` and `--hole-repair` of
 //! earlier builds are accepted, ignored and logged.
 //! `--io-timeout-secs N` fails a device whose commit (its writes and
 //! flush) takes longer than N seconds (default 30, 04-decisions.md D166).
@@ -64,7 +64,7 @@ fn main() {
         if args.iter().any(|a| a == gone) {
             eprintln!(
                 "hyperstord: {gone} is ignored: each pool's scrub settings are in the map \
-                 now (hyperstorctl scrub set)"
+                 now (hsctl scrub set)"
             );
         }
     }

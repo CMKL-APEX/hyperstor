@@ -224,7 +224,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start"
+what = "The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hsctl device upgrade), at their node's next start"
 spec = ["08-engine.md §7.1", "08-engine.md §7.3", "I309", "I319", "D266", "D267", "D270", "D274"]
 status = "done"
 tests = [
@@ -404,7 +404,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page"
+what = "Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hsctl nodes and the web UI's Nodes page"
 spec = ["D348", "I419", "19-administration.md §23.7"]
 status = "done"
 tests = [
@@ -421,7 +421,7 @@ tests = [
     "cluster::volumes_are_created_listed_grown_and_deleted",
     "cluster::a_volume_has_one_writer_and_is_handed_off",
     "cluster::a_lease_outlives_its_headers_primary",
-    "manage::volumes_through_hyperstorctl",
+    "manage::volumes_through_hsctl",
     "hyperstor_client::volume::tests::headers_round_trip",
     "hyperstor_proto::tests::operation_lists_objects_and_lookups_round_trip",
 ]
@@ -796,12 +796,12 @@ tests = [
     "cluster::a_snapshot_whose_holder_doesnt_quiesce_is_abandoned",
     "cluster::resets_to_the_newest_snapshot_stay_in_place",
     "cluster::a_refilled_clone_keeps_its_holes",
-    "manage::snapshots_through_hyperstorctl",
+    "manage::snapshots_through_hsctl",
     "hyperstor_client::volume::tests::layers_skip_what_a_reset_dropped",
 ]
 
 [[milestone.item]]
-what = "Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hyperstorctl"
+what = "Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hsctl"
 spec = ["10-volumes.md §10.6", "D214", "I242"]
 status = "done"
 tests = [
@@ -1129,7 +1129,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Access keys and placements in the map service, kept with the cluster key, `hyperstorctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part)"
+what = "Access keys and placements in the map service, kept with the cluster key, `hsctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part)"
 spec = ["14-s3.md §14.2", "14-s3.md §14.7", "D162", "D231", "D232", "D233", "I268"]
 status = "done"
 tests = [
@@ -1174,7 +1174,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Virtual-hosted addressing, buckets and keys in mgmt's UI and hyperstorctl, public docs (stage 5)"
+what = "Virtual-hosted addressing, buckets and keys in mgmt's UI and hsctl, public docs (stage 5)"
 spec = ["14-s3.md §14.2", "D199", "D245", "D246", "D254", "D255", "I294", "I295", "I296"]
 status = "done"
 tests = [
@@ -1221,7 +1221,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hyperstorctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet"
+what = "hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hsctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet"
 spec = ["29-hsfs.md §32.2", "29-hsfs.md §32.3", "29-hsfs.md §32.4", "D360", "D361", "D387", "D388", "D389", "I459"]
 status = "partial"
 tests = [
@@ -1232,7 +1232,7 @@ tests = [
     "hyperstor_meta::datasets::tests::a_deleted_project_takes_its_properties",
     "hyperstor_meta::datasets::tests::names_are_qualified_only_where_they_repeat",
     "hyperstor_meta::datasets::tests::a_new_name_its_project_has_is_refused_and_copies_get_their_own",
-    "hyperstor_ctl::tests::hsfs_is_hyperstorctl_dataset_in_zfs_order",
+    "hyperstor_ctl::tests::hsfs_is_hsctl_dataset_in_zfs_order",
 ]
 
 [[milestone.item]]
@@ -1260,7 +1260,7 @@ id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"
 
 [[milestone.item]]
-what = "Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI"
+what = "Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hsctl and the UI"
 spec = ["25-kv-ranges.md §28.9", "14-s3.md §14.6", "D257", "I298"]
 status = "done"
 # Also shown by cluster::kv_jobs_finish_or_undo_from_every_step,
@@ -1272,7 +1272,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Space each volume uses, head and snapshot-only bytes apart (each chunk's versions laid over each other in D155's 30 s walk on each primary), summed per project and per tenant in each pool when read, trash and deletes counted until freed, clones' shared blocks to their parent; GetSpace, ListVolumes' rows, hyperstorctl space and volumes, the UI's volumes; reports to glidex directories send volume_used_bytes from them"
+what = "Space each volume uses, head and snapshot-only bytes apart (each chunk's versions laid over each other in D155's 30 s walk on each primary), summed per project and per tenant in each pool when read, trash and deletes counted until freed, clones' shared blocks to their parent; GetSpace, ListVolumes' rows, hsctl space and volumes, the UI's volumes; reports to glidex directories send volume_used_bytes from them"
 spec = ["20-tenants.md §24.4", "10-volumes.md §10.5", "D335", "D336", "D337", "D338", "D339", "I404", "I405", "I406", "I407"]
 status = "done"
 tests = [
@@ -1295,7 +1295,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host`"
+what = "Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hsctl realm host`"
 spec = ["20-tenants.md §24.8", "D251", "D259", "D261", "I302", "I311", "I412"]
 status = "done"
 tests = [
@@ -1306,7 +1306,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI"
+what = "Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hsctl and a realm picker in the UI"
 spec = ["20-tenants.md §24.8", "D252", "D260", "D262", "D263", "D264", "D265", "I303"]
 status = "done"
 # Also shown by s3::a_realm_has_its_own_gateway_keys_and_pools (copy and
@@ -1321,7 +1321,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm"
+what = "A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hsctl and the UI; creations in realms name their tenant or realm"
 spec = ["20-tenants.md §24.8", "D283", "D286", "I340"]
 status = "done"
 # Also shown end to end by dashboard::roles_on_a_realm_reach_only_it,
@@ -1332,7 +1332,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hyperstorctl tenant` and `project`"
+what = "Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hsctl tenant` and `project`"
 spec = ["20-tenants.md §24.9", "D299", "D300", "I378"]
 status = "done"
 # Also shown by hyperstor_client::volume::tests::headers_round_trip,
@@ -1358,7 +1358,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Moving a project to another tenant, of the same realm or another, as an operation: checks first, buckets renamed with their table ids kept, then the project's record; resumed after a failover, undone if it can't finish; moved projects' tenants in the map for storage nodes' host checks; `hyperstorctl project move`"
+what = "Moving a project to another tenant, of the same realm or another, as an operation: checks first, buckets renamed with their table ids kept, then the project's record; resumed after a failover, undone if it can't finish; moved projects' tenants in the map for storage nodes' host checks; `hsctl project move`"
 spec = ["20-tenants.md §24.9.1", "D303", "I379"]
 status = "done"
 # Also shown by hyperstor_map::port_tests::hosts_bound_to_realms_attach_only_theirs
@@ -1645,7 +1645,7 @@ spec = ["26-networks.md §29.10", "D211", "D212", "G50", "G51"]
 status = "planned"
 
 [[milestone.item]]
-what = "Networks set on a running cluster (also on the web UI's Networks page), nodes serving the endpoints the map has for their devices, and a host's clients (VM disks, S3, hyperstorctl's volume commands) on its storage's networks"
+what = "Networks set on a running cluster (also on the web UI's Networks page), nodes serving the endpoints the map has for their devices, and a host's clients (VM disks, S3, hsctl's volume commands) on its storage's networks"
 spec = ["26-networks.md §29.3", "26-networks.md §29.5", "D284", "D285", "D289", "D340", "I337", "I338", "I347", "I410"]
 status = "done"
 tests = [
@@ -1653,7 +1653,7 @@ tests = [
     "hyperstor_install::tests::a_node_serves_its_devices_endpoints_from_the_map",
     "manage::a_running_cluster_takes_a_network_and_its_node_serves_endpoints_on_it",
     "hyperstor_install::tests::clients_take_the_networks_of_the_hosts_storage",
-    "hyperstor_install::tests::hyperstorctl_takes_the_hosts_client_networks",
+    "hyperstor_install::tests::hsctl_takes_the_hosts_client_networks",
     "hyperstor_ctl::tests::the_volume_commands_networks_come_from_the_flag_then_the_conf",
     "browser::networks_are_set_a_device_s_endpoints_too_and_ports_are_shown",
 ]
@@ -1711,7 +1711,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts"
+what = "T2: `hsctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts"
 spec = ["30-data-path-tls.md §33.5", "30-data-path-tls.md §33.6", "D375", "D385", "I454"]
 status = "done"
 tests = [
@@ -1719,7 +1719,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`)"
+what = "T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hsctl data-tls status` (`GetDataTls`)"
 spec = ["30-data-path-tls.md §33.4", "D373", "I455"]
 status = "done"
 tests = [
@@ -2007,7 +2007,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit"
+what = "Logins with an identity provider (OIDC), hsctl through the management service, and the person named in the map service's audit"
 spec = ["19-administration.md §23.9", "D96", "D107", "D278"]
 status = "done"
 tests = [
@@ -2075,7 +2075,7 @@ id = "AD3"
 title = "Administration from the UI and CLI, with roles, trash and audit"
 
 [[milestone.item]]
-what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hyperstorctl and the UI"
+what = "Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hsctl and the UI"
 spec = ["19-administration.md §23.9.3", "D54", "D114", "D115", "I301"]
 status = "done"
 tests = [
@@ -2087,7 +2087,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI"
+what = "Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hsctl and the UI"
 spec = ["19-administration.md §23.9.4", "D112", "D113"]
 status = "done"
 tests = [
@@ -2110,7 +2110,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI"
+what = "Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hsctl (--wait, op watch) and the UI"
 spec = ["19-administration.md §23.6", "D120", "D121", "D125", "I195"]
 status = "done"
 tests = [
@@ -2122,7 +2122,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "A grid of each pool's PGs in the web UI and hyperstorctl pg-grid, sent a byte per PG and only when the map's epoch has moved; one PG's sets on request"
+what = "A grid of each pool's PGs in the web UI and hsctl pg-grid, sent a byte per PG and only when the map's epoch has moved; one PG's sets on request"
 spec = ["19-administration.md §23.7", "D154", "I189"]
 status = "done"
 tests = [
@@ -2132,7 +2132,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG as a share of the fullest, the UI shades each cell and hyperstorctl pg-grid --usage prints a digit"
+what = "Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG as a share of the fullest, the UI shades each cell and hsctl pg-grid --usage prints a digit"
 spec = ["19-administration.md §23.7", "D155", "I191"]
 status = "done"
 tests = [
@@ -2176,7 +2176,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages"
+what = "Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hsctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages"
 spec = ["16-glidex.md §17", "19-administration.md §23.7", "D156", "I192", "I193", "I197"]
 status = "done"
 tests = [
@@ -2193,7 +2193,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto"
+what = "Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hsctl weight sets one, kept and marked until set back to auto"
 spec = ["07-placement.md §5.2", "D158", "I201"]
 status = "done"
 tests = [
@@ -2204,7 +2204,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool"
+what = "Fullness thresholds: cluster-wide ratios in the map, set with hsctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool"
 spec = ["D27", "D182", "I216", "I217"]
 status = "done"
 tests = [
@@ -2237,7 +2237,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced"
+what = "Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hsctl scrub set; health warns while scrub is reduced"
 spec = ["28-scrub.md §31.2", "28-scrub.md §31.3", "D224", "D225", "D226", "I263"]
 status = "done"
 tests = [
@@ -2249,7 +2249,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs"
+what = "Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hsctl scrub status and scrub pgs"
 spec = ["28-scrub.md §31.4", "28-scrub.md §31.5", "28-scrub.md §31.8", "D227", "D228", "I265"]
 status = "done"
 tests = [
@@ -2266,7 +2266,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean"
+what = "Scrub on demand as an operation (StartScrub, hsctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean"
 spec = ["28-scrub.md §31.6", "28-scrub.md §31.7", "D229", "D230", "I267", "I411"]
 status = "done"
 tests = [
@@ -2277,7 +2277,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns"
+what = "The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hsctl scrub start goes on to the leader's API, which members record and ListMembers returns"
 spec = ["28-scrub.md §31.8", "I271"]
 status = "done"
 tests = [
@@ -2287,7 +2287,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hyperstorctl cert renew"
+what = "Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hsctl cert renew"
 spec = ["28-scrub.md §31.8", "D234", "D235", "I272"]
 status = "done"
 tests = [
@@ -2311,7 +2311,7 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "Logins through a directory (browser, access and API tokens, hyperstorctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness"
+what = "Logins through a directory (browser, access and API tokens, hsctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness"
 spec = ["19-administration.md §23.12", "D307", "D308", "D309", "I387", "I388", "I389", "I390", "I391", "I392", "I393", "I394"]
 status = "done"
 tests = [

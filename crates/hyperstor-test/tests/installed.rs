@@ -11,16 +11,16 @@
 //!
 //! (Running cargo itself as root leaves root-owned files in `target`.)
 //!
-//! They use the installed `hyperstorctl` with its installed
+//! They use the installed `hsctl` with its installed
 //! configuration, write only to new volumes, and change nothing else.
 
 use std::process::Command;
 
 fn ctl(args: &[&str]) -> (i32, String) {
-    let o = Command::new("/usr/local/bin/hyperstorctl")
+    let o = Command::new("/usr/local/bin/hsctl")
         .args(args)
         .output()
-        .expect("/usr/local/bin/hyperstorctl: is Hyperstor installed?");
+        .expect("/usr/local/bin/hsctl: is Hyperstor installed?");
     (
         o.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),

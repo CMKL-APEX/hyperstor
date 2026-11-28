@@ -482,7 +482,7 @@ pub struct ClusterMap {
     /// gateways refuse writes to their objects.
     pub readonly_buckets: BTreeSet<(u32, String)>,
     /// Devices an operator asked to convert to v0.0.8's shard format
-    /// (D274, `hyperstorctl device upgrade`): each node converts its own
+    /// (D274, `hsctl device upgrade`): each node converts its own
     /// the next time it opens them, and the map service drops a device
     /// once it reports the new format.
     pub upgrades: BTreeSet<u32>,

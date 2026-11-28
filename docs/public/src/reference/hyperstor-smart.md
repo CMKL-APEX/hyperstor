@@ -30,8 +30,8 @@ controller's warning and critical temperatures in kelvin, or `error WHY`
 for a device that isn't configured, isn't an NVMe namespace, or doesn't
 answer. It issues read commands only.
 
-The nodes show what it reads in `hyperstorctl perf --device D`, the web
-UI's device panel, and the Advisor (`hyperstorctl advise`).
+The nodes show what it reads in `hsctl perf --device D`, the web
+UI's device panel, and the Advisor (`hsctl advise`).
 
 | Exit status | Meaning |
 |---|---|

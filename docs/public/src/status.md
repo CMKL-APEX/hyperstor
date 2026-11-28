@@ -62,7 +62,7 @@ covered by tests that run on every change.
 | A device that lies: damaged blocks, lost and misdirected writes never lose acknowledged changes silently; damage to the log, a shard superblock or a checkpoint page nothing scrubbed refuses the shard (D268) | Done |
 | Checkpoint directories written twice, the copy read when the first is damaged; each device reads its checkpoint pages once per deep scrub period and rewrites a damaged one before a restart needs it | Done |
 | Freed space discarded on the device (a deallocate on a drive, a punched hole in a file) in batches after each checkpoint, only where still free; on by default, hyperstord --no-discard turns it off per device | Done |
-| The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hyperstorctl device upgrade), at their node's next start | Done |
+| The v0.0.8 shard format: chained log records, superblock mirrors in the log ring, dense block maps relative to the shard; new devices formatted with it, older ones converted when an operator asks (hsctl device upgrade), at their node's next start | Done |
 | A backup device superblock in the last block, read when both copies fail; a device whose copies are blank over its shards' superblocks is damaged, never formatted over | Done |
 | Device back ends: memory, files and block devices through io_uring with O_DIRECT | Done |
 | NVMe passthrough back end | Planned |
@@ -83,7 +83,7 @@ covered by tests that run on every change.
 | Each map service member's Raft state in the leader's view, and the hosts it shares with storage nodes, in the web UI and the CLI; changes of leader in the audit log | Done |
 | Live migration's handover: a delegate handed out by the source, standing by on the target, promoted at the switch with the old holder fenced after (hyperstor-vhost delegate, attach --delegate, promote, undelegate) | Done |
 | A drive whose by-id path is gone found by its superblock's label, with udev rules matching the superblock too | Done |
-| Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hyperstorctl nodes and the web UI's Nodes page | Done |
+| Nodes' host names: reported by each storage node, kept beside the map, shown by the API, hsctl nodes and the web UI's Nodes page | Done |
 | Volume metadata: headers, directories and volume leases | Done |
 | Test block devices through ublk | Done |
 
@@ -138,7 +138,7 @@ covered by tests that run on every change.
 |---|---|
 | Engine: chunk versions read through layers, and merged without copying | Done |
 | Snapshots, clones, rollback, flatten and snapshot deletion | Done |
-| Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hyperstorctl | Done |
+| Copies and moves between pools: a snapshot or a detached head copied into a new volume, a detached volume moved keeping its id, as long operations of the leader; in the API and hsctl | Done |
 | Consistency groups | Done |
 | Paged checkpoints: only the pages changed since the last | Done |
 | The host read cache, in the client library | In progress |
@@ -200,11 +200,11 @@ covered by tests that run on every change.
 |---|---|
 | The object layer: buckets (named per tenant, D243), PUT, GET with ranges, HEAD, DELETE, ListObjectsV2, uploads left behind given up | Done |
 | The HTTP gateway: path-style, SigV4 in headers and presigned URLs, aws-chunked bodies, checksums, S3's errors (another tenant's buckets unknown, D244), replaced chunks kept 15 minutes (stage 2) | Done |
-| Access keys and placements in the map service, kept with the cluster key, `hyperstorctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part) | Done |
+| Access keys and placements in the map service, kept with the cluster key, `hsctl s3`, gateways reading them over the API, CreateBucket into a placement (stage 3, first part) | Done |
 | The `s3` role in the installer: `--s3`, `--role s3` with an s3 token, a gateway in the all-in-one cluster with its default placement (stage 3, second part) | Done |
 | Realms on S3: realms and their tenants, pools listed per realm, placements per realm, a gateway per realm (before stage 4) | Done |
 | Multipart uploads, copy, conditional requests, multi-object delete, checksum headers (stage 4) | Done |
-| Virtual-hosted addressing, buckets and keys in mgmt's UI and hyperstorctl, public docs (stage 5) | Done |
+| Virtual-hosted addressing, buckets and keys in mgmt's UI and hsctl, public docs (stage 5) | Done |
 
 ## HS14: Distributed filesystem
 
@@ -212,7 +212,7 @@ covered by tests that run on every change.
 |---|---|
 | hsfs H0: sealing keys in the map service (made on a storage node's first ask, rotated with the one before still valid, bytes for storage nodes and members only, audited), the sealed capability's format, and storage nodes fetching the keys from the cluster API (D370); no reactor checks a capability yet | In progress |
 | hsfs H0: a pool flag requires capabilities (D371); clients show sealed capabilities on each connection and reactors serve a flagged pool's chunks only as granted, read-only where so; nothing issues capabilities yet | In progress |
-| hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hyperstorctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet | In progress |
+| hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hsctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet | In progress |
 | hsfs H1, second part: `readonly=on` on a volume (set on it or inherited) makes its chunks' primaries refuse clients' writes while it still reads, and on a bucket its gateways refuse writes; both in the cluster map; expand, rollback and flatten refused; CreateBucket asks the map service (PrepareBucket) for the name among the project's datasets and the `pool` | Done |
 | hsfs H1: a dataset's name claimed in a key-value index (store 2) before it is made, by any member, and freed when it is deleted or not made; stale claims taken over; datasets from before the index indexed by the leader | Done |
 
@@ -220,15 +220,15 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hyperstorctl and the UI | Done |
-| Space each volume uses, head and snapshot-only bytes apart (each chunk's versions laid over each other in D155's 30 s walk on each primary), summed per project and per tenant in each pool when read, trash and deletes counted until freed, clones' shared blocks to their parent; GetSpace, ListVolumes' rows, hyperstorctl space and volumes, the UI's volumes; reports to glidex directories send volume_used_bytes from them | Done |
+| Per-bucket objects and bytes, counted exactly per key–value range by the writes themselves (folded by primaries, kept through splits and merges), in the API, hsctl and the UI | Done |
+| Space each volume uses, head and snapshot-only bytes apart (each chunk's versions laid over each other in D155's 30 s walk on each primary), summed per project and per tenant in each pool when read, trash and deletes counted until freed, clones' shared blocks to their parent; GetSpace, ListVolumes' rows, hsctl space and volumes, the UI's volumes; reports to glidex directories send volume_used_bytes from them | Done |
 | A tenant on volumes (optional at creation, inherited by clones), checked against its realm's pools; moving a tenant, or taking a pool from a realm, refused while its buckets or volumes are in pools the realm may not use | Done |
-| Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hyperstorctl realm host` | Done |
-| Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hyperstorctl and a realm picker in the UI | Done |
-| A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hyperstorctl and the UI; creations in realms name their tenant or realm | Done |
-| Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hyperstorctl tenant` and `project` | Done |
+| Hosts bound to realms, by the name each gives (`--host`): the header's primary refuses a lease from a host bound to other realms; bindings and tenants' realms in the cluster map; `hsctl realm host` | Done |
+| Roles granted on a realm (`role@realm`): mgmt names the realms a call reaches and the map service shows and changes only those realms' volumes, buckets, keys, placements and grants; a realm's security administrators manage its keys and people; `--in-realm` in hsctl and a realm picker in the UI | Done |
+| A realm's operations seen by its people, whoever started them; lists naming each row's realm (volumes, trash, operations) in the API, hsctl and the UI; creations in realms name their tenant or realm | Done |
+| Tenants and projects as records (ids given once in the cluster, a default project per tenant, a bare tenant's number adopted); volumes, clones and buckets name their project, a clone maybe another tenant's; S3 keys name their buckets' project; deletes refused while something is in them; `hsctl tenant` and `project` | Done |
 | Roles on a tenant or a project (`role@tenant:NAME`, `role@project:TENANT/NAME`): mgmt names them with the realms a call reaches, and the map service shows and changes only their volumes, buckets, keys and projects | Done |
-| Moving a project to another tenant, of the same realm or another, as an operation: checks first, buckets renamed with their table ids kept, then the project's record; resumed after a failover, undone if it can't finish; moved projects' tenants in the map for storage nodes' host checks; `hyperstorctl project move` | Done |
+| Moving a project to another tenant, of the same realm or another, as an operation: checks first, buckets renamed with their table ids kept, then the project's record; resumed after a failover, undone if it can't finish; moved projects' tenants in the map for storage nodes' host checks; `hsctl project move` | Done |
 | Space counted per (pool, tenant) across volumes, snapshots, trash and buckets, with a soft quota that warns and a hard quota that refuses new allocations in that pool | In progress |
 | Two-level fair share in the reactors: tenants share each priority class by weight, then volumes within a tenant | Planned |
 
@@ -263,7 +263,7 @@ covered by tests that run on every change.
 | The fabric reconciler in the map service's leader: port roles as leases, weights from counters, dwell and revocation (stage 3; built: nodes' port reports with hyperstor's own bytes, the reconciler every 10 s in the leader, leases and weights in the map, senders weighting endpoints by their ports, roles set by the operator; G52 to tune it) | Done |
 | Claims by orchestrators and the orchestrator role; lending policies; glidex's scheduler as the first client (stage 4; built: claims on ports, the orchestrator role, lending per cluster and per port; VFs with stage 5, glidex's scheduler in glidex) | Done |
 | RDMA endpoints and GPU-direct pairing on bare metal and in VMs (stage 5) | Planned |
-| Networks set on a running cluster (also on the web UI's Networks page), nodes serving the endpoints the map has for their devices, and a host's clients (VM disks, S3, hyperstorctl's volume commands) on its storage's networks | Done |
+| Networks set on a running cluster (also on the web UI's Networks page), nodes serving the endpoints the map has for their devices, and a host's clients (VM disks, S3, hsctl's volume commands) on its storage's networks | Done |
 
 ## HS20: Data-path mutual TLS
 
@@ -274,8 +274,8 @@ covered by tests that run on every change.
 | T2: revoked certificates in the cluster map (format 24, protocol version 9): refused by storage nodes, the map service's data port and callers, at the handshake and once revoked; `cert revoke` answers once nodes hold the map | Done |
 | T2: authorization by certificate role on storage nodes and the map service (protocol version 10): clients', nodes' and the map service's messages, a node's reports only as itself, a host's name from its certificate, callers checking who answered; `require`, set only once every node that is up holds a certificate and refuses by it | Done |
 | T2: UDP pings keyed with the sealing key (protocol version 11), plain ones ignored in `require`; the TCP ping fallback authenticated | Done |
-| T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts | Done |
-| T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`) | Done |
+| T2: `hsctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts | Done |
+| T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hsctl data-tls status` (`GetDataTls`) | Done |
 | T2: `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
 | T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again | Done |
 | T3: the installer loads the kernel's `tls` module and checks it (`ktls`); `--encrypt on` refused until every node that is up keeps an encrypted session (D414, I463); G69's cost is measured (I462) | Done |
@@ -324,7 +324,7 @@ covered by tests that run on every change.
 | The PAM helper, and the management service's rows in the map service's store | Done |
 | People log in to the management service with their password (sessions, API tokens, roles in Cedar, step-up, the first administrator's claim, the cluster API on their behalf) | Done |
 | The web UI's footer names the installed build: release, branch and commit, linked to GitHub | Done |
-| Logins with an identity provider (OIDC), hyperstorctl through the management service, and the person named in the map service's audit | Done |
+| Logins with an identity provider (OIDC), hsctl through the management service, and the person named in the map service's audit | Done |
 | People reach mgmt on the host's addresses over HTTPS: a certificate from the cluster CA, the operator's own re-read when it changes, the node's Tailscale certificate | Done |
 | Every host's mgmt sends its calls to the map service's leader, found from the member list; mgmt behind a proxy or a CDN: any CA's certificate and its names, proxies known by a client certificate or address, the person's address from them only, proxy-only | Done |
 | The web UI (React, @glidex/ui-kit): overview, nodes, pools and PGs, volumes and snapshots, operations, members, security; installed as files and served by hyperstor-mgmt --ui | Done |
@@ -334,31 +334,31 @@ covered by tests that run on every change.
 
 | Feature | Status |
 |---|---|
-| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hyperstorctl and the UI | Done |
-| Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hyperstorctl and the UI | Done |
+| Deletes go to a trash: restore, purge at once (step-up), a purger after each pool's grace period, a full pool purging its oldest trash when set to, its settings; in the API, hsctl and the UI | Done |
+| Audit of every change and every refused call, in .meta (a day per object, a year kept), with mgmt's records; in the API, hsctl and the UI | Done |
 | The audit log bounded after a retry storm: repeated refusals summarised a minute at a time, and a day written as numbered parts per member of at most 16 MiB, merged on read and pruned whole | Done |
-| Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hyperstorctl (--wait, op watch) and the UI | Done |
-| A grid of each pool's PGs in the web UI and hyperstorctl pg-grid, sent a byte per PG and only when the map's epoch has moved; one PG's sets on request | Done |
-| Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG as a share of the fullest, the UI shades each cell and hyperstorctl pg-grid --usage prints a digit | Done |
+| Long operations: draining a node (with a dry run, cancellable), flattening a clone and purging from the trash; kept in the replicated store a week, resumed by a new leader once it has fenced the last one, watched as a stream; in the API, hsctl (--wait, op watch) and the UI | Done |
+| A grid of each pool's PGs in the web UI and hsctl pg-grid, sent a byte per PG and only when the map's epoch has moved; one PG's sets on request | Done |
+| Each PG's usage in the grid: primaries report the bytes their copies hold, the leader answers with a level per PG as a share of the fullest, the UI shades each cell and hsctl pg-grid --usage prints a digit | Done |
 | Load and drives: per-PG requests and top volumes from primaries, each device's service time and in flight, drives' sysfs and NVMe SMART (through hyperstor-smart), kept by the leader 15 minutes; pg-grid --heat, perf, top-volumes and advise; the PG grid's Reads and Writes views, the device matrix and panel, busiest volumes with Move to pool, and the Advisor in the web UI | Done |
-| Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hyperstorctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages | Done |
-| Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hyperstorctl weight sets one, kept and marked until set back to auto | Done |
-| Fullness thresholds: cluster-wide ratios in the map, set with hyperstorctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool | Done |
+| Each pool's usable space and each device's raw space in GetStatus: every device reports its data region and free bytes to the leader, divided by the pool's redundancy for pools; hsctl pools and nodes show FREE and TOTAL and status the raw space summed over the devices in, the web UI bars on the Pools, Nodes and Overview pages | Done |
+| Device weights from capacity: each device's weight is its data region in TiB, set by the leader from its space reports (all at once, so devices of one size move nothing), 0 for a joining host until it reports; hsctl weight sets one, kept and marked until set back to auto | Done |
+| Fullness thresholds: cluster-wide ratios in the map, set with hsctl full-ratios; past full a device refuses new objects and writes to unwritten blocks while overwrites, keys of existing objects and deletes go on; devices past backfillfull get no new backfill; each device's and pool's fullness in health, the tables, the UI and the audit log, and no new volume, clone or snapshot in a full pool | Done |
 | A write refused for space held by hyperstor-vhost, retried every second for up to 300 s (--hold-full), before the guest gets an I/O error | Done |
 | Reads and writes held by hyperstor-vhost while the cluster can't serve them, retried every second for up to an hour (--hold-outage), before the guest gets an I/O error | Done |
 | A pool's usable space under its failure-domain rule: no domain counts for more than one copy, or one EC shard, of each PG, so the smallest of as many hosts as copies bounds the pool | Done |
-| Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hyperstorctl scrub set; health warns while scrub is reduced | Done |
-| Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hyperstorctl scrub status and scrub pgs | Done |
-| Scrub on demand as an operation (StartScrub, hyperstorctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean | Done |
-| The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hyperstorctl scrub start goes on to the leader's API, which members record and ListMembers returns | Done |
-| Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hyperstorctl cert renew | Done |
+| Scrub settings per pool in the map (hours, deep every, hole repair, deep rate), followed by storage nodes from the next PG; SetScrubSettings, and WeakenScrubSettings with a reason (step-up through mgmt), audited; hsctl scrub set; health warns while scrub is reduced | Done |
+| Scrub reports per PG kept through Raft, each pass from the PG scrubbed longest ago and deep by each PG's age; health warns of overdue and unchecked PGs and fails on damage; GetScrubStatus, ListPgScrubs, hsctl scrub status and scrub pgs | Done |
+| Scrub on demand as an operation (StartScrub, hsctl scrub start, cancel), and each recovered PG scrubbed light, holes checked, once clean | Done |
+| The UI's Scrub card per pool (settings edited in place, coverage, Scrub now), the PG grid's Scrub view, and health's scrub reasons linked to the pool's PGs; hsctl scrub start goes on to the leader's API, which members record and ListMembers returns | Done |
+| Per-pool scrub metrics (hyperstor_pool_scrub_oldest_seconds, hyperstor_pool_scrub_overdue_pgs, hyperstor_meta_leader) at GET /metrics on the API's port, for a certificate of the new metrics role; hsctl cert renew | Done |
 
 ## AD5: People from glidex directories
 
 | Feature | Status |
 |---|---|
 | mgmt trusts glidex directories: offers, redeem and ends, the feed replica and the tenants and projects it makes, reports with storage counts | Done |
-| Logins through a directory (browser, access and API tokens, hyperstorctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness | Done |
+| Logins through a directory (browser, access and API tokens, hsctl auth login), roles from the feed's links and for the operator tenant's members, partitions past max_staleness | Done |
 | Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person | Done |
 | The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once, pin from mgmt's own certificate); a directory's records refused to every caller; GetSpace without volume rows | Done |
 | A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523) | Done |
