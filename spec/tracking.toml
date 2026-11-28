@@ -1245,6 +1245,16 @@ tests = [
     "hyperstor_map::port_tests::read_only_volumes_travel_only_while_there_are_any",
 ]
 
+[[milestone.item]]
+what = "hsfs H1: a dataset's name claimed in a key-value index (store 2) before it is made, by any member, and freed when it is deleted or not made; stale claims taken over; datasets from before the index indexed by the leader"
+spec = ["29-hsfs.md §32.2", "D424", "I468"]
+status = "done"
+tests = [
+    "cluster::dataset_names_match_a_model",
+    "datasets::a_name_is_taken_once_however_many_ask",
+    "hyperstor_s3::names::tests::holders_decode_as_encoded_and_age",
+]
+
 [[milestone]]
 id = "HS15"
 title = "Tenancy: quotas and fair share between tenants"

@@ -14,6 +14,7 @@ hyperstor-fabric = { path = "../hyperstor-fabric", default-features = false }
 # Volume operations of the cluster API, as a client of .meta (§4.2).
 hyperstor-client = { path = "../hyperstor-client" }
 # Buckets, read from the key-value store for administrators (D254).
+hyperstor-kv = { path = "../hyperstor-kv" }
 hyperstor-s3 = { path = "../hyperstor-s3" }
 hyperstor-placement = { path = "../hyperstor-placement" }
 hyperstor-proto = { path = "../hyperstor-proto" }

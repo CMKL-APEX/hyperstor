@@ -11318,3 +11318,109 @@ fn pings_are_keyed_and_plain_ones_ignored_in_require() {
     assert_eq!(map.data_tls, DataTls::Require);
     c.stop();
 }
+
+/// D424: datasets' names in their projects against a map, through two
+/// clients claiming at random: a name is held by one owner at a time, a
+/// claim of a held name finds its holder and changes nothing, a stale
+/// claim is taken over only while it still holds, and only the holder
+/// frees a name.
+#[test]
+fn dataset_names_match_a_model() {
+    use hyperstor_s3::names::{Claim, Holder, Names, Owner};
+    use std::collections::BTreeMap;
+    let c = Cluster::start(4, 1);
+    let meta = c.meta_addr;
+    std::thread::spawn(move || {
+        block_on(async move {
+            let n = [
+                Names::open(Client::connect(meta, 5).await.unwrap()),
+                Names::open(Client::connect(meta, 6).await.unwrap()),
+            ];
+            assert!(!n[0].complete().await.unwrap());
+            n[1].mark_complete().await.unwrap();
+            assert!(n[0].complete().await.unwrap());
+            let mut model: BTreeMap<(u32, String), Holder> = BTreeMap::new();
+            let mut rng = SmallRng::seed_from_u64(424);
+            for step in 0..400u64 {
+                let who = &n[rng.random_range(0..2)];
+                let key = (
+                    rng.random_range(1..4u32),
+                    ["web", "db", "logs", ""][rng.random_range(0..4)].to_string(),
+                );
+                let owner = match rng.random_range(0..4) {
+                    0 => Owner::Bucket,
+                    o => Owner::Volume(o),
+                };
+                let new = Holder {
+                    owner,
+                    claimed_ms: step + 1,
+                };
+                let held = model.get(&key).copied();
+                match rng.random_range(0..4) {
+                    // A claim of a free name, or a held one's holder found.
+                    0 | 1 => {
+                        let got = who.claim(key.0, &key.1, new, None).await.unwrap();
+                        match held {
+                            None => {
+                                assert_eq!(got, Claim::Claimed, "{step}");
+                                model.insert(key.clone(), new);
+                            }
+                            Some(h) => assert_eq!(got, Claim::Held(h), "{step}"),
+                        }
+                    }
+                    // Taking over a claim: only while it still holds.
+                    2 => {
+                        let stale = Holder {
+                            owner: Owner::Volume(99),
+                            claimed_ms: 0,
+                        };
+                        let replace = if rng.random_bool(0.5) {
+                            held
+                        } else {
+                            Some(stale)
+                        };
+                        let got = who.claim(key.0, &key.1, new, replace).await;
+                        match (held, replace) {
+                            (Some(h), Some(r)) if h == r => {
+                                assert_eq!(got.unwrap(), Claim::Claimed, "{step}");
+                                model.insert(key.clone(), new);
+                            }
+                            (Some(h), _) => assert_eq!(got.unwrap(), Claim::Held(h), "{step}"),
+                            // Released meanwhile: the caller asks again.
+                            (None, Some(_)) => {
+                                assert!(
+                                    matches!(got, Err(hyperstor_kv::KvError::Conflict)),
+                                    "{step}"
+                                )
+                            }
+                            (None, None) => {
+                                assert_eq!(got.unwrap(), Claim::Claimed, "{step}");
+                                model.insert(key.clone(), new);
+                            }
+                        }
+                    }
+                    // Only the holder frees it.
+                    _ => {
+                        let freed = who.release(key.0, &key.1, owner).await.unwrap();
+                        let ours = held.is_some_and(|h| h.owner == owner);
+                        assert_eq!(freed, ours, "{step}");
+                        if ours {
+                            model.remove(&key);
+                        }
+                    }
+                }
+                if step % 50 == 49 {
+                    for p in 1..4 {
+                        for name in ["web", "db", "logs", ""] {
+                            let k = (p, name.to_string());
+                            let got = n[(step / 50) as usize % 2].holder(p, name).await.unwrap();
+                            assert_eq!(got, model.get(&k).copied(), "{step} {k:?}");
+                        }
+                    }
+                }
+            }
+        })
+    })
+    .join()
+    .unwrap();
+}

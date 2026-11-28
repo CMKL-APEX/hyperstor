@@ -20,6 +20,7 @@ connectrpc = { version = "=0.9.1", default-features = false, features = ["json",
 hyperstor-client = { path = "../hyperstor-client" }
 hyperstor-codec = { path = "../hyperstor-codec" }
 hyperstor-kv = { path = "../hyperstor-kv" }
+hyperstor-map = { path = "../hyperstor-map" }
 hyperstor-pki = { path = "../hyperstor-pki" }
 hyperstor-proto = { path = "../hyperstor-proto" }
 hyperstor-reactor = { path = "../hyperstor-reactor" }

@@ -76,6 +76,13 @@ def main():
             print("got")
         except botocore.exceptions.ClientError as e:
             print(code(e))
+    elif step == "drop":
+        # Deletes an empty bucket.
+        try:
+            s3.delete_bucket(Bucket=args[0])
+            print("dropped")
+        except botocore.exceptions.ClientError as e:
+            print(code(e))
     elif step == "has":
         # Whether this key finds the bucket (a moved one, D303).
         try:
