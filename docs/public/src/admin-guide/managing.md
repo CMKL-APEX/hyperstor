@@ -537,6 +537,14 @@ Reports to a glidex directory send each tenant's `USED` summed over the
 pools as `volume_used_bytes`. A project moved to another tenant takes
 its counts along.
 
+Reports also list each project linked to glidex that holds a volume or
+a bucket, with its own counts. Volumes in the trash count here, so the
+directory refuses to delete a project that still holds anything on
+this cluster, its trash included. A report can be up to 30 s old. If
+the directory deletes a project that got its first volume after the
+last report, this cluster keeps the project and its data, unlinked from
+glidex.
+
 ### Copying and moving between pools
 
 ```sh
