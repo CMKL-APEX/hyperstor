@@ -168,6 +168,15 @@ jobs:
         mkdir -p "$d" target/tmp
         rm -rf target/tmp/e2e
         ln -sfn "$d" target/tmp/e2e
+    # Kernel TLS (data-path encryption, 30-data-path-tls.md) needs the
+    # `tls` module, and Linux loads a TCP ULP on demand only for a process
+    # with CAP_NET_ADMIN; the tests run without it. Some of GitHub's VMs
+    # have the module loaded already (likely pulled in by a Mellanox
+    # driver), others don't, so the kernel TLS tests failed on some runs
+    # with ENOENT.
+    - name: Load the kernel TLS module
+      if: runner.environment == 'github-hosted'
+      run: sudo modprobe tls && grep -w '^tls' /proc/modules
     # Tests at once: one per CPU by default, 4 on GitHub's runners; 8 on
     # the self-hosted one, which has 32 CPUs.
     - name: Run tests
