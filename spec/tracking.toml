@@ -1075,6 +1075,26 @@ tests = ["cluster::kv_queued_objects_are_deleted_after_their_batch"]
 id = "HS11b"
 title = "Key-value transactions"
 
+[[milestone.item]]
+what = "K1: transactional tables, AssertKvEmpty, the leader's timestamp oracle, single-range transactions"
+spec = ["32-kv-transactions.md §35.2", "32-kv-transactions.md §35.3", "D426", "D428", "D429", "D431"]
+status = "planned"
+
+[[milestone.item]]
+what = "K2: transactions across ranges: prewrite, primary commit, resolving locks, time-to-live, locks on reads; Jepsen-style histories checked for snapshot isolation under faults"
+spec = ["32-kv-transactions.md §35.4", "32-kv-transactions.md §35.5", "D425", "D427", "D432"]
+status = "planned"
+
+[[milestone.item]]
+what = "K3: old versions collected below the safe point, held back by snapshots"
+spec = ["32-kv-transactions.md §35.6", "D430", "G74"]
+status = "planned"
+
+[[milestone.item]]
+what = "K4: async commit, if G73 calls for it"
+spec = ["32-kv-transactions.md §35.4", "D427", "G73"]
+status = "planned"
+
 [[milestone]]
 id = "HS12"
 title = "S3 gateway"

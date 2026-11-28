@@ -348,6 +348,9 @@ device is formatted with the cluster's id; a superblock without one
 
 ### 7.5 The transactional key–value store (D35)
 
+Designed in detail in 32-kv-transactions.md §35 (D425–D432); this is
+the outline it refines.
+
 - **Ranges.** The keyspace of each KV store (one per user: the S3
   gateway, each filesystem) is split into ranges. A range is a `kv`
   object in a replicated pool on flash; its key–value table holds the

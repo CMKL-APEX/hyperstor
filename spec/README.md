@@ -44,6 +44,7 @@ documents cite them by number.
 | [20-tenants.md](20-tenants.md) | §24 | Tenant ids on containers, isolation by lease, per-tenant accounting and quotas, two-level fair share |
 | [21-federation.md](21-federation.md) | §25 | Sites as a failure domain, asynchronous replication of immutable versions, the global namespace with range homes, cache sources, the federation view |
 | [25-kv-ranges.md](25-kv-ranges.md) | §28 | `hyperstor-kv`'s range layer (HS11): tables, rows, range objects, the root, splits and merges, the deletion queue (designed; D191, D200–D202) |
+| [32-kv-transactions.md](32-kv-transactions.md) | §35 | Key–value transactions (HS11b): snapshot isolation with locks on what a transaction read, transactional tables chosen at creation, versions and locks per key, the leader's timestamp oracle, one-operation commits in one range and two phases across ranges, resolving another client's locks, old versions' collection; stages K1–K4 (design; D425–D428 settled, D429–D432 open; G73–G74) |
 | [24-pools-and-devices.md](24-pools-and-devices.md) | §27 | Devices added to and removed from running nodes, device identity and formatting, classes and class sets, pools made, changed and deleted, PG splits (settled; built on `feature/elastic-pools`) |
 | [16-glidex.md](16-glidex.md) | §17, §20 | The glidex datastore driver and the glidex changes it needs |
 | [17-milestones.md](17-milestones.md) | §21, §22 | Milestones HS0–HS19 and host checks G1–G24, G39–G46 (G25–G38 in 22-nfs.md, G47–G53 in 26-networks.md, G54–G55 in 27-performance.md) |

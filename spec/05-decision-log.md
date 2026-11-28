@@ -2059,3 +2059,15 @@ service.
 |---|---|---|---|
 | 379 | How a read-only volume behaves: primaries refuse writes and it still attaches and reads (recommended); rw leases refused, so it can't be attached until read-only leases exist; or build read-only leases first | Primaries refuse writes | D420 |
 | 380 | How the gateway learns names and properties: it asks the API at `CreateBucket`, and read-only buckets travel with the keys (recommended); or everything travels with the keys | Ask the API at `CreateBucket` | D421 |
+
+## Key–value transactions, HS11b (2026-11-28)
+
+What 08-engine.md §7.5 (D35) left open before 32-kv-transactions.md
+could be drafted. Asked with options; the recommendations were taken.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 385 | Isolation: snapshot isolation with locks on keys a transaction read (recommended); serializable everywhere; snapshot isolation only | Snapshot isolation + locks on reads | D425 |
+| 386 | Which tables: transactional or not per table, at creation (recommended); every table | Per table | D426 |
+| 387 | Commit across ranges: two phases now, async commit later if measured (recommended); async commit from the start | Two phases now | D427 |
+| 388 | Timestamps: the leader's oracle, as D35 (recommended); hybrid logical clocks | The leader's oracle | D428 |
