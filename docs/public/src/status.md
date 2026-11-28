@@ -185,6 +185,15 @@ covered by tests that run on every change.
 | Range objects nothing names deleted an hour after they appear | Done |
 | The deletion queue, drained by the range's primary | Done |
 
+## HS11b: Key-value transactions
+
+| Feature | Status |
+|---|---|
+| K1: transactional tables, AssertKvEmpty, the leader's timestamp oracle, single-range transactions | Planned |
+| K2: transactions across ranges: prewrite, primary commit, resolving locks, time-to-live, locks on reads; Jepsen-style histories checked for snapshot isolation under faults | Planned |
+| K3: old versions collected below the safe point, held back by snapshots | Planned |
+| K4: async commit, if G73 calls for it | Planned |
+
 ## HS12: S3 gateway
 
 | Feature | Status |

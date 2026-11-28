@@ -26,6 +26,7 @@
 - [Scrub settings and reports](28-scrub.md)
 - [Datasets and hsfs](29-hsfs.md)
 - [Key–value ranges](25-kv-ranges.md)
+- [Key–value transactions](32-kv-transactions.md)
 - [S3 gateway](14-s3.md)
 - [Management, deployment and security](15-operations.md)
 - [Administration](19-administration.md)
