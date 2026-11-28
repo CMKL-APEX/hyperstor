@@ -101,7 +101,38 @@ impl Allocator {
         self.insert(s, l);
     }
 
-    /// Marks `[start, start + len)` as used. It must be free.
+    /// An allocator for `[start, start + len)` with `used` taken, built in
+    /// one pass over the extents sorted (D417): what opening a shard
+    /// rebuilds from its index. Reserving each extent instead splits a free
+    /// extent in two maps per extent, which took 21 s for 14.5 million
+    /// runs (02-benchmarks.md, 2026-11-28). Extents of no blocks are
+    /// skipped. Fails with the first extent outside the range or
+    /// overlapping another.
+    pub fn from_used(start: u64, len: u64, mut used: Vec<(u64, u64)>) -> Result<Self, (u64, u64)> {
+        used.retain(|e| e.1 > 0);
+        used.sort_unstable();
+        let end = start + len;
+        let mut free = Vec::with_capacity(used.len() + 1);
+        let mut at = start;
+        for (s, n) in used {
+            if s < at || s.checked_add(n).is_none_or(|e| e > end) {
+                return Err((s, n));
+            }
+            if s > at {
+                free.push((at, s - at));
+            }
+            at = s + n;
+        }
+        if at < end {
+            free.push((at, end - at));
+        }
+        Ok(Self {
+            free: free.iter().map(|e| e.1).sum(),
+            by_len: free.iter().map(|&(s, n)| (n, s)).collect(),
+            by_start: free.into_iter().collect(),
+        })
+    }
+
     /// The parts of `[start, start + len)` that are free, in order.
     pub fn free_within(&self, start: u64, len: u64) -> Vec<(u64, u64)> {
         let end = start + len;
@@ -119,6 +150,8 @@ impl Allocator {
             .collect()
     }
 
+    /// Marks `[start, start + len)` as used. False, changing nothing, if
+    /// any of it isn't free.
     pub fn reserve(&mut self, start: u64, len: u64) -> bool {
         let Some((&fs, &fl)) = self.by_start.range(..=start).next_back() else {
             return false;
@@ -190,5 +223,55 @@ mod tests {
         assert!(a.reserve(5, 5));
         assert!(a.reserve(0, 2));
         assert_eq!(a.free_blocks(), 0);
+    }
+
+    #[test]
+    fn from_used_matches_reserving_each_extent() {
+        // A small LCG: random used extents, some adjacent, in any order.
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |m: u64| {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (x >> 33) % m
+        };
+        for _ in 0..200 {
+            let (start, len) = (next(1000), 1 + next(5000));
+            let mut by_reserve = Allocator::new(start, len);
+            let mut used = Vec::new();
+            for _ in 0..next(300) {
+                let (s, n) = (start + next(len), 1 + next(8));
+                if by_reserve.reserve(s, n) {
+                    used.push((s, n));
+                }
+            }
+            let mut shuffled = used.clone();
+            shuffled.reverse();
+            let built = Allocator::from_used(start, len, shuffled).unwrap();
+            assert_eq!(built.by_start, by_reserve.by_start);
+            assert_eq!(built.by_len, by_reserve.by_len);
+            assert_eq!(built.free, by_reserve.free);
+        }
+    }
+
+    #[test]
+    fn from_used_refuses_overlaps_and_extents_outside() {
+        assert_eq!(
+            Allocator::from_used(10, 10, vec![(12, 4), (15, 2)]).unwrap_err(),
+            (15, 2)
+        );
+        assert_eq!(
+            Allocator::from_used(10, 10, vec![(5, 2)]).unwrap_err(),
+            (5, 2)
+        );
+        assert_eq!(
+            Allocator::from_used(10, 10, vec![(18, 3)]).unwrap_err(),
+            (18, 3)
+        );
+        assert_eq!(
+            Allocator::from_used(10, 10, vec![(u64::MAX, 2)]).unwrap_err(),
+            (u64::MAX, 2)
+        );
+        let a = Allocator::from_used(10, 10, vec![(10, 10), (12, 0)]).unwrap();
+        assert_eq!(a.free_blocks(), 0);
+        assert_eq!(a.extents(), 0);
     }
 }
