@@ -2331,8 +2331,9 @@ spec = ["19-administration.md §23.12", "D316", "D423"]
 status = "done"
 tests = [
     "hyperstor_meta::api::trust::tests::a_report_counts_each_linked_project_that_holds_something",
-    "directories::a_directory_s_feed_makes_its_tenants_and_projects",
 ]
+# End to end: directories::a_directory_s_feed_makes_its_tenants_and_projects
+# (tracked above) checks per-project reports against the fake directory.
 
 [[milestone.item]]
 what = "glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311)"
