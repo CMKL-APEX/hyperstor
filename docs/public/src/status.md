@@ -361,6 +361,8 @@ covered by tests that run on every change.
 | Accounts in one browser, one per directory, and the tenant and project pickers with links to the directory's pages (D310); also shown end to end by directory_ui::glidex_s_server_reads_a_tenant_s_storage_for_a_person | Done |
 | The web UI's Tenancy page: realms with their pools, hosts and clients; tenants and projects as a tree with their space, moves as operations; trusted directories, the operator tenant and offers (token shown once, pin from mgmt's own certificate); a directory's records refused to every caller; GetSpace without volume rows | Done |
 | A glidex directory trusted as a whole: a directory offer redeemed by its owner, tenants opting in without an offer, admitted open or by approval with the directory's default caps, ended as a whole (#386, glidex#523) | Done |
+| Trust reports carry each linked project's storage, trash included, so the directory holds the delete of a project that still holds something (#390, glidex D89) | Done |
+| The Tenancy page's Directories tab for a directory trusted as a whole: an offer to the whole directory, its admission setting and default caps changed, opt-ins approved or refused, the trust ended as a whole (#471) | Done |
 | glidex's driver, a management client, bound to realms (realm client) and naming a disk's project by glidex's id; only hyperstor-mgmt's own identity acts for people (D311) | Done |
 | A bound management client makes VM hosts' join tokens once an administrator lets it (realm client-tokens), so that glidex's servers can join their nodes (D382) | Done |
 | A host that joins with a bound management client's token is bound to that client's realms, so its certificate opens no other realm's volumes (D383) | Done |
