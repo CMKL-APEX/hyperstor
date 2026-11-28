@@ -1667,7 +1667,7 @@ impl NodeService for Api {
             )
             .await;
         let snapshot = match op {
-            Ok(o) => super::ops::op_pb(&o),
+            Ok((o, _)) => super::ops::op_pb(&o),
             Err(e) => return Err(self.token_error(e).await),
         };
         Ok(pb::DrainNodeResponse {

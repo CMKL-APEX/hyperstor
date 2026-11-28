@@ -180,7 +180,8 @@ impl Runner {
         self.tx.send(Admin::Leads(reply)).is_ok() && matches!(rx.recv().await, Some(Ok(())))
     }
 
-    /// A new operation of `work`, recorded and started.
+    /// A new operation of `work`, recorded and started, and `true`; or the
+    /// one already running that does the same (I472), and `false`.
     pub(super) async fn create(
         &self,
         work: Work,
@@ -189,7 +190,7 @@ impl Runner {
         message: String,
         created_by: String,
         tenant: Option<u32>,
-    ) -> Result<Op, TokenError> {
+    ) -> Result<(Op, bool), TokenError> {
         self.fence().await?;
         let started_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -208,10 +209,11 @@ impl Runner {
             created_by,
             tenant,
         };
-        let o = op.clone();
-        self.store(move |s| s.put(&o)).await?;
-        self.start(op.clone(), false);
-        Ok(op)
+        let (op, new) = self.store(move |s| s.begin(&op)).await?;
+        if new {
+            self.start(op.clone(), false);
+        }
+        Ok((op, new))
     }
 
     /// Follows `op` in a task of its own, unless this member already does;

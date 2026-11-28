@@ -1515,12 +1515,13 @@ impl ClusterService for Api {
             "StartScrub",
             &target,
             &match &op {
-                Ok(o) => format!("ok, {total} PG(s), operation {} started", o.id),
+                Ok((o, true)) => format!("ok, {total} PG(s), operation {} started", o.id),
+                Ok((o, false)) => format!("ok, operation {} already running", o.id),
                 Err(e) => format!("failed: {e:?}"),
             },
         );
         match op {
-            Ok(o) => Ok(pb::StartScrubResponse {
+            Ok((o, _)) => Ok(pb::StartScrubResponse {
                 operation: buffa::MessageField::some(ops::op_pb(&o)),
                 ..Default::default()
             }
@@ -3191,16 +3192,17 @@ impl ClusterService for Api {
             "RemoveDevice",
             &target,
             &match &op {
-                Ok(o) => format!(
+                Ok((o, true)) => format!(
                     "ok, {n} PG(s) move, {} pool(s) short, operation {} started",
                     removal.short.len(),
                     o.id
                 ),
+                Ok((o, false)) => format!("ok, operation {} already running", o.id),
                 Err(e) => format!("failed: {e:?}"),
             },
         );
         match op {
-            Ok(o) => out.operation = buffa::MessageField::some(ops::op_pb(&o)),
+            Ok((o, _)) => out.operation = buffa::MessageField::some(ops::op_pb(&o)),
             Err(e) => return Err(self.store_error(e, OPS_BY_LEADER).await),
         }
         Ok(out.into())
@@ -4242,12 +4244,13 @@ impl Api {
             rpc,
             &target,
             &match &r {
-                Ok(o) => format!("ok, operation {} started", o.id),
+                Ok((o, true)) => format!("ok, operation {} started", o.id),
+                Ok((o, false)) => format!("ok, operation {} already running", o.id),
                 Err(e) => format!("failed: {e:?}"),
             },
         );
         match r {
-            Ok(o) => Ok(ops::op_pb(&o)),
+            Ok((o, _)) => Ok(ops::op_pb(&o)),
             Err(e) => Err(self.store_error(e, OPS_BY_LEADER).await),
         }
     }
