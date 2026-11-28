@@ -106,7 +106,7 @@ The storage daemon's threads and devices, and the local engine: objects, writes,
 | Per shard (one per reactor, I1): superblocks | two slots alternating by sequence number, each naming the checkpoint, the log position it covers and the log's salt (in the second format also the checksum the record there chains to); each mirrored in the last two blocks of the shard's log ring (D267; second format) |
 | Per shard: log | circular. Operation records (§7.3), deferred small writes |
 | Per shard: data | 4 KiB blocks, allocated in extents (64 KiB units on hard disks); checkpoint pages and their directory live here too |
-| Index | as built, in memory, saved as paged checkpoints (§7.3; I33, D105); the long-term home is an on-device copy-on-write B+tree (D43, D44), designed in §7.6 (D408–D413), not built |
+| Index | as built, in memory, saved as paged checkpoints (§7.3; I33, D105); the long-term home is an on-device copy-on-write B+tree (D43, D44), designed in §7.6 (D408–D413, D415–D419), not built |
 
 On a hard disk, the log and index regions are on its partition of the
 log device, which has its own superblock naming the data device (§6.2).
@@ -382,7 +382,7 @@ device is formatted with the cluster's id; a superblock without one
   older than the oldest running transaction, and at most after ten
   minutes.
 
-### 7.6 The on-device index (designed; D43, D44, D408–D413; #299)
+### 7.6 The on-device index (designed; D43, D44, D408–D413, D415–D419; #299)
 
 The index moves out of memory into a copy-on-write B+tree in each
 shard's data region (D43). Designed, not built; the measurements behind
@@ -399,8 +399,9 @@ each choice are in 02-benchmarks.md (2026-11-27 and 2026-11-28) and
   per block a 32-bit offset from the base and its CRC32C.
 - **Checksums** (D409): inline in packed entries; for range entries, in
   CRC pages of their own, 1,024 checksums a page, read and cached by use.
-  On devices formatted with NVMe protection information they can live
-  there instead (option per device, G40).
+  Our CRC32C stays the checksum on every device; where a drive offers
+  NVMe protection information (4096+8), the drive inserts and checks it
+  as an extra check inside the drive (D418, G40).
 - **Zeros:** a range entry can mark its blocks as reading zeros, with
   no physical extent, so a write-zeroes never allocates (D357, #299).
 - **Commit and checkpoint** (D410). Commits go to the log as now
@@ -425,8 +426,20 @@ each choice are in 02-benchmarks.md (2026-11-27 and 2026-11-28) and
 - **Format change:** one incompatible flag for all of it (D157), with
   64-bit physical blocks ending D270's 16 TiB per shard (D413), and a
   conversion an operator asks for, as D274's.
-- **Not yet settled:** snapshots and clones sharing ranges between
-  versions (reference counts, D44); the metadata flavour's buffered
-  messages (Bε-tree, D44); open time today (M4) and protection
-  information on the drives at hand (M7, G40); a check of D408's sizes
-  against real block traces.
+- **Snapshots and clones** (D415): versions stay objects that own their
+  blocks (D10), with no reference counts. A chunk with 4 or more
+  versions gets a head map, for each block the version holding it,
+  derived from the versions and rebuilt from them, so a head read is
+  one probe.
+- **One tree first** (D416): block maps and metadata both use the
+  copy-on-write B+tree. The Bε-tree flavour (D44) is built after G15,
+  when a key–value table nears 10 million keys in a PG; a larger log
+  for shards heavy in metadata comes first.
+- **Nodes ready for it** (D419): every node has a header (kind, level,
+  version, flags). Block-map trees keep fixed 16-byte keys; metadata
+  trees have slotted inner nodes with variable-length keys and room
+  for a message buffer, messages coded as log records. Each tree
+  records its flavour, and a device feature bit is set by the first
+  buffered node.
+- **Not yet settled:** a check of D408's sizes against real block
+  traces (MSR Cambridge, Tencent).

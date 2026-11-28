@@ -382,6 +382,25 @@ struct Header {
     prev: u32,
 }
 
+/// Where the last open spent its time, phase by phase (M4; 08-engine.md
+/// §7.6): for benchmarks and logs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OpenTimes {
+    /// Reading and decoding the checkpoint's directory and pages.
+    pub checkpoint: std::time::Duration,
+    /// Reading the log after the checkpoint.
+    pub scan: std::time::Duration,
+    /// Copying the index for a replay and applying the records, with the
+    /// check that the last group's data reached the media.
+    pub replay: std::time::Duration,
+    /// Rebuilding the free-space allocator from the index.
+    pub allocator: std::time::Duration,
+    /// Applying deferred writes and writing the checkpoint at open.
+    pub finish: std::time::Duration,
+    /// Records replayed.
+    pub records: u64,
+}
+
 /// Counters, for tests and status.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ShardStats {
@@ -469,6 +488,7 @@ impl Round {
 pub struct Shard {
     dev: Arc<dyn BlockDev>,
     region: Region,
+    open_times: OpenTimes,
     /// The second shard format (D266, D267, D270): chained log records,
     /// superblock mirrors at the end of the log ring, dense block maps
     /// relative to the data start.
@@ -848,12 +868,21 @@ impl Shard {
             reads: BTreeMap::new(),
             read_gen: 0,
             held: Default::default(),
+            open_times: OpenTimes::default(),
+        };
+        let mut t = std::time::Instant::now();
+        let lap = |t: &mut std::time::Instant| {
+            let d = t.elapsed();
+            *t = std::time::Instant::now();
+            d
         };
         if let Some(c) = &sup.ckpt {
             sh.load_checkpoint(c)?;
         }
         sh.index.base = sh.dense_base();
+        sh.open_times.checkpoint = lap(&mut t);
         let mut records = sh.scan_log()?;
+        sh.open_times.scan = lap(&mut t);
         // Records are written only under a salt a durable superblock names,
         // so a whole record under another salt where the log stops means the
         // newer superblock was lost, not torn (D267).
@@ -906,7 +935,10 @@ impl Shard {
         sh.chain = records.last().map_or(sup.chain, |r| r.pcrc);
         sh.index.settle_tentative(&mut fx);
         sh.pending = fx.pending;
+        sh.open_times.records = records.len() as u64;
+        sh.open_times.replay = lap(&mut t);
         sh.rebuild_allocator()?;
+        sh.open_times.allocator = lap(&mut t);
         sh.apply_deferred()?;
         // Records dropped above would replay under the old salt if the
         // shard keeps it, and look like damage (D266, D267) otherwise.
@@ -934,6 +966,7 @@ impl Shard {
         sh.opened_lsn = sh.tail_lsn;
         sh.ckpt_written = 0;
         sh.ckpt_pages_written = 0;
+        sh.open_times.finish = lap(&mut t);
         Ok(sh)
     }
 
@@ -3075,6 +3108,11 @@ impl Shard {
             last = Some(k);
         }
         (blocks, None)
+    }
+
+    /// Where the last open spent its time (M4).
+    pub fn open_times(&self) -> OpenTimes {
+        self.open_times
     }
 
     pub fn stats(&self) -> ShardStats {
