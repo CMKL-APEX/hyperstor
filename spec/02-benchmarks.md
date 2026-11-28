@@ -3245,3 +3245,29 @@ IOPS, with p99 latency in µs and fio's CPU in %.
 6. One read at a time takes about 200 µs on this host in every format,
    slow for this drive; the host's power settings were not checked.
    It is the same for every row, so the comparison holds.
+
+## 2026-11-28: Open time after D417 (#467, #468)
+
+`hyperstor-bench open` as in the open-time section above (same host,
+same CPUs, same cases), after building the allocator in one pass and
+reading the log ahead in 16 MiB reads (I464). Before → after, in ms.
+
+| GiB | Device | Case | Allocator | Log scan | Open |
+|---|---|---|---|---|---|
+| 4 | memory | random, clean | 654 → 85 | 43 → 57 | 702 → 147 |
+| 16 | memory | random, clean | 4,039 → 379 | 74 → 72 | 4,153 → 474 |
+| 16 | memory | random, log ¼ | 4,691 → 310 | 824 → 832 | 7,339 → 2,866 |
+| 64 | memory | random, clean | 21,131 → 1,299 | 81 → 87 | 21,305 → 1,477 |
+| 64 | memory | random, log ¼ | 23,804 → 1,229 | 498 → 525 | 27,193 → 4,383 |
+| 4 | NVMe file | random, log ¼ | 809 → 91 | 8,178 → 669 | 9,827 → 1,540 |
+| 16 | NVMe file | random, clean | 3,972 → 354 | 331 → 349 | 4,338 → 763 |
+| 16 | NVMe file | random, log ¼ | 4,675 → 314 | 13,077 → 1,173 | 19,689 → 3,337 |
+
+1. **The allocator is 8–19× faster** and now grows about linearly with
+   the runs: 90 ns a run at 64 GiB (was 1.45 µs).
+2. **The log scan on a device is 11–12× faster**; in memory it is
+   unchanged, as there it was never the reads that cost.
+3. **Opening 64 GiB of fragmented data takes 1.5 s clean and 4.4 s with
+   a quarter of the log to replay** (was 21 and 27 s). Replay is now the
+   largest part, most of it copying the index for a possible second
+   replay (I188).

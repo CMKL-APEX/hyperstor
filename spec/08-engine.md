@@ -306,8 +306,8 @@ device is formatted with the cluster's id; a superblock without one
 ### 7.4 Allocation and space
 
 - Free space is an in-memory tree of free extents, rebuilt at start from
-  the extents the index and the checkpoint use (as built; no bitmap on
-  disk). With the on-device index it is kept as bitmap pages written at
+  the extents the index and the checkpoint use, sorted and walked once
+  (as built, D417, I464; no bitmap on disk). With the on-device index it is kept as bitmap pages written at
   each checkpoint and read at open (D412, §7.6).
 - Discard and write-zeroes from a client drop blocks from the head
   version (as built, D357, D358, I434). The chunk's primary decides per
