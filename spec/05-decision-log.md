@@ -2036,7 +2036,7 @@ by the owner on 2026-11-28 as recommended: D408–D413, one a point.
 
 The questions 08-engine.md §7.6 left open, measured (02-benchmarks.md,
 2026-11-28, `hyperstor-bench open`, `snapshots`, `metadata`, `kvcount`,
-`slotted`). Open for the owner:
+`slotted`). Settled 2026-11-28 as recommended: D415–D419.
 
 | # | Point | Data | Recommendation |
 |---|---|---|---|
