@@ -249,7 +249,7 @@ fn a_directory_trusted_as_a_whole_admits_by_its_setting() {
                 }
                 4 | 5 => {
                     let approve = rng.random_bool(0.5);
-                    // By slug or id, as hyperstorctl takes either.
+                    // By slug or id, as hsctl takes either.
                     let name = if rng.random_bool(0.5) {
                         t.clone()
                     } else {

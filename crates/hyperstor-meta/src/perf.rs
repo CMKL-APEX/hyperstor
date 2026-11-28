@@ -341,7 +341,7 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
                         action: "Check its drive (temperature, errors, link) and its \
                                  node's load; if it stays slow, take it out and replace it"
                             .into(),
-                        command: format!("hyperstorctl perf --device {d}"),
+                        command: format!("hsctl perf --device {d}"),
                     });
                 }
             }
@@ -383,7 +383,7 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
                     action: "Move the hot volumes to another pool, or spread them over more \
                              PGs; moving primaries is planned (D222)"
                         .into(),
-                    command: format!("hyperstorctl top-volumes; hyperstorctl perf --device {d}"),
+                    command: format!("hsctl top-volumes; hsctl perf --device {d}"),
                 });
             }
         }
@@ -417,8 +417,7 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
                 "Move it to pool {fp} ({fname}), on NVMe only; detach it first, \
                  or copy a snapshot of it there"
             );
-            let command =
-                format!("hyperstorctl move-volume --id {id:032x} --pool {fp} --wait 3600");
+            let command = format!("hsctl move-volume --id {id:032x} --pool {fp} --wait 3600");
             out.push(Finding {
                 rule: "hot-volume",
                 severity: Severity::Info,
@@ -486,7 +485,7 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
                 action: "Read the bits (spare, temperature, reliability, read-only, \
                          volatile backup); plan to take the device out"
                     .into(),
-                command: format!("hyperstorctl perf --device {d}"),
+                command: format!("hsctl perf --device {d}"),
             });
         }
         if s.media_errors > 0 {
@@ -526,7 +525,7 @@ pub fn findings(p: &Perf, cx: &Context) -> Vec<Finding> {
                     }
                 ),
                 action: "Plan its replacement; lower its weight so new data goes elsewhere".into(),
-                command: format!("hyperstorctl weight --device {d} --weight 0"),
+                command: format!("hsctl weight --device {d} --weight 0"),
             });
         }
         if s.throttle_seconds.iter().any(|x| *x > 0) || s.warning_temp_minutes > 0 {

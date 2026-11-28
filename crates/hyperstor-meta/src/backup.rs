@@ -7,7 +7,7 @@
 //!   `--backup-keep`. Files are `map-<unix time>-e<epoch>.hsbackup`, mode
 //!   0600, written beside and renamed.
 //! - **Fetched** through the API (`MapService.GetMapBackup`,
-//!   `hyperstorctl map backup`).
+//!   `hsctl map backup`).
 //! - **Restored** by `hyperstor-meta --restore FILE` into an empty data
 //!   directory, as a group of one: its first commit writes every row of
 //!   the backup in one write set; other members join afterwards (D87).

@@ -302,7 +302,7 @@ fn main() {
         };
         if members.len() > 1 {
             eprintln!(
-                "--restore starts a group of one: restore one member, then add the others (hyperstorctl member add)"
+                "--restore starts a group of one: restore one member, then add the others (hsctl member add)"
             );
             std::process::exit(2);
         }

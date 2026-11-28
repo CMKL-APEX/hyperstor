@@ -1,4 +1,4 @@
-//! What `hyperstorctl` prints (spec/19-administration.md §23.6): tables for
+//! What `hsctl` prints (spec/19-administration.md §23.6): tables for
 //! people, made from the cluster API's answers. `--json` prints the
 //! answers themselves, in the proto JSON form `curl` also gets.
 
@@ -25,7 +25,7 @@ pub fn is_ok(s: &pb::GetStatusResponse) -> bool {
     health_of(&s.health) == pb::Health::HEALTH_OK
 }
 
-/// `hyperstorctl status`.
+/// `hsctl status`.
 pub fn status_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(o, "cluster {}, map epoch {}", s.cluster_id, s.epoch);
@@ -76,7 +76,7 @@ fn space_text(devices: &[&pb::Device]) -> String {
     t
 }
 
-/// `hyperstorctl pools`.
+/// `hsctl pools`.
 /// Bytes in GiB with a decimal, or `-` when not reported (D156).
 fn gib(b: Option<u64>) -> String {
     b.map_or("-".into(), |b| {
@@ -202,7 +202,7 @@ pub fn pools_text(s: &pb::GetStatusResponse) -> String {
     o
 }
 
-/// `hyperstorctl nodes`: each node and its devices.
+/// `hsctl nodes`: each node and its devices.
 pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -265,25 +265,25 @@ pub fn nodes_text(s: &pb::GetStatusResponse) -> String {
     if fixed {
         let _ = writeln!(
             o,
-            "* weight set with hyperstorctl weight; the others follow capacity"
+            "* weight set with hsctl weight; the others follow capacity"
         );
     }
     if class_set {
         let _ = writeln!(
             o,
-            "+ class set with hyperstorctl device class; the others are their kind"
+            "+ class set with hsctl device class; the others are their kind"
         );
     }
     if asked {
         let _ = writeln!(
             o,
-            ">2 converts to format 2 (v0.0.8) at its node's next start (hyperstorctl device upgrade)"
+            ">2 converts to format 2 (v0.0.8) at its node's next start (hsctl device upgrade)"
         );
     }
     o
 }
 
-/// `hyperstorctl pgs`: acting and up sets.
+/// `hsctl pgs`: acting and up sets.
 pub fn pgs_text(r: &pb::ListPgsResponse) -> String {
     let set = |v: &[u32]| {
         let parts: Vec<String> = v
@@ -323,7 +323,7 @@ pub fn span_text(secs: u64) -> String {
     }
 }
 
-/// `hyperstorctl scrub status` (28-scrub.md §31.8): each pool's settings,
+/// `hsctl scrub status` (28-scrub.md §31.8): each pool's settings,
 /// its oldest light and deep scrub, the PGs overdue, unchecked or damaged,
 /// and what the last week's scrubs found.
 pub fn scrub_status_text(r: &pb::GetScrubStatusResponse) -> String {
@@ -427,7 +427,7 @@ fn found_text(r: &pb::PgScrubReport) -> String {
     }
 }
 
-/// `hyperstorctl scrub pgs` (28-scrub.md §31.8): each PG's last light and
+/// `hsctl scrub pgs` (28-scrub.md §31.8): each PG's last light and
 /// deep scrub, what the last found, and whether it is overdue. `now` in
 /// Unix seconds.
 pub fn pg_scrubs_text(pool: u32, r: &pb::ListPgScrubsResponse, now: u64) -> String {
@@ -467,7 +467,7 @@ pub fn pg_scrubs_text(pool: u32, r: &pb::ListPgScrubsResponse, now: u64) -> Stri
     o
 }
 
-/// `hyperstorctl pg-grid`: a character per PG, 64 to a line, each line
+/// `hsctl pg-grid`: a character per PG, 64 to a line, each line
 /// led by its first PG (D154); with usage (D155), a second grid of digits,
 /// 0 for the emptiest level to 9 for the fullest.
 pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
@@ -508,7 +508,7 @@ pub fn pg_grid_text(pool: u32, r: &pb::GetPgGridResponse) -> String {
     o
 }
 
-/// `hyperstorctl pg-grid --heat read|write` (D219): a digit per PG for
+/// `hsctl pg-grid --heat read|write` (D219): a digit per PG for
 /// its requests per second, 1 for the quietest PG that served any to 9
 /// for the busiest, linear; `.` for none.
 pub fn pg_heat_text(pool: u32, write: bool, r: &pb::GetPgHeatResponse) -> String {
@@ -621,7 +621,7 @@ fn us(v: u32) -> String {
     }
 }
 
-/// `hyperstorctl perf`: each device over the last minute.
+/// `hsctl perf`: each device over the last minute.
 pub fn perf_text(r: &pb::ListDevicePerfResponse) -> String {
     let mut o = format!(
         "{:<6} {:>4} {:<5} {:>8} {:>8} {:>7} {:>9} {:>9} {:>8} {:>6} {:>5}\n",
@@ -668,7 +668,7 @@ pub fn perf_text(r: &pb::ListDevicePerfResponse) -> String {
     o
 }
 
-/// `hyperstorctl port list`: each node's ports, their roles, traffic and
+/// `hsctl port list`: each node's ports, their roles, traffic and
 /// the fabric reconciler's lease and weight (26-networks.md §29.8).
 pub fn ports_text(r: &pb::ListPortsResponse) -> String {
     let mut o = format!(
@@ -722,7 +722,7 @@ pub fn ports_text(r: &pb::ListPortsResponse) -> String {
     o
 }
 
-/// `hyperstorctl network list`: the cluster's networks (26-networks.md
+/// `hsctl network list`: the cluster's networks (26-networks.md
 /// §29.3, D284).
 pub fn networks_text(nets: &[pb::Network]) -> String {
     let mut o = format!(
@@ -745,7 +745,7 @@ pub fn networks_text(nets: &[pb::Network]) -> String {
     o
 }
 
-/// `hyperstorctl claim list`: the live claims on ports, and the lending
+/// `hsctl claim list`: the live claims on ports, and the lending
 /// settings (26-networks.md §29.9, D205, D209).
 pub fn claims_text(r: &pb::ListClaimsResponse) -> String {
     let mut o = format!("lending: {}", r.lending);
@@ -779,7 +779,7 @@ pub fn claims_text(r: &pb::ListClaimsResponse) -> String {
     o
 }
 
-/// `hyperstorctl perf --device D`: its drive, then each 5-s window.
+/// `hsctl perf --device D`: its drive, then each 5-s window.
 pub fn device_perf_text(d: &pb::DevicePerf) -> String {
     let mut o = format!("device {} on node {}, {}\n", d.device, d.node, d.kind);
     if let Some(x) = d.drive.as_option() {
@@ -880,7 +880,7 @@ pub fn device_perf_text(d: &pb::DevicePerf) -> String {
     o
 }
 
-/// `hyperstorctl advise`: the Advisor's findings.
+/// `hsctl advise`: the Advisor's findings.
 pub fn findings_text(r: &pb::ListFindingsResponse) -> String {
     if r.findings.is_empty() {
         return "nothing to suggest: no device, drive or volume stands out\n".into();
@@ -1024,7 +1024,7 @@ pub fn snapshots_text(r: &pb::ListSnapshotsResponse) -> String {
 
 pub use hyperstor_api::reason_of;
 
-/// Every RPC of `hyperstor.v1` and the `hyperstorctl` command that calls
+/// Every RPC of `hyperstor.v1` and the `hsctl` command that calls
 /// it (04-decisions.md D55): a test fails when the protos have an RPC this
 /// table lacks, so the CLI never falls behind the API.
 pub const COMMANDS: &[(&str, &str)] = &[
@@ -1330,7 +1330,7 @@ pub fn member_state(m: &pb::Member, members: &[pb::Member]) -> &'static str {
     }
 }
 
-/// `hyperstorctl member list`, and what `member add` and `remove` print.
+/// `hsctl member list`, and what `member add` and `remove` print.
 pub fn members_text(members: &[pb::Member]) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -1366,7 +1366,7 @@ pub fn members_text(members: &[pb::Member]) -> String {
 
 /// Where a call that only the leader serves goes, after the member asked
 /// refused it as not the leader: the leader's API, from the member list,
-/// or why it can't go there. `certs`: whether hyperstorctl has
+/// or why it can't go there. `certs`: whether hsctl has
 /// certificates for another member's API; `plain`: whether it asked over
 /// plain HTTP, so the leader may be asked so too.
 pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<String, String> {
@@ -1382,7 +1382,7 @@ pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<St
     }
     if !certs && !plain {
         return Err(format!(
-            "the leader's API is at {}, and hyperstorctl has no certificates \
+            "the leader's API is at {}, and hsctl has no certificates \
              for it: run it on the leader's host, or with --api {} --tls DIR",
             l.api_address, l.api_address
         ));
@@ -1390,7 +1390,7 @@ pub fn leader_api(members: &[pb::Member], certs: bool, plain: bool) -> Result<St
     Ok(l.api_address.clone())
 }
 
-/// `hyperstorctl data-tls status`: the mode, and what it means.
+/// `hsctl data-tls status`: the mode, and what it means.
 /// What `cert revoke` says of the data path (D384), from the answer's
 /// `data_path`.
 pub fn revoked_data_path_text(on: &str) -> &'static str {
@@ -1399,7 +1399,7 @@ pub fn revoked_data_path_text(on: &str) -> &'static str {
             "storage nodes and clients refuse it too: they hold the cluster map that lists it"
         }
         "off" => {
-            "the data path checks no certificates: its TLS mode is off (hyperstorctl data-tls status)"
+            "the data path checks no certificates: its TLS mode is off (hsctl data-tls status)"
         }
         "old_nodes" => {
             "storage nodes don't refuse it yet: one runs a build from before revocation lists, or hasn't said which it runs; the map service adds it to the cluster map once all do"
@@ -1424,7 +1424,7 @@ pub fn data_tls_text(mode: &str) -> String {
     )
 }
 
-/// `hyperstorctl data-tls status`: the mode, and in `allow` who storage
+/// `hsctl data-tls status`: the mode, and in `allow` who storage
 /// nodes serve without a certificate (30-data-path-tls.md §33.4).
 pub fn data_tls_status_text(r: &pb::GetDataTlsResponse) -> String {
     let mut o = data_tls_text(&r.data_tls);
@@ -1465,7 +1465,7 @@ pub fn data_tls_status_text(r: &pb::GetDataTlsResponse) -> String {
     o
 }
 
-/// `hyperstorctl sealing-key list`.
+/// `hsctl sealing-key list`.
 pub fn sealing_keys_text(keys: &[pb::SealingKey]) -> String {
     let mut o = String::new();
     if keys.is_empty() {
@@ -1491,7 +1491,7 @@ pub fn sealing_keys_text(keys: &[pb::SealingKey]) -> String {
     o
 }
 
-/// What `hyperstorctl sealing-key rotate` prints.
+/// What `hsctl sealing-key rotate` prints.
 pub fn sealing_rotated_text(keys: &[pb::SealingKey]) -> String {
     match keys {
         [] => "no sealing key\n".to_string(),
@@ -1503,7 +1503,7 @@ pub fn sealing_rotated_text(keys: &[pb::SealingKey]) -> String {
     }
 }
 
-/// `hyperstorctl cert list`.
+/// `hsctl cert list`.
 pub fn certs_text(r: &pb::ListCertificatesResponse) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -1540,7 +1540,7 @@ pub fn certs_text(r: &pb::ListCertificatesResponse) -> String {
     o
 }
 
-/// `hyperstorctl cert show`: a certificate file's identity, serial and
+/// `hsctl cert show`: a certificate file's identity, serial and
 /// expiry.
 pub fn cert_text(pem: &str) -> Option<String> {
     let serial = hyperstor_pki::serial_in(pem)?;
@@ -1555,7 +1555,7 @@ pub fn cert_text(pem: &str) -> Option<String> {
     ))
 }
 
-/// `hyperstorctl token list`.
+/// `hsctl token list`.
 /// S3's access keys (D231), without secrets.
 pub fn s3_keys_text(r: &pb::ListS3KeysResponse) -> String {
     if r.keys.is_empty() {
@@ -1819,7 +1819,7 @@ pub fn dataset_properties_text(r: &pb::GetDatasetPropertiesResponse) -> String {
 /// `hsfs`'s usage line (29-hsfs.md §32.4, D361).
 pub const HSFS_USAGE: &str = "usage: hsfs [--api ADDR] [--tls DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] list [-t volume|filesystem|bucket] [TENANT[/PROJECT]] | get all|PROPERTY[,PROPERTY...] DATASET | set PROPERTY=VALUE... DATASET | inherit PROPERTY... DATASET";
 
-/// Options of `hsfs` that take a value, passed to `hyperstorctl` as they
+/// Options of `hsfs` that take a value, passed to `hsctl` as they
 /// are.
 const HSFS_VALUED: &[&str] = &[
     "--api",
@@ -1833,7 +1833,7 @@ const HSFS_VALUED: &[&str] = &[
     "-o",
 ];
 
-/// `hsfs ARGS` as the `hyperstorctl dataset` command it is (D361): the
+/// `hsfs ARGS` as the `hsctl dataset` command it is (D361): the
 /// same API, its arguments in the order `zfs` users type them. `Err` is
 /// why they aren't one, for the usage line.
 pub fn hsfs_args(argv: &[String]) -> Result<Vec<String>, String> {
@@ -2086,7 +2086,7 @@ pub fn op_line(op: &pb::Operation) -> String {
     )
 }
 
-/// `hyperstorctl op list` and `op get`.
+/// `hsctl op list` and `op get`.
 pub fn ops_text(ops: &[pb::Operation]) -> String {
     let mut o = String::new();
     let _ = writeln!(
@@ -2385,12 +2385,12 @@ pub fn parse_http(raw: &[u8]) -> Result<(u16, serde_json::Value), String> {
 
 /// The data networks the volume commands reach devices on (D340):
 /// `--networks NAME,...|none` if given, else the `networks` line
-/// `hyperstor-install` writes into `hyperstorctl.conf` (the host's
+/// `hyperstor-install` writes into `hsctl.conf` (the host's
 /// client networks, D289), else none: devices' addresses.
 pub fn data_networks(flag: Option<&str>, conf: Option<&str>) -> Result<Vec<String>, String> {
     let (given, from) = match (flag, conf) {
         (Some(f), _) => (f, "--networks"),
-        (None, Some(c)) => (c, "the networks line of hyperstorctl.conf"),
+        (None, Some(c)) => (c, "the networks line of hsctl.conf"),
         (None, None) => return Ok(Vec::new()),
     };
     if given == "none" {
@@ -2444,7 +2444,7 @@ mod tests {
         let e = data_networks(Some("fast,,ib"), None).unwrap_err();
         assert!(e.starts_with("--networks:"), "{e}");
         let e = data_networks(None, Some("a b")).unwrap_err();
-        assert!(e.contains("hyperstorctl.conf"), "{e}");
+        assert!(e.contains("hsctl.conf"), "{e}");
         assert!(data_networks(Some(""), None).is_err());
         let known = v(&["fast", "slow"]);
         assert_eq!(
@@ -2666,7 +2666,7 @@ mod tests {
                 title: "T".into(),
                 evidence: "E".into(),
                 action: "A".into(),
-                command: "hyperstorctl perf --device 1002".into(),
+                command: "hsctl perf --device 1002".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -2676,7 +2676,7 @@ mod tests {
             t.starts_with("[warn] T  (device 1002, rule pcie-link)\n"),
             "{t}"
         );
-        assert!(t.contains("    $ hyperstorctl perf --device 1002"), "{t}");
+        assert!(t.contains("    $ hsctl perf --device 1002"), "{t}");
         assert!(
             findings_text(&pb::ListFindingsResponse::default()).starts_with("nothing to suggest")
         );
@@ -2796,7 +2796,7 @@ mod tests {
     /// D55: every RPC in the protos has a command (or is called by the
     /// installer), and the table names no RPC the protos lack.
     #[test]
-    fn hsfs_is_hyperstorctl_dataset_in_zfs_order() {
+    fn hsfs_is_hsctl_dataset_in_zfs_order() {
         let v = |s: &str| -> Vec<String> { s.split(' ').map(String::from).collect() };
         let ok = |s: &str| hsfs_args(&v(s)).unwrap().join(" ");
         assert_eq!(ok("list"), "dataset list");
@@ -2855,7 +2855,7 @@ mod tests {
             .collect();
         assert!(
             missing.is_empty(),
-            "RPCs without a hyperstorctl command (add one, and a row to COMMANDS): {missing:?}"
+            "RPCs without a hsctl command (add one, and a row to COMMANDS): {missing:?}"
         );
         let stale: Vec<&&str> = known
             .iter()

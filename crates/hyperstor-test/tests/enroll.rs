@@ -1,7 +1,7 @@
 //! A management client, as glidex's control plane is (04-decisions.md D60,
 //! D122, D123): it enrolls with a mgmt token, manages volumes through the
 //! cluster API with the certificate it got, and writes and reads volumes
-//! through the data path with `hyperstorctl write-volume`/`read-volume`.
+//! through the data path with `hsctl write-volume`/`read-volume`.
 
 use hyperstor_test::vhost::Service;
 use hyperstor_test::{Cluster, Via};

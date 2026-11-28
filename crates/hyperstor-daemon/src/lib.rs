@@ -1473,10 +1473,10 @@ impl ShardState {
                     addr.map_or("?".into(), |a| a.to_string())
                 ),
                 None if map.removed_devices.contains(&me) => format!(
-                    "device {me}: removed from the map (hyperstorctl device remove): drop its --shard; its data is left as it was"
+                    "device {me}: removed from the map (hsctl device remove): drop its --shard; its data is left as it was"
                 ),
                 None => format!(
-                    "device {me}: not in the map: add it first (hyperstorctl device add --node {node} --address {}), or check --shard",
+                    "device {me}: not in the map: add it first (hsctl device add --node {node} --address {}), or check --shard",
                     addr.map_or("ADDR".into(), |a| a.to_string())
                 ),
             };

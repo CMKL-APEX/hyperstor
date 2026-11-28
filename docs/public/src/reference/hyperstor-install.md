@@ -21,7 +21,7 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--all-in-one` | off | A trial cluster on this host: the map service and several storage nodes on files |
 | `--cluster FILE` | | Install this host's part of the cluster the [cluster file](cluster-file.md) describes; give every host the same file. Needed the first time; later runs use the installed copy |
 | `--join API` | | Join this host to a running cluster through its cluster API (`IP:PORT`) with a token (see [Joining hosts](../admin-guide/installation.md#joining-hosts-with-tokens)): with `--role storage`, as a new storage node; with `--role meta`, as a map service member listed in `--members`; with `--role both --node N`, as that member, also running node N of the cluster file it gets; with `--role s3`, as a host that only runs an S3 gateway, with an `s3` token; with `--role vhost`, as a host that only runs VMs, with a `host` token named as the host (it gets the host's certificate and the map service's addresses, so `--map` isn't needed). Later runs need no token |
-| `--token-file F` | | The join token, from `hyperstorctl token create`, read from a file. Also `--token T` or `$HYPERSTOR_JOIN_TOKEN`; the token is never saved |
+| `--token-file F` | | The join token, from `hsctl token create`, read from a file. Also `--token T` or `$HYPERSTOR_JOIN_TOKEN`; the token is never saved |
 | `--token T` | | The join token itself (it shows in the process list: prefer `--token-file`) |
 | `--address IP` | | A joining storage host: the IP its reactors listen on, on the storage network; the metrics port is on it too. A joining gateway: the IP clients reach it at, which its certificate names |
 | `--reactors N` | 1 | A joining storage host: how many reactors, each on its own device file and port (`--node-port` + i) |
@@ -48,8 +48,8 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--ui DIR` | `hyperstor-ui` beside the installer | Where the map service runs: install the [web UI](hyperstor-mgmt.md)'s built files from `DIR` (`crates/hyperstor-mgmt/ui/dist` after `bun run build`) to `/usr/local/share/hyperstor/ui`, replacing what was there, and have `hyperstor-mgmt` serve them. Without it and without `hyperstor-ui`, an installed UI stays; with none, the built-in dashboard is served. Not saved |
 | `--libblkid-deb DIR` | | `install`, on Ubuntu: install the [libblkid that knows Hyperstor's devices](../admin-guide/installation.md#other-tools-and-hyperstors-devices) from `DIR`, the file `libblkid1_VERSION+hyperstor1_ARCH.deb` for the host's own libblkid1 version (built by `scripts/build-libblkid-deb.sh`). Checked before anything changes: without the matching file, the install stops. The package isn't installed: its library is, as a copy in `/usr/local/lib/<triplet>/`, so apt and Ubuntu's packages stay as they are. It restarts `systemd-udevd`, which probes disks with the library it loaded at start, and has it probe the host's devices again: then `lsblk`, `blkid`, `wipefs` and `mkfs` name them `hyperstor`. Opt-in, and not saved: an apt hook removes the copy when Ubuntu's next util-linux update changes libblkid1, and `check` then warns. A package an earlier installer put in place is replaced by Ubuntu's |
 | `--mgmt-listen all\|loopback` | `all` | Where the map service's host serves `hyperstor-mgmt`: every address over HTTPS (`all`), or `127.0.0.1` over plain HTTP, for an SSH tunnel (`loopback`). Saved |
-| `--endpoints auto\|off` | `auto` | A joined storage host, when the cluster has data networks (see [Several networks](../admin-guide/planning.md#several-networks)): on every run, propose each device's endpoints from the host's ports, the two closest to the device on each data network, register them with the map service (the node's certificate may set only its own devices'), and have the node listen on them. `off` leaves the map's endpoints as they are, for endpoints set by hand with `hyperstorctl device endpoints`, and has the node listen on those. A map service host proposes none: its nodes listen on the endpoints the map has for their devices. Saved |
-| `--client-networks auto\|none\|NAME,...` | `auto` | The data networks this host's `hyperstor-vhost`, `hyperstor-s3` and `hyperstorctl`'s volume commands (the `networks` line of `hyperstorctl.conf`) reach storage nodes on, in order: `auto`, those this host's storage nodes use; `none`, devices' addresses; or the names given (a host without storage nodes names them). Saved |
+| `--endpoints auto\|off` | `auto` | A joined storage host, when the cluster has data networks (see [Several networks](../admin-guide/planning.md#several-networks)): on every run, propose each device's endpoints from the host's ports, the two closest to the device on each data network, register them with the map service (the node's certificate may set only its own devices'), and have the node listen on them. `off` leaves the map's endpoints as they are, for endpoints set by hand with `hsctl device endpoints`, and has the node listen on those. A map service host proposes none: its nodes listen on the endpoints the map has for their devices. Saved |
+| `--client-networks auto\|none\|NAME,...` | `auto` | The data networks this host's `hyperstor-vhost`, `hyperstor-s3` and `hsctl`'s volume commands (the `networks` line of `hsctl.conf`) reach storage nodes on, in order: `auto`, those this host's storage nodes use; `none`, devices' addresses; or the names given (a host without storage nodes names them). Saved |
 | `--web-tls DIR` | the cluster CA's | mgmt's web certificate: `DIR/web.crt` and `DIR/web.key`, yours (an ACME client's, say), re-read when they change. `--web-tls ""` goes back to the cluster CA's. Saved |
 | `--mgmt-hosts NAME,...` | none | More names people reach mgmt by, such as a proxy's public name; the names on `--web-tls`'s certificate need none. `""` clears them. Saved |
 | `--mgmt-proxy-ca FILE` | none | mgmt takes a client certificate from this CA as a proxy's (Cloudflare's Authenticated Origin Pulls, or your proxies'); see [Behind a proxy](hyperstor-mgmt.md#behind-a-proxy). Saved |
@@ -69,12 +69,12 @@ usage: hyperstor-install check|install|uninstall|root-backup|root-restore|format
 | `--vhost-user NAME` | | A user who may use `hyperstor-vhost` (glidex's, say): attach volumes through its control socket, each volume's socket then theirs. Name every user hypervisors run as. Repeat for more; given at all, it replaces the saved list. Saved |
 | `--vhost-cpus auto\|LIST` | `auto` | The CPUs `hyperstor-vhost`'s reactors run on, one reactor per CPU. `auto`: the CPUs glidex reserves for the host (`cluster.node_reserved.cpu_list` in `/etc/glidex/control-plane.json`), the first of each NUMA node; without that list, the first CPU of each node, which is what glidex reserves by default. A list (`0,16,32`) is passed as given. Saved |
 | `--path P` | | `format-device`: the device to format |
-| `--id D` | | `format-device`: its device id (`N × 1000 + i`, as `hyperstorctl device add` gave it) |
+| `--id D` | | `format-device`: its device id (`N × 1000 + i`, as `hsctl device add` gave it) |
 | `--force-format` | off | `format-device` and `--device`: format over another system's signature |
 | `--raft-port P` | 8851 | A storage host made a member (`--role both`): where its member talks Raft |
 | `--force` | off | A role change past its refusals: an even number of voters after a promote, fewer than three after a demote |
 | `--device PATH` | | `install`: add the block device PATH (by `/dev/disk/by-id/`) to this host's node `--node N`, while the cluster runs: checked for another system's data first, registered with the map service, formatted, given to the service user by a udev rule, and kept in `install.conf`, so later runs keep it. Repeatable. Registered with the administrator's certificate on a map service host, or with the node's own on a host joined with `--join`, which may add devices only to its own node, at its own address |
-| `--remove-device ID` | | `install`: drop device ID, which `hyperstorctl device remove` has taken out of the map, from this host's node: kept in `install.conf`, so this run and later ones leave out its `--shard`, and the node is restarted without it. Refused while the map still has the device (checked with the administrator's certificate; without it, the installer says it couldn't check), and for a node's last device. The device's data is left as it is. Repeatable |
+| `--remove-device ID` | | `install`: drop device ID, which `hsctl device remove` has taken out of the map, from this host's node: kept in `install.conf`, so this run and later ones leave out its `--shard`, and the node is restarted without it. Refused while the map still has the device (checked with the administrator's certificate; without it, the installer says it couldn't check), and for a node's last device. The device's data is left as it is. Repeatable |
 | `--device-address IP:PORT` | the node's next free port | `--device`: where the device is served (one device at a time) |
 
 Options are saved in `/etc/hyperstor/install.conf` and reused by later
@@ -88,14 +88,14 @@ in, so run it from `target/release` after `cargo build --release`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hyperstorctl`, `hyperstor-mgmt`, `hyperstor-authd`, and `hyperstor-install` itself; `hsfs`, a link to `hyperstorctl` |
+| `/usr/local/bin/` | `hyperstor-meta`, `hyperstord`, `hsctl`, `hyperstor-mgmt`, `hyperstor-authd`, and `hyperstor-install` itself; `hsfs`, a link to `hsctl` |
 | `/etc/systemd/system/hyperstor-authd.socket`, `.service`; `/etc/pam.d/hyperstor`; `/etc/hyperstor/authd.json` | The PAM helper for people's logins ([hyperstor-authd](hyperstor-authd.md)), socket-activated, on the map service's host |
 | `/etc/hyperstor/cluster.txt` | The [cluster file](cluster-file.md): N nodes; pool 1 (`vol`, replicated) and pool 2 (`cache`, a cache pool with one copy) |
 | `/etc/hyperstor/meta.env`, `mgmt.env`, `node-N.env` | Each service's options |
 | `/etc/hyperstor/prometheus-targets.json` | Every storage node's metrics address, for Prometheus (`deploy/prometheus/hyperstor.yml`) |
-| `/etc/hyperstor/hyperstorctl.conf` | The API address for `hyperstorctl` |
+| `/etc/hyperstor/hsctl.conf` | The API address for `hsctl` |
 | `/etc/systemd/system/` | `hyperstor-meta.service`, `hyperstor-mgmt.service` and `hyperstord@.service` (one instance per node); `hyperstor-renew.timer`, which runs `hyperstor-install install` daily |
-| `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hyperstorctl` (key readable by the `hyperstor-admin` group), `mgmt` for the dashboard (key readable by the `hyperstor` group) |
+| `/etc/hyperstor/pki/` | The cluster's certificates: `root` and `intermediate` CAs (keys readable by root only), `api` for the map service (key readable by the `hyperstor` group), `admin` for `hsctl` (key readable by the `hyperstor-admin` group), `mgmt` for the dashboard (key readable by the `hyperstor` group) |
 | `/etc/hyperstor/pki/web.crt`, `web.key` | mgmt's web certificate from the cluster CA, for this host's names and addresses (unless `--web-tls`) |
 | `/etc/systemd/system/tailscaled.service.d/50-hyperstor-cert.conf` | With `--tailscale-cert`: lets mgmt fetch the node's Tailscale certificate (removed by `--no-tailscale-cert` and `uninstall`) |
 | `/usr/local/share/hyperstor/ui/` | The web UI's files, when installed with `--ui` (removed by `uninstall`) |
@@ -116,7 +116,7 @@ map service host. A storage host's certificate is renewed by later runs
 through the cluster API, with the certificate itself.
 
 It also creates the `hyperstor` system user, which the services run as,
-the `hyperstor-admin` group, whose members may use `hyperstorctl`, and
+the `hyperstor-admin` group, whose members may use `hsctl`, and
 the `hyperstor-users` group, whose members may log in to the management
 service with their password.
 Certificates are made once and renewed by later runs when two thirds of

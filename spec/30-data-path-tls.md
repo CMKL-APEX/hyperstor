@@ -74,7 +74,7 @@ Same ports, so a cluster upgrades node by node.
 
 ### 33.4 Modes (D373)
 
-A cluster setting in the map, set with `hyperstorctl data-tls set`:
+A cluster setting in the map, set with `hsctl data-tls set`:
 
 | Mode | A caller with an identity | A node or the map service |
 |---|---|---|
@@ -93,7 +93,7 @@ mode would promise a boundary that isn't there.
   doesn't refuse by it (I451). Clients can't be asked, so each node
   counts the connections it serves unauthenticated
   (`hyperstor_unauthenticated_connections_total`) and tells the map
-  service their addresses; `hyperstorctl data-tls status` lists them:
+  service their addresses; `hsctl data-tls status` lists them:
   who would be cut off (I455).
 - `require` to `allow` is always possible: the way back if a host was
   missed.
@@ -145,10 +145,10 @@ Once a connection is authenticated, and for every connection in
 | Storage host joined with a token | `node` N | has it (AD1) |
 | Map service member that runs a storage node | `node` N beside its `meta`, in `node-N.crt` | the installer issues one at its next run, from the member's CA; until then its node shows the member's (D370) and is served as `meta` |
 | Storage host that serves VM disks | `host` NAME beside its `node` N | the installer asks the cluster API with the node's certificate (D386, I456) |
-| Map service member's host, as a client | `host` NAME, in `host.crt` | the installer issues one from the member's CA (I454): `hyperstor-vhost` and `hyperstorctl --identity` there show it, not the member's |
+| Map service member's host, as a client | `host` NAME, in `host.crt` | the installer issues one from the member's CA (I454): `hyperstor-vhost` and `hsctl --identity` there show it, not the member's |
 | VM host (`--role vhost`), `hyperstor-ublk` host | `host` NAME, the name it gives as `--host` | `hyperstor-install --role vhost --join API --token-file F`, with a `host` token (D375) |
 | S3 gateway | `s3` | has it (D233) |
-| `hyperstorctl`'s data commands | the administrator's | has it |
+| `hsctl`'s data commands | the administrator's | has it |
 
 - Renewed by the daily timer, as node certificates are (D56).
 - `hyperstord`, `hyperstor-vhost`, `hyperstor-ublk` and `hyperstor-s3`
@@ -157,7 +157,7 @@ Once a connection is authenticated, and for every connection in
   (glidex #665). Its servers make each node's `host` token with their
   `mgmt` identity: an unbound one may already; one bound to realms (D311)
   only once an administrator lets it, with
-  `hyperstorctl realm client-tokens --client C --role host` (D382, I447).
+  `hsctl realm client-tokens --client C --role host` (D382, I447).
 - **Why a grant, not every bound client:** the client chooses the name
   in the token, and a `host` certificate opens volumes under that name
   (D377). An administrator gives that power to one client knowingly.
@@ -233,7 +233,7 @@ Milestone HS20 (17-milestones.md §21).
 
 ### 33.11 Encryption (D405–D407, D414)
 
-**When.** A cluster setting beside the mode (D405): `hyperstorctl
+**When.** A cluster setting beside the mode (D405): `hsctl
 data-tls set --mode allow --encrypt on`, or `data-tls allow encrypt` in
 the cluster file, which `hyperstor-install --all-in-one` writes. Off in
 an upgraded cluster. Once on, and the mode isn't `off`, a session stays

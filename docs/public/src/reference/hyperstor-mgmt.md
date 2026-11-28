@@ -31,7 +31,7 @@ The installer runs it on every address over HTTPS, with logins
 
 | Certificate | How |
 |---|---|
-| The cluster CA's (default) | The installer issues `web.crt` for the host's names and addresses from the cluster's intermediate CA, and renews it. Browsers trust it once they trust the cluster's root, `/etc/hyperstor/pki/root.crt`; `hyperstorctl` on the host trusts it already |
+| The cluster CA's (default) | The installer issues `web.crt` for the host's names and addresses from the cluster's intermediate CA, and renews it. Browsers trust it once they trust the cluster's root, `/etc/hyperstor/pki/root.crt`; `hsctl` on the host trusts it already |
 | Your own | `hyperstor-install install --web-tls DIR`: `DIR/web.crt` (full chain) and `DIR/web.key`, readable by the `hyperstor` group. Replace them in place (say, an ACME client's deploy hook) and mgmt serves the new pair within a minute, without a restart |
 | The node's Tailscale certificate | `hyperstor-install install --tailscale-cert`: on a host on Tailscale with HTTPS certificates on for the tailnet, browsers reaching `https://NODE.TAILNET.ts.net:8852` get the node's Let's Encrypt certificate; other names keep the one above. The name is published in Certificate Transparency logs |
 
@@ -121,7 +121,7 @@ PGs, devices, nodes, pools, members, hosts, the audit). A
 `security-admin@acme` manages acme's S3 keys and grants roles in acme
 to anyone who has logged in; their other grants stay. A volume, bucket
 or key of another realm answers as one that doesn't exist. The UI's
-realm picker and `hyperstorctl --in-realm R` act in one realm, which
+realm picker and `hsctl --in-realm R` act in one realm, which
 sends `X-Hyperstor-Realm: R`; a cluster administrator may use it to see
 what a realm's administrators see. Without it, someone with roles in
 several realms gets one list across them, each row naming its realm;
@@ -132,7 +132,7 @@ Everyone may make API tokens for themselves. Deleting a volume, a
 snapshot or a member, rolling a volume back, purging the trash or
 changing its grace period, changing how long the audit log is kept, making a join token or an API token, revoking
 a certificate, fetching a map backup, removing or converting a device
-(`hyperstorctl device upgrade`), and changing people's roles need a
+(`hsctl device upgrade`), and changing people's roles need a
 login of the last 10 minutes; an API token is never fresh enough for
 these.
 
@@ -198,7 +198,7 @@ never goes in `FILE` itself.
 | `/health` | `ok` |
 
 Scripts send `Authorization: Bearer hst_…` with an API token instead of
-the cookie, or use [`hyperstorctl --mgmt`](hyperstorctl.md); a trusted
+the cookie, or use [`hsctl --mgmt`](hsctl.md); a trusted
 directory's person sends a glidex API token (`gxt_…`) for this cluster,
 or the directory's access token for it. Refusals
 are Connect errors, as the cluster API's: `{"code", "message",

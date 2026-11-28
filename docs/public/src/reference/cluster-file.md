@@ -36,7 +36,7 @@ With `encrypt` after the mode, authenticated sessions also stay
 encrypted, in kernel TLS, on networks not marked trusted and on
 addresses on no network. `hyperstor-install --all-in-one` writes
 `allow encrypt`. The line is read when the cluster's first map is made;
-a running cluster changes both with `hyperstorctl data-tls set`.
+a running cluster changes both with `hsctl data-tls set`.
 
 ## `node`
 
@@ -108,7 +108,7 @@ Gives node `NODE`'s network port `NETDEV` a role: `host`, `uplink`,
 is `storage` when one of its addresses is an endpoint of the node's
 devices, and `host` otherwise. Storage uses `storage` and `converged`
 ports, and a `compute` port (a GPU host's rail, say) only while it is
-idle. `hyperstorctl port role` changes it while the cluster runs.
+idle. `hsctl port role` changes it while the cluster runs.
 
 ```text
 port 0 ibp12s0 compute
@@ -133,7 +133,7 @@ pool ID NAME KIND [OPTION VALUE ...]
 | `pgs` | 128 | Placement groups; a power of two |
 | `chunk` | 4194304 | Chunk size in bytes; a multiple of 4096 |
 | `domain` | `host` | Failure domain: `device`, `host` or `rack` |
-| `class` | any | Only use devices of these classes, comma-separated (`nvme,ssd`). A device's class is its kind (`nvme`, `ssd`, `hdd`, `file`) unless set with `hyperstorctl device class` |
+| `class` | any | Only use devices of these classes, comma-separated (`nvme,ssd`). A device's class is its kind (`nvme`, `ssd`, `hdd`, `file`) unless set with `hsctl device class` |
 
 ## Errors
 

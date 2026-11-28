@@ -1,7 +1,7 @@
-//! `hyperstorctl --help` and `hyperstorctl help [COMMAND]`.
+//! `hsctl --help` and `hsctl help [COMMAND]`.
 //!
 //! The text is read from the command reference page
-//! (`docs/public/src/reference/hyperstorctl.md`), the tables the
+//! (`docs/public/src/reference/hsctl.md`), the tables the
 //! documentation is built from, so a command or an option is described
 //! once, and `scripts/cli-docs-check.py` keeps the page and the binary in
 //! step. Only what the page's two tables say is printed here: a command's
@@ -9,7 +9,7 @@
 
 use std::fmt::Write;
 
-const REFERENCE: &str = include_str!("../../../docs/public/src/reference/hyperstorctl.md");
+const REFERENCE: &str = include_str!("../../../docs/public/src/reference/hsctl.md");
 
 /// Options every command takes: how to reach the cluster and how to print
 /// the answer. Listed once in the overview, not under each command.
@@ -261,9 +261,9 @@ fn overview(r: &Reference) -> String {
         .max()
         .unwrap_or(0);
     let mut s = String::new();
-    s.push_str("hyperstorctl: manage and test a Hyperstor cluster through the cluster API.\n\n");
-    s.push_str("Usage: hyperstorctl [CONNECTION OPTIONS] COMMAND [OPTIONS]\n\n");
-    s.push_str("Commands (`hyperstorctl help COMMAND` describes one, with its options):\n");
+    s.push_str("hsctl: manage and test a Hyperstor cluster through the cluster API.\n\n");
+    s.push_str("Usage: hsctl [CONNECTION OPTIONS] COMMAND [OPTIONS]\n\n");
+    s.push_str("Commands (`hsctl help COMMAND` describes one, with its options):\n");
     for c in &r.commands {
         let room = WIDTH.saturating_sub(4 + w);
         let _ = writeln!(s, "  {:<w$}  {}", c.name, summary(&c.text, room));
@@ -283,7 +283,7 @@ fn overview(r: &Reference) -> String {
         let _ = writeln!(s, "  {:<gw$}  {}", o.name, summary(&o.text, room));
     }
     s.push_str(
-        "\nThe full reference is docs/public/src/reference/hyperstorctl.md.\n\
+        "\nThe full reference is docs/public/src/reference/hsctl.md.\n\
          Exit status: 0 done, 1 failed, 2 a missing or malformed option,\n\
          3 the cluster API can't be reached, 4 not allowed.\n",
     );
@@ -293,7 +293,7 @@ fn overview(r: &Reference) -> String {
 /// One command: what it does and the options that go with it.
 fn command(r: &Reference, name: &str) -> Option<String> {
     let c = r.commands.iter().find(|c| c.name == name)?;
-    let mut s = format!("hyperstorctl {}\n\n", c.name);
+    let mut s = format!("hsctl {}\n\n", c.name);
     s.push_str(&wrap(&plain(&c.text), 2));
     let named = option_names(&c.text);
     let group = c.name.split_once(' ').map(|(g, _)| format!("`{g} ...`"));
@@ -328,7 +328,7 @@ fn command(r: &Reference, name: &str) -> Option<String> {
     }
     s.push_str(
         "\nEvery command also takes the connection options and --json;\n\
-         `hyperstorctl --help` lists them.\n",
+         `hsctl --help` lists them.\n",
     );
     Some(s)
 }
@@ -349,12 +349,12 @@ fn group(r: &Reference, word: &str) -> Option<String> {
         .map(|c| c.name.chars().count())
         .max()
         .unwrap_or(0);
-    let mut s = format!("hyperstorctl {word} COMMAND\n\n");
+    let mut s = format!("hsctl {word} COMMAND\n\n");
     for c in members {
         let room = WIDTH.saturating_sub(4 + w);
         let _ = writeln!(s, "  {:<w$}  {}", c.name, summary(&c.text, room));
     }
-    s.push_str("\n`hyperstorctl help COMMAND` describes one, with its options.\n");
+    s.push_str("\n`hsctl help COMMAND` describes one, with its options.\n");
     Some(s)
 }
 
@@ -407,7 +407,7 @@ pub fn handle(argv: &[String]) -> Option<Help> {
     match lookup(&r, &words) {
         Some(t) => Some(Help::Text(t)),
         None if spelled_help => Some(Help::Unknown(format!(
-            "hyperstorctl: no command \"{}\"; `hyperstorctl --help` lists them",
+            "hsctl: no command \"{}\"; `hsctl --help` lists them",
             words.join(" ")
         ))),
         None => Some(Help::Text(overview(&r))),
@@ -504,7 +504,7 @@ mod tests {
             panic!("no help")
         };
         assert_eq!(a, b);
-        assert!(a.starts_with("hyperstorctl snapshot list\n"), "{a}");
+        assert!(a.starts_with("hsctl snapshot list\n"), "{a}");
         let Some(Help::Text(g)) = handle(&args(&["snapshot", "-h"])) else {
             panic!("no help")
         };

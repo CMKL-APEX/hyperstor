@@ -77,7 +77,7 @@ impl Role {
         matches!(self, Role::Storage | Role::Converged)
     }
 
-    /// As the cluster file and `hyperstorctl` spell it.
+    /// As the cluster file and `hsctl` spell it.
     pub fn name(self) -> &'static str {
         match self {
             Role::Host => "host",
@@ -108,7 +108,7 @@ pub enum Lending {
 impl Lending {
     pub const ALL: [Lending; 3] = [Lending::Off, Lending::Idle, Lending::Always];
 
-    /// As `hyperstorctl` and the API spell it.
+    /// As `hsctl` and the API spell it.
     pub fn name(self) -> &'static str {
         match self {
             Lending::Off => "off",

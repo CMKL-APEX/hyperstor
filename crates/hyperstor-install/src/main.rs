@@ -15,7 +15,7 @@
 //!   host gets the same file (interim, until join tokens; I50).
 //! - `install --join API --token-file F --role storage --address IP
 //!   [--reactors N] [--rack R]` joins this host to a running cluster with a
-//!   token from `hyperstorctl token create --role node` (§23.4.2, D57):
+//!   token from `hsctl token create --role node` (§23.4.2, D57):
 //!   it makes its own key, pins the cluster's root by the token, is added
 //!   to the map as a new storage node, and installs it with N reactors on
 //!   IP, ports from `--node-port`. `--role meta --members LIST --member-id
@@ -29,7 +29,7 @@
 //!   and N storage nodes (default 3), each on a file of G GiB
 //!   (default 4) in the data directory, a replicated pool and a cache
 //!   pool (D45), systemd units,
-//!   and `hyperstorctl`'s configuration. Flags are saved in
+//!   and `hsctl`'s configuration. Flags are saved in
 //!   `/etc/hyperstor/install.conf` and reused by later runs.
 //!   It also installs itself and a daily timer that runs `install` again,
 //!   which renews certificates (D56) and repairs drift.
@@ -47,7 +47,7 @@
 //!   certificate in `--s3-tls DIR` (`s3.crt`, `s3.key`) or its own `s3`
 //!   certificate from the cluster CA. On a map service host the
 //!   certificate is signed here; elsewhere it comes from a join with an
-//!   `s3` token (`hyperstorctl token create --role s3 --name N`): `install
+//!   `s3` token (`hsctl token create --role s3 --name N`): `install
 //!   --join API --token-file F --role s3 --address IP` sets up a host that
 //!   only runs a gateway, and a joined storage host takes `--s3` with a
 //!   token of its own in a later run. The all-in-one cluster runs one and
@@ -87,7 +87,7 @@ const USAGE: &str = "usage: hyperstor-install check|install|uninstall|root-backu
 const BINARIES: [&str; 8] = [
     "hyperstor-meta",
     "hyperstord",
-    "hyperstorctl",
+    "hsctl",
     "hyperstor-mgmt",
     "hyperstor-authd",
     "hyperstor-vhost",
@@ -95,9 +95,19 @@ const BINARIES: [&str; 8] = [
     "hyperstor-s3",
 ];
 
-/// `hsfs`: a link to hyperstorctl, which reads the name it is run by
+/// `hsfs`: a link to hsctl, which reads the name it is run by
 /// (29-hsfs.md §32.4, D361).
 const HSFS: &str = "/usr/local/bin/hsfs";
+
+/// `hyperstorctl`, hsctl's name before D422: a link to it, so scripts
+/// and glidex releases that run it by that name go on working. A later
+/// release drops it.
+const OLD_CTL: &str = "/usr/local/bin/hyperstorctl";
+
+/// hsctl's configuration as installers before D422 named it: removed
+/// once `hsctl.conf` is written. hsctl reads it while `hsctl.conf` is
+/// missing.
+const OLD_CTL_CONF: &str = "/etc/hyperstor/hyperstorctl.conf";
 
 /// Where `hyperstor-vhost`'s sockets and state file are (its unit's
 /// runtime directory).
@@ -788,7 +798,7 @@ fn main() {
                         join_gateway(&root, real, &mut s, token.as_deref());
                     } else {
                         eprintln!(
-                            "hyperstor-install: the gateway needs an s3 token of its own: run again with --s3 --token-file F (hyperstorctl token create --role s3 --name N)"
+                            "hyperstor-install: the gateway needs an s3 token of its own: run again with --s3 --token-file F (hsctl token create --role s3 --name N)"
                         );
                         s.s3 = false;
                     }
@@ -1931,9 +1941,7 @@ fn s3_plan(s: &Settings, p: &Plan) -> S3Plan {
 /// the map service's addresses came with its join.
 fn s3_only_plan(s: &Settings) -> Plan {
     if s.join.is_empty() {
-        fail(
-            "--role s3 needs --join API and an s3 token (hyperstorctl token create --role s3 --name N)",
-        );
+        fail("--role s3 needs --join API and an s3 token (hsctl token create --role s3 --name N)");
     }
     if s.map.is_empty() {
         fail("this host's join left no map service addresses: join again with a new s3 token");
@@ -2404,9 +2412,8 @@ fn join(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) -> Optio
         }
         return None;
     }
-    let token = token.unwrap_or_else(|| {
-        fail("joining needs a token: --token-file F (from hyperstorctl token create)")
-    });
+    let token = token
+        .unwrap_or_else(|| fail("joining needs a token: --token-file F (from hsctl token create)"));
     let (pin, _) = hyperstor_meta::api::parse_token(token)
         .unwrap_or_else(|| fail("the token isn't a hyperstor join token (hsj1-…)"));
     let (key, csr) = hyperstor_pki::new_request().unwrap_or_else(|e| fail(&format!("key: {e}")));
@@ -2600,9 +2607,7 @@ fn promote_host(root: &Path, s: &mut Settings, has_token: bool, force: bool) {
         );
     }
     if !has_token {
-        fail(
-            "promoting needs a meta token: --token-file F (hyperstorctl token create --role meta)",
-        );
+        fail("promoting needs a meta token: --token-file F (hsctl token create --role meta)");
     }
     let (_, r) = members_at(root, "node", &api_candidates(&s.join, &s.map, s.api_port))
         .unwrap_or_else(|e| fail(&format!("reading the map service's members: {e}")));
@@ -2702,7 +2707,7 @@ fn ensure_member(root: &Path, s: &Settings, p: &Plan, wait_secs: u64) -> bool {
         }
         if std::time::Instant::now() >= deadline {
             eprintln!(
-                "hyperstor-install: member {id} isn't a voter yet: the next run adds it, or waits for it (hyperstorctl member list)"
+                "hyperstor-install: member {id} isn't a voter yet: the next run adds it, or waits for it (hsctl member list)"
             );
             return false;
         }
@@ -2785,9 +2790,9 @@ fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool, given_joi
     // 1. The store, backed up before anything changes.
     let ctl = std::env::current_exe()
         .ok()
-        .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
-        .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
-    // The backups' directory belongs to the services' user: hyperstorctl
+        .and_then(|e| e.parent().map(|d| d.join("hsctl")))
+        .unwrap_or_else(|| fail("can't find hsctl beside me"));
+    // The backups' directory belongs to the services' user: hsctl
     // writes in a directory of root's own, and the file is then placed in
     // that one through a handle on it, never through a link.
     let backups = under(root, &format!("{}/meta-backups", s.data_dir));
@@ -2925,7 +2930,8 @@ fn demote_host(root: &Path, real: bool, s: &mut Settings, force: bool, given_joi
         "/etc/hyperstor/mgmt.env",
         "/etc/hyperstor/authd.json",
         "/etc/hyperstor/prometheus-targets.json",
-        "/etc/hyperstor/hyperstorctl.conf",
+        "/etc/hyperstor/hsctl.conf",
+        OLD_CTL_CONF,
         "/etc/hyperstor/cluster.txt",
     ] {
         let _ = fs::remove_file(under(root, f));
@@ -3223,7 +3229,7 @@ fn join_host(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) {
     let name = client_host_name();
     let token = token.unwrap_or_else(|| {
         fail(&format!(
-            "joining a VM host needs a host token: --token-file F (from hyperstorctl token create --role host --name {name})"
+            "joining a VM host needs a host token: --token-file F (from hsctl token create --role host --name {name})"
         ))
     });
     let (pin, _) = hyperstor_meta::api::parse_token(token)
@@ -3245,11 +3251,11 @@ fn join_host(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) {
     match hyperstor_pki::identity_in(&r.certificate) {
         Some(i) if i.role == hyperstor_pki::Role::Host && i.id == name => {}
         Some(i) if i.role == hyperstor_pki::Role::Host => fail(&format!(
-            "the token is for host {:?}, and this host names itself {name:?}: make one with hyperstorctl token create --role host --name {name}",
+            "the token is for host {:?}, and this host names itself {name:?}: make one with hsctl token create --role host --name {name}",
             i.id
         )),
         _ => fail(&format!(
-            "the token isn't a host token: make one with hyperstorctl token create --role host --name {name}"
+            "the token isn't a host token: make one with hsctl token create --role host --name {name}"
         )),
     }
     if real {
@@ -3282,7 +3288,7 @@ fn join_gateway(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) 
         return;
     }
     let token = token.unwrap_or_else(|| {
-        fail("the gateway needs an s3 token: --token-file F (from hyperstorctl token create --role s3 --name N)")
+        fail("the gateway needs an s3 token: --token-file F (from hsctl token create --role s3 --name N)")
     });
     let (pin, _) = hyperstor_meta::api::parse_token(token)
         .unwrap_or_else(|| fail("the token isn't a hyperstor join token (hsj1-…)"));
@@ -3306,9 +3312,7 @@ fn join_gateway(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) 
     })
     .unwrap_or_else(|e| fail(&format!("join through {}: {e}", s.join)));
     if hyperstor_pki::identity_in(&r.certificate).map(|i| i.role) != Some(hyperstor_pki::Role::S3) {
-        fail(
-            "the token isn't an s3 token: make one with hyperstorctl token create --role s3 --name N",
-        );
+        fail("the token isn't an s3 token: make one with hsctl token create --role s3 --name N");
     }
     if real {
         service_user(s);
@@ -3343,7 +3347,7 @@ fn join_gateway(root: &Path, real: bool, s: &mut Settings, token: Option<&str>) 
 /// D285: with `--endpoints off`, and on a map service host (through its
 /// own API, with the administrator's certificate), nothing is proposed:
 /// the node serves the endpoints the map has for its devices, as
-/// `hyperstorctl device endpoints` set them, besides the cluster file's.
+/// `hsctl device endpoints` set them, besides the cluster file's.
 fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
     if p.nodes.is_empty() {
         return;
@@ -3491,7 +3495,7 @@ fn keep_endpoints(root: &Path, s: &Settings, p: &mut Plan) {
 }
 
 /// D289: the networks this host's clients (`hyperstor-vhost`,
-/// `hyperstor-s3`, and `hyperstorctl`'s volume commands, D340) reach
+/// `hyperstor-s3`, and `hsctl`'s volume commands, D340) reach
 /// storage on: `auto` takes the networks its storage nodes reach others
 /// on, in order (D207), so the host's clients take the paths its storage
 /// does.
@@ -3511,7 +3515,7 @@ fn client_networks(s: &Settings, p: &Plan) -> Vec<String> {
     }
 }
 
-/// `hyperstorctl.conf`'s `networks A,B` line, or nothing (D340): the
+/// `hsctl.conf`'s `networks A,B` line, or nothing (D340): the
 /// volume commands reach storage where the host's other clients do.
 fn ctl_networks(s: &Settings, p: &Plan) -> String {
     let names = client_networks(s, p);
@@ -3631,10 +3635,10 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
         ));
     }
     if p.meta.is_none() {
-        // A storage host's `hyperstorctl` takes its clients' networks too
+        // A storage host's `hsctl` takes its clients' networks too
         // (D340); written even empty, so a line no longer true goes.
         out.push((
-            "/etc/hyperstor/hyperstorctl.conf".to_string(),
+            "/etc/hyperstor/hsctl.conf".to_string(),
             ctl_networks(s, p),
             0o644,
         ));
@@ -3651,7 +3655,7 @@ fn files(s: &Settings, p: &Plan) -> Vec<(String, String, u32)> {
                 0o644,
             ),
             (
-                "/etc/hyperstor/hyperstorctl.conf".to_string(),
+                "/etc/hyperstor/hsctl.conf".to_string(),
                 format!(
                     "api {}\ntls /etc/hyperstor/pki\nsocket /run/hyperstor-meta/api.sock\n{}",
                     p.api,
@@ -4472,14 +4476,18 @@ fn install(
         }
     }
     drop(binaries);
-    // `hsfs` is hyperstorctl by another name (D361, D389).
-    let hsfs = under(root, HSFS);
-    if fs::read_link(&hsfs).ok().as_deref() != Some(Path::new("hyperstorctl")) {
-        let _ = fs::remove_file(&hsfs);
-        if let Err(e) = std::os::unix::fs::symlink("hyperstorctl", &hsfs) {
-            fail(&format!("{HSFS}: {e}"));
+    // `hsfs` is hsctl by another name (D361, D389), and so is
+    // `hyperstorctl`, its name before D422: the binary an older
+    // installer wrote there is replaced by the link.
+    for link in [HSFS, OLD_CTL] {
+        let path = under(root, link);
+        if fs::read_link(&path).ok().as_deref() != Some(Path::new("hsctl")) {
+            let _ = fs::remove_file(&path);
+            if let Err(e) = std::os::unix::fs::symlink("hsctl", &path) {
+                fail(&format!("{link}: {e}"));
+            }
+            changed.push(link.to_string());
         }
-        changed.push(HSFS.to_string());
     }
 
     // 1b. The patched libblkid (D332), when asked for; a host installed
@@ -4584,7 +4592,7 @@ fn install(
         }
         changed.push("group hyperstor-users".into());
     }
-    // Members of hyperstor-admin can read hyperstorctl's certificate.
+    // Members of hyperstor-admin can read hsctl's certificate.
     if real
         && !Command::new("getent")
             .args(["group", "hyperstor-admin"])
@@ -4741,7 +4749,14 @@ fn install(
         changed.push(format!("removed {OLD_UDEV_RULES}"));
     }
     let mut service_units_changed: Vec<&str> = Vec::new();
-    for (path, content, mode) in files(s, &p) {
+    let files = files(s, &p);
+    // `hsctl.conf` replaces `hyperstorctl.conf` (D422).
+    if files.iter().any(|f| f.0 == "/etc/hyperstor/hsctl.conf")
+        && fs::remove_file(under(root, OLD_CTL_CONF)).is_ok()
+    {
+        changed.push(format!("removed {OLD_CTL_CONF}"));
+    }
+    for (path, content, mode) in files {
         if !converge(&under(root, &path), content.as_bytes(), mode) {
             continue;
         }
@@ -4896,17 +4911,17 @@ fn install(
     }
     if real && !no_start && p.meta.is_some() {
         println!(
-            "\nNext: hyperstorctl status, then hyperstorctl io-test (as root, or as a member of\nhyperstor-admin: sudo usermod -aG hyperstor-admin $USER, then log in again)"
+            "\nNext: hsctl status, then hsctl io-test (as root, or as a member of\nhyperstor-admin: sudo usermod -aG hyperstor-admin $USER, then log in again)"
         );
         if let Some(g) = &p.s3 {
             println!(
-                "S3 on https://<this host>:{}/ : hyperstorctl s3 key create --tenant 1 prints a key and its secret",
+                "S3 on https://<this host>:{}/ : hsctl s3 key create --tenant 1 prints a key and its secret",
                 g.listen.rsplit(':').next().unwrap_or("8848")
             );
         }
         if !s.all_in_one {
             println!(
-                "Add a storage host: hyperstorctl token create --role node, then on that host\n  sudo hyperstor-install install --join {} --token-file FILE --role storage --address IP",
+                "Add a storage host: hsctl token create --role node, then on that host\n  sudo hyperstor-install install --join {} --token-file FILE --role storage --address IP",
                 p.api
             );
         }
@@ -5012,7 +5027,7 @@ fn s3_default_placement(root: &Path, s: &Settings, p: &Plan, tries: u32) -> Opti
 /// The realm a gateway serves other than `default` (I370): the map
 /// service gives it that realm's keys only once it is bound to it by its
 /// certificate's name. On a map service member the installer binds it
-/// with the administrator's certificate, as `hyperstorctl realm host`
+/// with the administrator's certificate, as `hsctl realm host`
 /// does, unless it is bound already; a gateway that joined with an s3
 /// token can't, so the command to run is printed. A realm that doesn't
 /// exist yet is said, not failed: the rest of the install stands.
@@ -5025,7 +5040,7 @@ fn s3_realm_binding(root: &Path, p: &Plan, tries: u32) -> Option<String> {
     let dir = under(root, "/etc/hyperstor/pki");
     let read = |f: &str| fs::read_to_string(dir.join(f)).unwrap_or_default();
     let id = hyperstor_pki::identity_in(&read("s3.crt"))?.id;
-    let command = format!("hyperstorctl realm host --host {id} --realm {realm}");
+    let command = format!("hsctl realm host --host {id} --realm {realm}");
     if p.meta.is_none() || !dir.join("admin.crt").exists() {
         println!(
             "The gateway serves realm {realm} once bound to it: on a map service host, run\n  {command}"
@@ -5067,7 +5082,7 @@ fn s3_realm_binding(root: &Path, p: &Plan, tries: u32) -> Option<String> {
             Ok(Some(false)) => return None,
             Ok(None) => {
                 println!(
-                    "Realm {realm} doesn't exist, so the gateway serves nothing yet: run\n  hyperstorctl realm create --name {realm}\n  {command}\n(or install again once the realm exists)"
+                    "Realm {realm} doesn't exist, so the gateway serves nothing yet: run\n  hsctl realm create --name {realm}\n  {command}\n(or install again once the realm exists)"
                 );
                 return None;
             }
@@ -5090,7 +5105,7 @@ fn s3_realm_binding(root: &Path, p: &Plan, tries: u32) -> Option<String> {
 /// - `intermediate.*`, made once and renewed after two thirds of its year.
 /// - `api.*`, the map service's server certificate (`meta/0`, for
 ///   127.0.0.1 and localhost), readable by the `hyperstor` group.
-/// - `admin.*`, `hyperstorctl`'s client certificate (`admin/local`),
+/// - `admin.*`, `hsctl`'s client certificate (`admin/local`),
 ///   readable by root and the `hyperstor-admin` group.
 ///
 /// Leaves are renewed after two thirds of their 30 days, or when the
@@ -5220,7 +5235,7 @@ fn pki(
         leaves.push((name, Role::Node, id, false, "hyperstor"));
     }
     // And the host one as a client of the cluster (D375, D377; I454):
-    // what `hyperstor-vhost` and `hyperstorctl --identity` show storage
+    // what `hyperstor-vhost` and `hsctl --identity` show storage
     // nodes here, under the name the host gives them, in place of the
     // member's certificate, which may send everything.
     if !host.is_empty() {
@@ -5449,7 +5464,7 @@ fn add_devices(
 /// (24-pools-and-devices.md §27.2.5, D186): recorded in
 /// `s.removed_devices` (and out of `s.devices`), so this run and every
 /// later one leave out their `--shard`. With the administrator's
-/// certificate, a device the map still has is refused: `hyperstorctl
+/// certificate, a device the map still has is refused: `hsctl
 /// device remove` comes first. A node's last device is refused: the node
 /// left the map with it.
 fn remove_devices(root: &Path, s: &mut Settings, cluster_file: Option<String>, ids: &[u32]) {
@@ -5459,8 +5474,8 @@ fn remove_devices(root: &Path, s: &mut Settings, cluster_file: Option<String>, i
     let in_map: Vec<u32> = if checked {
         let ctl = std::env::current_exe()
             .ok()
-            .and_then(|e| e.parent().map(|d| d.join("hyperstorctl")))
-            .unwrap_or_else(|| fail("can't find hyperstorctl beside me"));
+            .and_then(|e| e.parent().map(|d| d.join("hsctl")))
+            .unwrap_or_else(|| fail("can't find hsctl beside me"));
         let out = Command::new(&ctl)
             .args(["--api", &p.api, "--tls"])
             .arg(&pki)
@@ -5474,7 +5489,7 @@ fn remove_devices(root: &Path, s: &mut Settings, cluster_file: Option<String>, i
             ));
         }
         let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-            .unwrap_or_else(|e| fail(&format!("hyperstorctl nodes: {e}")));
+            .unwrap_or_else(|e| fail(&format!("hsctl nodes: {e}")));
         v["nodes"]
             .as_array()
             .into_iter()
@@ -5503,7 +5518,7 @@ fn remove_devices(root: &Path, s: &mut Settings, cluster_file: Option<String>, i
         }
         if in_map.contains(&id) {
             fail(&format!(
-                "device {id} is still in the map: remove it first (hyperstorctl device remove --device {id}) and wait for it to leave"
+                "device {id} is still in the map: remove it first (hsctl device remove --device {id}) and wait for it to leave"
             ));
         }
         if !checked {
@@ -5873,6 +5888,7 @@ fn uninstall(root: &Path, real: bool, s: &Settings) {
         "/etc/systemd/system/hyperstor-renew.timer".to_string(),
         "/usr/local/bin/hyperstor-install".to_string(),
         HSFS.to_string(),
+        OLD_CTL.to_string(),
         UDEV_RULES.to_string(),
         OLD_UDEV_RULES.to_string(),
     ]
@@ -6657,7 +6673,7 @@ mod tests {
                 .ends_with("--api 10.0.0.9:8850,10.0.0.8:8850 --identity /etc/hyperstor/pki"),
             "{env}"
         );
-        // The map service's host: its options and hyperstorctl's, no node.
+        // The map service's host: its options and hsctl's, no node.
         s.role = "meta".into();
         let p = plan(Path::new("/nonexistent"), &s, Some(cluster.into()));
         assert_eq!(p.cluster_id, "9");
@@ -6668,7 +6684,7 @@ mod tests {
             .unwrap()
             .1;
         assert!(env.contains("--listen 10.0.0.9:8849"), "{env}");
-        assert!(f.iter().any(|x| x.0.ends_with("hyperstorctl.conf")));
+        assert!(f.iter().any(|x| x.0.ends_with("hsctl.conf")));
         assert!(!f.iter().any(|x| x.0.contains("/node-")));
         assert_eq!(
             units(&p),
@@ -7235,15 +7251,15 @@ mod tests {
         assert!(!Settings::defaults().save().contains("client_networks"));
     }
 
-    /// D340: `hyperstorctl.conf` names the host's client networks, on a
+    /// D340: `hsctl.conf` names the host's client networks, on a
     /// map service host after its API lines, and alone on a storage host,
     /// where it is written even empty so a line no longer true goes.
     #[test]
-    fn hyperstorctl_takes_the_hosts_client_networks() {
+    fn hsctl_takes_the_hosts_client_networks() {
         let conf = |s: &Settings, p: &Plan| {
             files(s, p)
                 .into_iter()
-                .find(|x| x.0 == "/etc/hyperstor/hyperstorctl.conf")
+                .find(|x| x.0 == "/etc/hyperstor/hsctl.conf")
                 .unwrap()
                 .1
         };

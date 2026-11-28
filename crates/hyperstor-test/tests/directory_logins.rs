@@ -3,8 +3,8 @@
 //! through the directory, kept in the map service and checked against
 //! its replica; step-up and logout there; roles from its links and, for
 //! the operator tenant's members, from here; its access tokens and API
-//! tokens as bearer tokens, through hyperstor-mgmt and hyperstorctl;
-//! `hyperstorctl auth login`'s device grant and renewal; an ended login
+//! tokens as bearer tokens, through hyperstor-mgmt and hsctl;
+//! `hsctl auth login`'s device grant and renewal; an ended login
 //! chain; and a directory cut off past its max_staleness, while local
 //! logins keep working.
 
@@ -145,9 +145,9 @@ fn roles(v: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// hyperstorctl through mgmt with `args` after `--mgmt` and its CA.
+/// hsctl through mgmt with `args` after `--mgmt` and its CA.
 fn ctl_mgmt(c: &Cluster, args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
-    let o = std::process::Command::new(c.bin.join("hyperstorctl"))
+    let o = std::process::Command::new(c.bin.join("hsctl"))
         .args(["--mgmt", &c.mgmt_url()])
         .arg("--mgmt-ca")
         .arg(c.pki().join("root.crt"))
@@ -332,7 +332,7 @@ fn people_sign_in_through_a_directory() {
     });
     assert!(roles(&whoami(&c, &ann_s).1).contains(&"viewer".to_string()));
 
-    // Through hyperstorctl: a directory's access token in a token file,
+    // Through hsctl: a directory's access token in a token file,
     // and a glidex API token in $HYPERSTOR_TOKEN.
     let file = c.scratch.path("token");
     let ann_t = dir.access_token("u1", &c.cluster_id, "s-ann").unwrap();
@@ -556,7 +556,7 @@ fn people_sign_in_through_a_directory() {
 /// A real glidex directory's access token for an installed cluster, from
 /// the environment only: `HS_REAL_MGMT_URL` (mgmt's https:// address),
 /// `HS_REAL_DIRECTORY_TOKEN_FILE` (from `gxctl auth token --cluster ID`,
-/// or a token file `hyperstorctl auth login` kept) and, if mgmt's
+/// or a token file `hsctl auth login` kept) and, if mgmt's
 /// certificate isn't the host's CAs', `HS_REAL_MGMT_CA`. Run by hand on
 /// a pilot host: `cargo test --release -p hyperstor-test --test
 /// directory_logins -- --ignored`.
@@ -569,7 +569,7 @@ fn a_real_directory_s_people_reach_mgmt() {
     ) else {
         panic!("set HS_REAL_MGMT_URL and HS_REAL_DIRECTORY_TOKEN_FILE");
     };
-    let mut c = std::process::Command::new(bin_dir().join("hyperstorctl"));
+    let mut c = std::process::Command::new(bin_dir().join("hsctl"));
     c.args(["--mgmt", &url, "--token-file", &file]);
     if let Ok(ca) = std::env::var("HS_REAL_MGMT_CA") {
         c.args(["--mgmt-ca", &ca]);

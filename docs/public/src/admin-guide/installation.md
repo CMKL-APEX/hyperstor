@@ -33,7 +33,7 @@ cargo build --release
 | `target/release/hyperstor-meta` | the map service host | [map service](map-service.md) |
 | `target/release/hyperstord` | every storage node | [storage node](storage-nodes.md) |
 | `target/release/hyperstor-bench` | any host, optional | [load generator](benchmarking.md) |
-| `target/release/hyperstorctl` | any host that reaches the cluster API | [managing a cluster](managing.md) |
+| `target/release/hsctl` | any host that reaches the cluster API | [managing a cluster](managing.md) |
 | `target/release/hyperstor-mgmt`, `hyperstor-authd` | the map service host | [management service](../reference/hyperstor-mgmt.md) and its [password helper](../reference/hyperstor-authd.md) |
 | `target/release/hyperstor-vhost` | hosts that run VMs | [VM disks](../reference/hyperstor-vhost.md) |
 | `target/release/hyperstor-ublk` | any host, optional | [volumes as block devices](../reference/hyperstor-ublk.md) |
@@ -54,15 +54,15 @@ sudo target/release/hyperstor-install install --ui crates/hyperstor-mgmt/ui/dist
 
 `hyperstor-install` sets up a whole cluster on one Linux host: the map
 service with its cluster API, three storage nodes on files, a pool with
-three copies and a cache pool, systemd units, and `hyperstorctl`. It is for trying
+three copies and a cache pool, systemd units, and `hsctl`. It is for trying
 Hyperstor and testing changes, not for data you want to keep.
 
 ```sh
 cargo build --release
 target/release/hyperstor-install check           # host checks, changes nothing
 sudo target/release/hyperstor-install install --all-in-one
-hyperstorctl status
-hyperstorctl io-test
+hsctl status
+hsctl io-test
 ```
 
 `check` reports each requirement as `ok`, `info`, `warn` or `FAIL`. On a
@@ -97,11 +97,11 @@ buckets in the pool `vol`. Make a key and point an S3 client at it,
 trusting the cluster's root certificate:
 
 ```sh
-sudo hyperstorctl s3 key create --tenant 1      # prints the key's id and secret
+sudo hsctl s3 key create --tenant 1      # prints the key's id and secret
 aws --endpoint-url https://localhost:8848 --ca-bundle /etc/hyperstor/pki/root.crt s3 mb s3://first
 ```
 
-`hyperstorctl` needs the administrator certificate, readable by root
+`hsctl` needs the administrator certificate, readable by root
 and the `hyperstor-admin` group: run it with `sudo`, or join the group
 (`sudo usermod -aG hyperstor-admin $USER`, then log in again).
 
@@ -166,7 +166,7 @@ use it on the new host:
 
 ```sh
 # on the map service's host; umask 077 keeps the file private
-(umask 077; sudo hyperstorctl token create --role node > token)
+(umask 077; sudo hsctl token create --role node > token)
 # copy `token` to the new host, readable by root only, then there:
 sudo target/release/hyperstor-install install --join 192.0.2.10:8850 \
     --token-file token --role storage --address 192.0.2.21 --reactors 2
@@ -182,8 +182,8 @@ and on its own port from `--node-port`, and its metrics on `--address`
 at port 8853.
 
 - A token is used once, expires after an hour (`--ttl SECS`, at most a
-  week), and can be revoked with `hyperstorctl token revoke --id ID`;
-  `hyperstorctl token list` shows them, never the secrets. Tokens are
+  week), and can be revoked with `hsctl token revoke --id ID`;
+  `hsctl token list` shows them, never the secrets. Tokens are
   kept in the map service's replicated store, so they survive restarts;
   they are made and used through the leader.
 - The token is never saved. Later runs of the installer, such as the
@@ -201,7 +201,7 @@ host):
 M=1=192.0.2.10:8851/192.0.2.10:8849,2=192.0.2.11:8851/192.0.2.11:8849,3=192.0.2.12:8851/192.0.2.12:8849
 # first member
 sudo hyperstor-install install --cluster cluster.txt --role meta --members $M --member-id 1
-(umask 077; sudo hyperstorctl token create --role meta > token-2)
+(umask 077; sudo hsctl token create --role meta > token-2)
 # second member (and likewise the third)
 sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token-2 \
     --role meta --members $M --member-id 2
@@ -272,7 +272,7 @@ then holds a certificate of its own, which the storage network will ask
 for once the cluster requires authenticated connections:
 
 ```bash
-hyperstorctl token create --role host --name "$(hostname)" > host.token   # on a map service host
+hsctl token create --role host --name "$(hostname)" > host.token   # on a map service host
 sudo hyperstor-install install --role vhost --join 192.0.2.10:8850 --token-file host.token --vhost-user glidex
 ```
 
@@ -302,7 +302,7 @@ runs a gateway with an `s3` token:
 
 ```bash
 sudo hyperstor-install install --s3                 # on a map service host
-hyperstorctl token create --role s3 --name gw1      # then, on the gateway's host:
+hsctl token create --role s3 --name gw1      # then, on the gateway's host:
 sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s3 --address 192.0.2.30
 ```
 
@@ -313,8 +313,8 @@ unless `--s3-tls DIR` gives the site's certificate (`s3.crt`, `s3.key`).
 Before buckets can be made, an administrator names their pools:
 
 ```bash
-hyperstorctl s3 placement set --name default --data-pool bulk --index-pool flash
-hyperstorctl s3 key create --tenant 1 --description backups
+hsctl s3 placement set --name default --data-pool bulk --index-pool flash
+hsctl s3 key create --tenant 1 --description backups
 ```
 
 **Several gateways.** Gateways keep no state, so any of them may take
@@ -369,14 +369,14 @@ in the realm `default` until you put it in another. Unlike Ceph's
 realms, a Hyperstor realm is within one cluster.
 
 ```bash
-hyperstorctl realm create --name acme --description "a customer"
-hyperstorctl pool create --name acme-data --classes hdd    # or share a pool
-hyperstorctl realm pool --pool 3 --realm acme              # only acme may use pool 3
-hyperstorctl s3 placement set --realm acme --name default --data-pool acme-data --index-pool flash
-hyperstorctl realm tenant --tenant 42 --realm acme
+hsctl realm create --name acme --description "a customer"
+hsctl pool create --name acme-data --classes hdd    # or share a pool
+hsctl realm pool --pool 3 --realm acme              # only acme may use pool 3
+hsctl s3 placement set --realm acme --name default --data-pool acme-data --index-pool flash
+hsctl realm tenant --tenant 42 --realm acme
 sudo hyperstor-install install --s3 --s3-realm acme      # a member's gateway: bound by the installer
-hyperstorctl token create --role s3 --name gw-acme1      # or a gateway host of its own, then
-hyperstorctl realm host --host gw-acme1 --realm acme     # bind it to acme
+hsctl token create --role s3 --name gw-acme1      # or a gateway host of its own, then
+hsctl realm host --host gw-acme1 --realm acme     # bind it to acme
 sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s3 --s3-realm acme
 ```
 
@@ -385,7 +385,7 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s
 - A gateway reads a realm's keys only if it is bound to that realm by
   the name in its certificate: the token's name for one that joined
   with an `s3` token, the member's number for one installed on a map
-  service host (`hyperstorctl cert list` shows those issued at a join).
+  service host (`hsctl cert list` shows those issued at a join).
   A gateway bound to nothing reads `default`'s keys alone, so a cluster
   without realms needs no binding. Until it is bound, a gateway for
   another realm logs `isn't bound to realm` and tries again every few
@@ -394,13 +394,13 @@ sudo hyperstor-install install --join 192.0.2.10:8850 --token-file FILE --role s
   gateway to R itself, on this run and every later one; if R doesn't
   exist yet it says what to run, and the next install binds it. A
   gateway that joined with an `s3` token can't bind itself: its install
-  prints the `hyperstorctl realm host` command to run on a map service
+  prints the `hsctl realm host` command to run on a map service
   host.
 - A realm's placements may name only pools it may use. A pool with no
   list (`realm pool --realm any`) is open to every realm.
 - Bucket names are per tenant: two tenants may both have `photos`, and
   another tenant's bucket is never found.
-- A host is unbound until bound: `hyperstorctl realm host --host hv-1
+- A host is unbound until bound: `hsctl realm host --host hv-1
   --realm acme` lets hv-1's `hyperstor-vhost` and `hyperstor-ublk`
   attach only acme's tenants' volumes (add `default` for the others).
   Hosts are named by `--host`, their hostname unless set. The command
@@ -429,13 +429,13 @@ want them. Under glidex, a glidex tenant is a Hyperstor tenant and a
 glidex project a Hyperstor project.
 
 ```bash
-hyperstorctl tenant create --name lab                 # tenant and its project "default"
-hyperstorctl tenant create --name acme --tenant 42    # a record for tenant 42, already in use
-hyperstorctl project create --tenant 43 --name web
-hyperstorctl project list --tenant 43
-hyperstorctl create-volume --size 10G --name disk --project 7   # project 7's, so tenant 43's
-hyperstorctl clone-volume --id ID --epoch 3 --name vm1 --project 9   # another tenant's clone
-hyperstorctl s3 key create --tenant 43 --project 7    # its new buckets go in project 7
+hsctl tenant create --name lab                 # tenant and its project "default"
+hsctl tenant create --name acme --tenant 42    # a record for tenant 42, already in use
+hsctl project create --tenant 43 --name web
+hsctl project list --tenant 43
+hsctl create-volume --size 10G --name disk --project 7   # project 7's, so tenant 43's
+hsctl clone-volume --id ID --epoch 3 --name vm1 --project 9   # another tenant's clone
+hsctl s3 key create --tenant 43 --project 7    # its new buckets go in project 7
 ```
 
 - Tenant and project numbers are given once in the cluster, never
@@ -451,7 +451,7 @@ hyperstorctl s3 key create --tenant 43 --project 7    # its new buckets go in pr
   buckets; `viewer@project:lab/web` sees project web's alone.
 - A project with volumes or buckets, and a tenant with projects, volumes,
   buckets or keys, can't be deleted.
-- A project moves to another tenant with `hyperstorctl project move
+- A project moves to another tenant with `hsctl project move
   --project 7 --to 42 --wait 60`: its volumes become the new tenant's at
   once, and each bucket takes the new tenant's name, keeping its objects;
   the old tenant's keys stop finding it. Nothing is copied. It is refused
@@ -475,14 +475,14 @@ projects of that realm.
 
 ```bash
 # An offer to tenant acme of a directory; mgmt as the directory reaches it.
-hyperstorctl admission offer --tenant acme --directory https://id.acme.example/d/acme \
+hsctl admission offer --tenant acme --directory https://id.acme.example/d/acme \
     --url https://storage.example.org:8852 --ui https://storage.example.org
 # Prints gxo_...: the tenant's administrator redeems it at the directory:
 #   gxctl tenant opt-in --offer gxo_...
-hyperstorctl admission list
-hyperstorctl admission directories         # the directory, its realm, tenants and feed
-hyperstorctl admission end --directory https://id.acme.example/d/acme --tenant acme
-hyperstorctl cluster set-operator --tenant 12
+hsctl admission list
+hsctl admission directories         # the directory, its realm, tenants and feed
+hsctl admission end --directory https://id.acme.example/d/acme --tenant acme
+hsctl cluster set-operator --tenant 12
 ```
 
 - mgmt must serve HTTPS (`--web-tls`) at `--url`, reachable from the
@@ -526,18 +526,18 @@ commands, for security administrators.
 
 ```bash
 # An offer to the whole directory: no --tenant.
-hyperstorctl admission offer --directory https://id.uni.example/d/uni     --url https://storage.example.org:8852 --admit approval --cap ssd=500G,hdd=4T
+hsctl admission offer --directory https://id.uni.example/d/uni     --url https://storage.example.org:8852 --admit approval --cap ssd=500G,hdd=4T
 # Prints gxo_...: the directory's owner redeems it at the directory:
 #   gxctl directory trust-cluster --offer gxo_...
 # A lab's administrator opts in at the directory (gxctl tenant opt-in
 # LAB --cluster ID); under --admit approval it waits here:
-hyperstorctl admission pending
-hyperstorctl admission approve --directory https://id.uni.example/d/uni --tenant physics
-hyperstorctl admission reject --directory https://id.uni.example/d/uni --tenant chem
+hsctl admission pending
+hsctl admission approve --directory https://id.uni.example/d/uni --tenant physics
+hsctl admission reject --directory https://id.uni.example/d/uni --tenant chem
 # How later opt-ins are admitted, and the caps they start with:
-hyperstorctl admission directory --directory https://id.uni.example/d/uni --admit open --cap ssd=1T
+hsctl admission directory --directory https://id.uni.example/d/uni --admit open --cap ssd=1T
 # The whole directory's trust ends: every tenant of it is unlinked.
-hyperstorctl admission end --directory https://id.uni.example/d/uni
+hsctl admission end --directory https://id.uni.example/d/uni
 ```
 
 - The redeem makes or links the directory's realm, as a first tenant
@@ -583,7 +583,7 @@ come from its feed.
   `viewer`. Change them at the directory. A security administrator here
   may give members of the operator tenant (`cluster set-operator`) roles
   cluster-wide or in realms; they count while the person stays a member.
-- **On the command line,** `hyperstorctl --mgmt URL --token-file F auth
+- **On the command line,** `hsctl --mgmt URL --token-file F auth
   login --directory ISSUER` signs in by the directory's device grant
   (`--directory-pin SHA256` when the directory has its own certificate)
   and keeps the login in `F`, which later `--mgmt` commands read and
@@ -608,39 +608,39 @@ come from its feed.
   roles. People's browsers don't call mgmt for this.
 
 ```bash
-hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login \
+hsctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login \
     auth login --directory https://id.acme.example/d/acme
-hyperstorctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login status
-hyperstorctl admission staleness --directory https://id.acme.example/d/acme --minutes 30
+hsctl --mgmt https://storage.example.org --token-file ~/.hyperstor-login status
+hsctl admission staleness --directory https://id.acme.example/d/acme --minutes 30
 ```
 
 ### glidex's datastore driver
 
 glidex's `hyperstor` driver acts with its own certificate, enrolled with
-`hyperstorctl token create --role mgmt --name glidex`. Unbound, it acts
+`hsctl token create --role mgmt --name glidex`. Unbound, it acts
 in the whole cluster. Bind it to the realms of the directories its glidex
 cluster serves, and `default` for its shared image volumes; it then
 makes, lists and deletes volumes only in their tenants' projects, which
 it names by glidex's project ids, and still reads the cluster's status:
 
 ```bash
-hyperstorctl realm client --client glidex --realm acme,default
-hyperstorctl realm list                                  # Client glidex acts in: ...
-hyperstorctl realm client --client glidex --realm any    # unbound again
+hsctl realm client --client glidex --realm acme,default
+hsctl realm list                                  # Client glidex acts in: ...
+hsctl realm client --client glidex --realm any    # unbound again
 ```
 
 A bound client makes no join tokens. To let glidex's servers join their
 VM hosts themselves, allow it tokens for hosts, and nothing else:
 
 ```bash
-hyperstorctl realm client-tokens --client glidex --role host
-hyperstorctl realm list                                  # Client glidex may make join tokens for: host
-hyperstorctl realm client-tokens --client glidex --role none   # no longer
+hsctl realm client-tokens --client glidex --role host
+hsctl realm list                                  # Client glidex may make join tokens for: host
+hsctl realm client-tokens --client glidex --role none   # no longer
 ```
 
 A host that joins with such a token is bound to the client's realms, as
-`hyperstorctl realm host` would bind it, so it attaches only their
-volumes; `hyperstorctl token list` shows what each token binds. The
+`hsctl realm host` would bind it, so it attaches only their
+volumes; `hsctl token list` shows what each token binds. The
 client gets no token for a host bound to a realm it doesn't act in, nor
 for one that joined before and is bound to no realm: bind that host
 yourself, or make its token yourself. An administrator's own tokens bind

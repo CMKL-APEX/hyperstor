@@ -70,7 +70,7 @@ pub struct Signing {
 const TOKEN_TTL: u32 = 3600;
 const TOKEN_TTL_MAX: u32 = 7 * 86400;
 /// How long a token waits for a group that has just formed to commit its
-/// first map (I275): under the 5 s that hyperstorctl and mgmt give a
+/// first map (I275): under the 5 s that hsctl and mgmt give a
 /// call, so they get `not_formed` rather than a timeout.
 const FORMING_WAIT: Duration = Duration::from_secs(4);
 
@@ -440,7 +440,7 @@ impl TokenService for Api {
             if !granted || bind.is_empty() {
                 let e = with_reason(
                     ConnectError::permission_denied(format!(
-                        "CreateToken reaches the cluster as a whole, and {who} acts only in realms {}: a management client makes host tokens once an administrator lets it (hyperstorctl realm client-tokens)",
+                        "CreateToken reaches the cluster as a whole, and {who} acts only in realms {}: a management client makes host tokens once an administrator lets it (hsctl realm client-tokens)",
                         realms.join(", ")
                     )),
                     "outside_realm",

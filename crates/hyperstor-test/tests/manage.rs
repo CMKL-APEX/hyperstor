@@ -1,4 +1,4 @@
-//! Managing a running cluster with `hyperstorctl` (19-administration.md
+//! Managing a running cluster with `hsctl` (19-administration.md
 //! §23.6): status and tables, I/O on every pool, taking devices out and
 //! in, and a node failing and coming back.
 
@@ -238,7 +238,7 @@ fn a_shard_must_be_the_maps_and_can_name_its_id() {
     assert!(c.node_exited(0).is_none(), "node 0 runs");
 }
 
-/// §27.2.5, D175, D186: `hyperstorctl device remove` takes a device out,
+/// §27.2.5, D175, D186: `hsctl device remove` takes a device out,
 /// follows its PGs off it as an operation and removes it from the map,
 /// while the data written before reads back; a node restarted with its
 /// `--shard` stops, saying so. A removal that would leave pools short of
@@ -501,7 +501,7 @@ fn the_installer_adds_a_device_to_a_node() {
     });
 }
 
-/// D284, D285: a running cluster takes a data network (`hyperstorctl
+/// D284, D285: a running cluster takes a data network (`hsctl
 /// network set`); a device gets an endpoint on it by hand; the network
 /// stays while it has one; the installer on the map service host writes
 /// the endpoint into the node's options, and the node, restarted, serves
@@ -734,7 +734,7 @@ fn devices_report_their_kind_and_classes_follow_it() {
     });
     let n = c.ctl(&["nodes"]).ok();
     assert!(
-        n.has(" scratch+ ") && n.has("+ class set with hyperstorctl device class"),
+        n.has(" scratch+ ") && n.has("+ class set with hsctl device class"),
         "{}",
         n.out
     );
@@ -1254,7 +1254,7 @@ fn a_forced_pool_delete_takes_its_volumes_with_it() {
     });
 }
 
-/// §27.5, D173, D187: `hyperstorctl pool set --pgs` doubles a pool's PG
+/// §27.5, D173, D187: `hsctl pool set --pgs` doubles a pool's PG
 /// count, splitting PG by PG while volumes are written; the new PGs then
 /// move to their own devices; what was written before and during the
 /// split reads back, also after a node restarts; a count that isn't
@@ -1568,7 +1568,7 @@ fn a_cache_pool_keeps_its_data_across_splits_and_restarts() {
     assert!(read(&c) == newer, "written again");
 }
 
-/// D163, D171: `hyperstorctl pool create` makes a pool on its classes,
+/// D163, D171: `hsctl pool create` makes a pool on its classes,
 /// with about 100 PGs per device per copy; volumes and I/O go to it;
 /// a pool without classes, a name in use and classes with too few hosts
 /// are refused; audited.
@@ -1659,7 +1659,7 @@ fn weights_follow_capacity_or_are_set() {
     });
     let n = c.ctl(&["nodes"]).ok();
     assert!(
-        n.has(" 0.5000* ") && n.has("weight set with hyperstorctl weight"),
+        n.has(" 0.5000* ") && n.has("weight set with hsctl weight"),
         "{}",
         n.out
     );
@@ -2198,11 +2198,11 @@ fn an_empty_node_is_refilled_without_flapping() {
     assert!(settled(&status), "{status}");
 }
 
-/// Volumes through the cluster API (D77): `hyperstorctl` creates, lists
+/// Volumes through the cluster API (D77): `hsctl` creates, lists
 /// and deletes them; an id in use and a volume that isn't there are
 /// refused.
 #[test]
-fn volumes_through_hyperstorctl() {
+fn volumes_through_hsctl() {
     let c = Cluster::all_in_one("volumes", 3);
     let made = c
         .ctl(&["create-volume", "--size", "64M", "--name", "scratch"])
@@ -2249,12 +2249,12 @@ fn volumes_through_hyperstorctl() {
         .expect(1);
 }
 
-/// Snapshots through `hyperstorctl` (10-volumes.md §10.3, §10.4): taken,
+/// Snapshots through `hsctl` (10-volumes.md §10.3, §10.4): taken,
 /// listed, cloned, refused deletion while the clone depends on them,
 /// flattened, rolled back and deleted; a consistency group taken and
 /// deleted.
 #[test]
-fn snapshots_through_hyperstorctl() {
+fn snapshots_through_hsctl() {
     let c = Cluster::all_in_one("snapshots", 3);
     let id_of = |r: &hyperstor_test::Run| r.out.split_whitespace().nth(1).unwrap().to_string();
     let v = id_of(

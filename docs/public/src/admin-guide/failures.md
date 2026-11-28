@@ -30,7 +30,7 @@ data fail until one of its nodes returns. It is never reset to empty.
 A pool whose `min` is 1 takes writes on one copy. If that copy's node
 then fails for good, its PG's other members (in its up set, being
 backfilled) hold older copies, and the PG stays down. As a last resort,
-`hyperstorctl pg promote` makes one of them the PG's only copy, so it
+`hsctl pg promote` makes one of them the PG's only copy, so it
 serves again; the others are backfilled from it.
 
 **It gives up data:** whatever the lost copies acknowledged after the
@@ -41,9 +41,9 @@ back instead if you can, and keep its storage node stopped after a
 promotion (its copies would be deleted as strays once it rejoins).
 
 ```
-hyperstorctl pg promote --pool 3 --dry-run       # each PG, what each member holds
-hyperstorctl pg promote --pool 3 --force         # promote them
-hyperstorctl pg promote --pool 3 --pg 17 --device 3001 --force
+hsctl pg promote --pool 3 --dry-run       # each PG, what each member holds
+hsctl pg promote --pool 3 --force         # promote them
+hsctl pg promote --pool 3 --pg 17 --device 3001 --force
 ```
 
 With nothing named, each PG takes the only member that holds anything,
@@ -71,7 +71,7 @@ So a node that was down briefly receives about what was written while it
 was away. A new or empty node receives all of its PGs' data: plan for
 that traffic when you add or replace one.
 
-A device you took out yourself (`hyperstorctl out`) stays out until you
+A device you took out yourself (`hsctl out`) stays out until you
 bring it back in.
 
 ## A node that flaps
@@ -92,7 +92,7 @@ the kernel holds every command to it, and its device stalls rather than
 fails. Health warns `device D's drive isn't answering (controller
 resetting: not read)`, or `(no reading for over 90 s: ...)` when the
 drive's readings stopped coming. The device may still be in: take it out
-(`hyperstorctl out D`) so its PGs are served from their other copies, then
+(`hsctl out D`) so its PGs are served from their other copies, then
 look at the kernel log (`dmesg`) for the controller and its PCIe port.
 
 ## A storage node is cut off from its peers
@@ -136,7 +136,7 @@ device the same way (`3 reads in a row took over 2000 ms`).
 
 If the device is broken, replace it, format the new one (a block device
 with `hyperstor-install format-device`; a file is formatted by the node)
-and start the node again, then bring it back in with `hyperstorctl in
+and start the node again, then bring it back in with `hsctl in
 --device D`: its PGs are backfilled. To retire a device instead, remove
 it (see [Removing a device](pools-and-devices.md#removing-a-device)).
 
@@ -170,7 +170,7 @@ block is never returned to a client.
 
 Every storage node compares, once a day by default, the copies of each
 placement group it leads. Each pool has its own scrub settings, changed
-with `hyperstorctl scrub set` (see [Scrub settings](#scrub-settings)). A copy
+with `hsctl scrub set` (see [Scrub settings](#scrub-settings)). A copy
 that differs from the others, when the rest agree, is replaced from the
 majority's copy, the primary's own included. Once a week, and the first
 time a PG is scrubbed, the scrub is **deep**: every copy is read in
@@ -178,7 +178,7 @@ full and each block's checksum checked, at a limited rate, so damage that
 no client has read yet is found and replaced from the other copies
 (`kind="damaged"`). When no majority agrees, nothing is changed: the
 object is counted under `hyperstor_scrub_objects_total{kind="unresolved"}`
-and logged, and `hyperstorctl status` warns with the PG
+and logged, and `hsctl status` warns with the PG
 (`PG(s) inconsistent`), for an operator to look at.
 
 Scrub also checks that copies hold the same blocks. Before the fix for
@@ -209,8 +209,8 @@ its last deep scrub is a week old (with the defaults), so restarts neither
 starve the last PGs nor scrub everything deep.
 
 ```
-hyperstorctl scrub status [--pool P]
-hyperstorctl scrub pgs --pool P [--overdue]
+hsctl scrub status [--pool P]
+hsctl scrub pgs --pool P [--overdue]
 ```
 
 `scrub status` shows, per pool, how long since its PG scrubbed longest
@@ -220,7 +220,7 @@ scrubs found. `scrub pgs` lists each PG's last light and deep scrub and
 what the newer one found. Both are up to a minute behind: the leader
 writes the records once a minute.
 
-`hyperstorctl status` warns or fails for:
+`hsctl status` warns or fails for:
 
 | Reason | Level | When |
 |---|---|---|
@@ -240,8 +240,8 @@ To check a pool without waiting for its turn, after a fix or an
 incident:
 
 ```
-hyperstorctl scrub start --pool 1 --deep --wait 3600
-hyperstorctl scrub start --pool 1 --pg 7 --pg 12
+hsctl scrub start --pool 1 --deep --wait 3600
+hsctl scrub start --pool 1 --pg 7 --pg 12
 ```
 
 It is an operation: `op list` shows how many PGs are done, `op cancel`
@@ -251,7 +251,7 @@ regular schedule goes on.
 
 Only the map service's leader starts operations. Asked of another
 member, `scrub start` goes on to the leader's API, with the
-certificates of `--tls` or of `hyperstorctl.conf`, and says so. It
+certificates of `--tls` or of `hsctl.conf`, and says so. It
 finds that API in `member list`: each member records its own when it
 begins to lead. When it can't go there (no certificates, over the local
 socket, or the leader hasn't recorded its API yet, as with members from
@@ -287,8 +287,8 @@ a change needs no restart:
 | deep rate | 64 MiB/s | `--deep-rate` | The most a deep scrub reads per device |
 
 ```
-hyperstorctl scrub set --pool 1 --hours 12
-hyperstorctl scrub set --pool 3 --deep-rate 32
+hsctl scrub set --pool 1 --hours 12
+hsctl scrub set --pool 3 --deep-rate 32
 ```
 
 Scrub turned off loses nothing at once, which is what makes it
@@ -297,7 +297,7 @@ change that checks less than the defaults (scrub off, more than 168
 hours, deep every more than 7 passes, holes only reported, a deep rate
 under 32 MiB/s) is refused unless you give `--reason`, which goes in the
 audit log; through the web UI or `--mgmt`, it also needs a fresh login.
-While a pool's scrub is weaker than the defaults, `hyperstorctl status`
+While a pool's scrub is weaker than the defaults, `hsctl status`
 warns (`scrub reduced`), naming the pool and what is weaker.
 
 `hyperstord`'s `--scrub-hours` and `--hole-repair`, from earlier

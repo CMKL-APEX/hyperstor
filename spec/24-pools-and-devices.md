@@ -57,7 +57,7 @@ device weights from capacity (D158).
 - **`AddDevice {node, address, class}`** in the cluster API appends one
   device to a running node: the next free id on that node, weight 0
   (D158: nothing is placed by a guess), the class given or the one its
-  kind implies (§27.2.4). `hyperstorctl device add --node N --address A
+  kind implies (§27.2.4). `hsctl device add --node N --address A
   [--class C]`; role `operate` in mgmt's Cedar policy; audited.
 - A storage-only host has no administrator certificate, so its node's
   own certificate may call `AddDevice` too (D280), as it may set its own
@@ -146,7 +146,7 @@ running node has reported, so older nodes can still read it.
 - A device's class is a label. The default comes from its kind, which
   the node reports: `nvme` (an NVMe namespace), `ssd` (other flash),
   `hdd` (rotational), `file` (a file on a filesystem).
-- `hyperstorctl device class --device D --class C` relabels a device;
+- `hsctl device class --device D --class C` relabels a device;
   `--class` on `device add` and on the installer's `--device` sets it
   first. Labels are short names (`nvme-qlc`, `archive`).
 - The map keeps each class's **kind**: a label takes the kind of the
@@ -160,7 +160,7 @@ running node has reported, so older nodes can still read it.
 
 Built (I224, I226, D186).
 
-1. `hyperstorctl device remove --device D` begins a long operation
+1. `hsctl device remove --device D` begins a long operation
    (19-administration.md §23): the device is taken out (`out`), and its
    PGs move to the other devices of their pools.
 2. It is refused at the start (D175) when, without the device, a pool
@@ -188,7 +188,7 @@ Built (I211).
   or `cache` with `copies`, D45; EC once it is served); the chunk size;
   the failure domain (`device`, `host`, `rack`); the class set; the
   thresholds (D27). The PG count is the autoscaler's (§27.5), unless
-  given. `hyperstorctl pool create`; role `storage-admin`; audited.
+  given. `hsctl pool create`; role `storage-admin`; audited.
 - It is refused when the devices of its classes span fewer failure
   domains than its copies, and it warns when they hold less than one
   chunk per PG.
@@ -197,7 +197,7 @@ Built (I211).
 
 #### 27.3.2 Changing a pool
 
-`hyperstorctl pool set` changes:
+`hsctl pool set` changes:
 
 | Field | Effect |
 |---|---|
@@ -223,7 +223,7 @@ replicated pool's copies change as §27.3.5 says.
   come and go, without a step of their own.
 - Pools that share classes share devices, and so share space: each pool
   reports the free space of all of them, and filling one fills the
-  others'. `hyperstorctl pools` and the UI say which classes each pool
+  others'. `hsctl pools` and the UI say which classes each pool
   uses, so overlap is visible.
 
 #### 27.3.4 Deleting a pool
@@ -254,7 +254,7 @@ D287 (settled 2026-11-10 that copies change; the rules below are open
 for review). Built (I344), but for the web UI's form.
 
 - **`SetPoolCopies {pool, size, min, dry_run}`**: a replicated pool's
-  copies and the copies a write needs. `hyperstorctl pool copies --pool P
+  copies and the copies a write needs. `hsctl pool copies --pool P
   --copies N --min M [--dry-run]`; role `storage-admin` with step-up in
   mgmt (19-administration.md §23); audited. A call of its own, not a
   field of `SetPool`: it needs a plan, and step-up, which `SetPool`'s
@@ -299,12 +299,12 @@ for review). Built (I344), but for the web UI's form.
 ### 27.4 Class sets
 
 D180 amends this: a pool uses the devices of its classes, plus devices
-added to it and less devices removed from it (`hyperstorctl pool
+added to it and less devices removed from it (`hsctl pool
 add-device`, `pool remove-device`), so one pool can have a device
 another pool of the same class doesn't. A device serves every pool that
 may use it, sharing its space. Built (I212): an added device is one not
 of the pool's classes, a removed device one of them; each edit is
-checked as a class set is (failure domains, kinds), and `hyperstorctl
+checked as a class set is (failure domains, kinds), and `hsctl
 pools` shows them after the classes (`nvme+3001-2000`). Why per pool:
 a class is shared by every pool that names it, so moving a device
 between classes moves it in all of them.
@@ -324,7 +324,7 @@ isn't checked against the pools that use its class.
 - **Hard disks and flash don't mix** in one pool (§5.2): a class set
   whose kinds include `hdd` and any flash kind is refused, unless the
   pool is a cache pool (D172). `--force` allows it: the call warns, the
-  audit record says it was forced, and `hyperstorctl pools` and the UI
+  audit record says it was forced, and `hsctl pools` and the UI
   mark the pool. Why: a replicated write waits for its slowest copy
   (§8.1); an operator may still accept that, knowingly.
 - `.meta` uses flash only: its set is every flash class, and it follows
@@ -394,7 +394,7 @@ and `pool set --pgs`, the placement count rising, and the autoscaler
 | `hyperstord` | `--shard ID@…`; formats files only; checks the device's and cluster's ids; reports its kind; splits PGs on request; deletes deleted pools' objects |
 | Engine | A rename of an object's attributes and key–value table, beside `Absorb` |
 | Installer | `--device`, `--class`, `--force-format`; signature checks; udev rules; devices kept in `install.conf` |
-| `hyperstorctl`, API, UI | The calls above; classes in `nodes` and `pools` |
+| `hsctl`, API, UI | The calls above; classes in `nodes` and `pools` |
 | Tests | Randomized tests of add, remove, relabel, split and copies changed against a model (D22's way), with faults; end-to-end tests of each operation through the built binaries; G44 on the pilot |
 
 ### 27.8 Stages

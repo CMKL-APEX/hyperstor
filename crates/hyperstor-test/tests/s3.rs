@@ -1,7 +1,7 @@
 //! S3's access keys, placements and gateways (14-s3.md §14.2,
 //! 04-decisions.md D231-D233), on installed clusters:
 //!
-//! - `hyperstorctl s3` makes and revokes keys and sets placements; the
+//! - `hsctl s3` makes and revokes keys and sets placements; the
 //!   secret is shown once and kept nowhere in the clear.
 //! - The all-in-one install runs a gateway with an `s3` certificate and
 //!   sets its default placement; only `s3` certificates may read the keys.
@@ -574,7 +574,7 @@ fn a_gateway_joins_with_an_s3_token() {
     // command to run on a map service host is printed.
     let r = run(&host, &["--s3-realm".into(), "acme".into()]).ok();
     assert!(
-        r.has("hyperstorctl realm host --host gw2 --realm acme"),
+        r.has("hsctl realm host --host gw2 --realm acme"),
         "{}",
         r.out
     );
@@ -976,7 +976,7 @@ fn the_installer_binds_a_members_gateway_to_its_realm() {
     // Before the realm exists: said, and the install still succeeds.
     let early = install(&c.root, &["--s3-realm", "acme"]);
     assert!(
-        early.has("Realm acme doesn't exist") && early.has("hyperstorctl realm create --name acme"),
+        early.has("Realm acme doesn't exist") && early.has("hsctl realm create --name acme"),
         "{}",
         early.out
     );

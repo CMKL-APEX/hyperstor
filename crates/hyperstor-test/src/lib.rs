@@ -3,7 +3,7 @@
 //! The suite (`tests/`) works as an operator would: it installs clusters
 //! with `hyperstor-install` into scratch roots, starts what was installed
 //! with the installed configuration, and manages them with the installed
-//! `hyperstorctl`, the cluster API and the metrics ports. Nothing runs as
+//! `hsctl`, the cluster API and the metrics ports. Nothing runs as
 //! root and nothing outside the scratch directory is touched, so it runs
 //! anywhere `cargo test` does, CI included.
 //!
@@ -33,7 +33,7 @@ pub const BINARIES: [&str; 7] = [
     "hyperstor-install",
     "hyperstor-meta",
     "hyperstord",
-    "hyperstorctl",
+    "hsctl",
     "hyperstor-mgmt",
     "hyperstor-authd",
     "hyperstor-s3",
@@ -285,7 +285,7 @@ impl Drop for Scratch {
     }
 }
 
-/// How long each `hyperstorctl` call the tests make may take
+/// How long each `hsctl` call the tests make may take
 /// (`$HYPERSTOR_TIMEOUT`). CI's runners wait 100–250 ms for each flush,
 /// and a change that commits to the `.meta` pool several times passes
 /// the default 5 s (I282).
@@ -330,15 +330,15 @@ impl Run {
     }
 }
 
-/// `hyperstorctl` in `bin` against the API at `api`, over mutual TLS
+/// `hsctl` in `bin` against the API at `api`, over mutual TLS
 /// with the certificates in `pki`.
 pub fn ctl_at(bin: &Path, api: &str, pki: &Path, args: &[&str]) -> Run {
-    let mut c = Command::new(bin.join("hyperstorctl"));
+    let mut c = Command::new(bin.join("hsctl"));
     c.args(["--api", api, "--tls", pki.to_str().unwrap()]);
     run_ctl(c, args)
 }
 
-/// Runs `hyperstorctl` with `args` after the options `c` has, with
+/// Runs `hsctl` with `args` after the options `c` has, with
 /// [`CTL_TIMEOUT`]; a failure names the command and how long it took.
 fn run_ctl(mut c: Command, args: &[&str]) -> Run {
     let began = std::time::Instant::now();
@@ -349,7 +349,7 @@ fn run_ctl(mut c: Command, args: &[&str]) -> Run {
             .unwrap(),
     );
     r.what = format!(
-        "hyperstorctl {} ({} ms): ",
+        "hsctl {} ({} ms): ",
         args.join(" "),
         began.elapsed().as_millis()
     );
@@ -424,7 +424,7 @@ pub fn wait_for<T>(what: &str, secs: u64, mut f: impl FnMut() -> Option<T>) -> T
     }
 }
 
-/// How `hyperstorctl` reaches the API.
+/// How `hsctl` reaches the API.
 pub enum Via<'a> {
     /// Over mutual TLS with the certificates in this directory.
     Tls(&'a Path),
@@ -1192,23 +1192,23 @@ impl Cluster {
         self.scratch.run().join("api.sock")
     }
 
-    /// `hyperstorctl` as the administrator, over mutual TLS.
+    /// `hsctl` as the administrator, over mutual TLS.
     pub fn ctl(&self, args: &[&str]) -> Run {
         self.ctl_via(Via::Tls(&self.pki()), args)
     }
 
-    /// `hsfs` (D361) as the administrator, over mutual TLS: hyperstorctl
+    /// `hsfs` (D361) as the administrator, over mutual TLS: hsctl
     /// run by that name, as the installer's link runs it.
     pub fn hsfs(&self, args: &[&str]) -> Run {
         use std::os::unix::process::CommandExt;
-        let mut c = Command::new(self.bin.join("hyperstorctl"));
+        let mut c = Command::new(self.bin.join("hsctl"));
         c.arg0("hsfs");
         c.args(["--api", &self.api, "--tls", self.pki().to_str().unwrap()]);
         run_ctl(c, args)
     }
 
     pub fn ctl_via(&self, via: Via, args: &[&str]) -> Run {
-        let mut c = Command::new(self.bin.join("hyperstorctl"));
+        let mut c = Command::new(self.bin.join("hsctl"));
         match via {
             Via::Tls(dir) => c.args(["--api", &self.api, "--tls", dir.to_str().unwrap()]),
             Via::Socket => c.args(["--socket", self.socket().to_str().unwrap()]),
@@ -1225,7 +1225,7 @@ impl Cluster {
 
     /// A certificate directory for `role`/`id`, issued by this cluster's
     /// intermediate (or, with `foreign`, by another cluster's), laid out
-    /// as `hyperstorctl --tls` expects.
+    /// as `hsctl --tls` expects.
     pub fn identity(&self, role: hyperstor_pki::Role, id: &str, foreign: bool) -> PathBuf {
         let read = |f: &str| std::fs::read_to_string(self.pki().join(f)).unwrap();
         let ca = if foreign {

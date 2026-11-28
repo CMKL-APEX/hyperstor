@@ -50,7 +50,7 @@ reported, then go in one map change: so an upgraded cluster, or devices
 all of one size, move nothing. A device added to a running node, or a
 joining host, starts at weight 0, so nothing is placed on a guess, and
 gets its weight from its first report. An operator may fix a weight
-(`hyperstorctl weight`), which the map keeps until set back to `auto`.
+(`hsctl weight`), which the map keeps until set back to `auto`.
 
 | Property | Why it matters |
 |---|---|
@@ -119,7 +119,7 @@ The **autoscaler** on the map service's leader doubles a pool's count
 when its devices call for at least twice its PGs (a target of about 100
 PGs per device, counting each copy), one pool at a time, never `.meta`,
 and only while every PG is clean. An operator can split by hand
-(`hyperstorctl pool set --pgs`) or turn it off per pool. Merges are not
+(`hsctl pool set --pgs`) or turn it off per pool. Merges are not
 built. **Why this way:** each pause is short and bounded, a slow device
 holds up only its own PGs, and the slow part, moving data, is spread out.
 Ceph splits the same way (`pg_num`, then `pgp_num`).
@@ -253,7 +253,7 @@ down turns a flapping node into a down one, which the cluster handles.
 
 ## When devices fill
 
-Three cluster-wide ratios, kept in the map (`hyperstorctl full-ratios`),
+Three cluster-wide ratios, kept in the map (`hsctl full-ratios`),
 give each device a **fullness** from its space reports:
 
 | Ratio | Default | What happens past it |
@@ -264,7 +264,7 @@ give each device a **fullness** from its space reports:
 
 A pool's fullness is that of the fullest device it may use. In a full
 pool, new volumes, clones and snapshots are refused, and a pool set to
-purge its trash when full (`hyperstorctl trash settings --on-full purge`)
+purge its trash when full (`hsctl trash settings --on-full purge`)
 purges its oldest item, one at a time, waiting
 for the space freed to be counted before choosing the next. Clients see
 "no space": `hyperstor-ublk` answers `ENOSPC` at once, while
@@ -291,7 +291,7 @@ member joins without the data; a device serving a cache PG at another
 generation than it last did first empties its copy, so a returning node
 never serves data older than a write made while it was away. A PG all of
 whose copies are on down nodes waits for them for the pool's grace (60 s
-by default, `hyperstorctl pool set --cache-grace`), so a node back in
+by default, `hsctl pool set --cache-grace`), so a node back in
 time keeps its data: reads meanwhile answer as an empty device would,
 and a write ends the wait, moving the PG at once. Expiry and
 eviction are not built yet.
@@ -328,7 +328,7 @@ on large PGs show the scan is too slow.
 ## Scrub
 
 Each storage node compares, every 24 hours by default (each pool's
-scrub settings in the map, `hyperstorctl scrub set`), the copies of each
+scrub settings in the map, `hsctl scrub set`), the copies of each
 clean PG it leads, spread evenly over the interval:
 
 - **Light scrub** compares digests. A difference is looked at again after

@@ -7,10 +7,10 @@ or a later build of `main`.
 
 ## Before you start
 
-- **Health is `ok`.** `hyperstorctl status` shows `health ok`, every
+- **Health is `ok`.** `hsctl status` shows `health ok`, every
   node up and every device in. An upgrade restarts nodes, so don't start
   one while PGs are still degraded or backfilling.
-- **A backup of the map service's store.** `hyperstorctl map backup
+- **A backup of the map service's store.** `hsctl map backup
   --out FILE`, as an administrator, writes the map, join tokens and the
   certificates issued and revoked; see
   [Backups and restoring](map-service.md#backups-and-restoring).
@@ -32,7 +32,7 @@ Upgrade, in turn:
 1. hosts that run only storage nodes, `hyperstor-vhost` or
    `hyperstor-s3`;
 2. map service members that don't lead;
-3. the leader, last (`hyperstorctl member list` names it).
+3. the leader, last (`hsctl member list` names it).
 
 The leader goes last so that the group changes leader once, at the end,
 rather than at each member. New builds read older builds' frames and
@@ -44,8 +44,8 @@ together while the upgrade goes on.
 ```sh
 # in the directory holding the new binaries and hyperstor-ui
 sudo ./hyperstor-install install
-# then, from any host with hyperstorctl, before the next host:
-hyperstorctl status --wait 300
+# then, from any host with hsctl, before the next host:
+hsctl status --wait 300
 ```
 
 `install` with no options reuses the options saved by the host's last
@@ -119,9 +119,9 @@ The installer takes care of these; nothing needs doing by hand:
 - **S3 gateways** get only the keys of their realm. A gateway serves a
   realm other than `default` once bound to it: the installer binds a
   map service host's gateway itself, and a gateway that joined with an
-  `s3` token needs `hyperstorctl realm host --host NAME --realm R` once
+  `s3` token needs `hsctl realm host --host NAME --realm R` once
   (its install prints the command). Gateways of `default` need nothing.
-- **Map service members** added with `hyperstorctl member add` vote
+- **Map service members** added with `hsctl member add` vote
   only once they have caught up with the leader's log (see
   [Adding and removing members](map-service.md#adding-and-removing-members)).
 
@@ -132,8 +132,8 @@ the old one as they are. Once **every** node runs v0.0.8 and the
 cluster is healthy, convert the old ones:
 
 ```sh
-hyperstorctl nodes                  # FORMAT: 1 for the old format, 2 for the new
-hyperstorctl device upgrade --all   # or --device ID
+hsctl nodes                  # FORMAT: 1 for the old format, 2 for the new
+hsctl device upgrade --all   # or --device ID
 ```
 
 Each node converts its devices the next time it starts: restart the
@@ -158,7 +158,7 @@ converted devices.
   newer than this build reads`: an older build met a converted device.
   Install v0.0.8 or later on that host.
 - **Health stays degraded** after a host: wait for recovery to end
-  (`hyperstorctl status --wait`) before the next host; with two copies
+  (`hsctl status --wait`) before the next host; with two copies
   down at once, PGs of pools whose `min` is 2 stop taking writes.
 
 A rolling upgrade was rehearsed on a three-host test cluster from a

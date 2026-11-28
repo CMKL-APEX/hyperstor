@@ -47,7 +47,7 @@ const HTTP_OF: Partial<Record<Code, number>> = {
 };
 
 /** What the API refused, as an ApiError: its reason from the ErrorInfo
- * detail, as hyperstorctl shows it. */
+ * detail, as hsctl shows it. */
 export function toApiError(e: unknown): unknown {
   if (!(e instanceof ConnectError)) return e;
   const info = e.findDetails(ErrorInfoSchema)[0];

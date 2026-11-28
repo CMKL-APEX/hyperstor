@@ -572,7 +572,7 @@ fn json_resp(status: u16, v: serde_json::Value) -> Resp {
 
 /// A refusal as the Connect protocol writes one (`code`, `message`, and
 /// the reason as an `ErrorInfo` detail, as the cluster API's own), so
-/// `hyperstorctl` and the UI read mgmt's refusals and the API's alike;
+/// `hsctl` and the UI read mgmt's refusals and the API's alike;
 /// `reason` is also a field of its own, for browsers.
 fn error(status: u16, reason: &str, message: &str) -> Resp {
     use connectrpc::ConnectError as E;
@@ -2524,7 +2524,7 @@ mod tests {
     }
 
     /// mgmt's refusals read as the API's: a Connect error whose reason
-    /// `hyperstorctl` finds.
+    /// `hsctl` finds.
     #[test]
     fn refusals_are_connect_errors_with_reasons() {
         use http_body_util::BodyExt;

@@ -104,7 +104,7 @@ NUMA node, memory is local; across sockets, every byte crosses one
 shared link (G49).
 
 **Networks** are named in the cluster file and the map; a running cluster
-takes, changes and drops them with `SetNetwork` (`hyperstorctl network
+takes, changes and drops them with `SetNetwork` (`hsctl network
 set|remove`, D284), except that one with endpoints on it stays, carries
 data and keeps its match:
 
@@ -125,7 +125,7 @@ pick each other's endpoints.
 
 **Ports and roles (D209, D237).** Each port has a role, held as a lease
 from the reconciler (§29.8). The base role is the operator's, kept in the
-map (`hyperstorctl port role NODE/PORT ROLE`, or a `port` line in the
+map (`hsctl port role NODE/PORT ROLE`, or a `port` line in the
 cluster file); a port with none set is `storage` when one of its
 addresses is an endpoint on a data network, else `host` (D237). Why:
 hyperstor runs without glidex, and the defaults change nothing on a
@@ -195,7 +195,7 @@ port on its own NUMA node.
   stay, for endpoints written by hand.
 - **Nodes serve the map's endpoints (D285).** On a map service host the
   installer proposes none: it reads its devices' endpoints from the map
-  (as `hyperstorctl device endpoints` set them) and gives them to the
+  (as `hsctl device endpoints` set them) and gives them to the
   node, after the cluster file's. A joined host does the same with
   `--endpoints off`. Why: a node serves only the endpoints its options
   name, and a map service host's proposal would override the cluster
@@ -206,8 +206,8 @@ port on its own NUMA node.
   nodes reach others on (`--client-networks auto`), or the ones named;
   a host without storage nodes names them. Why: clients on the slower
   network would cap VM disks and S3 after storage moved.
-- **And `hyperstorctl` with them (D340).** The installer writes the
-  same networks into `hyperstorctl.conf`; `io-test`, `write-volume` and
+- **And `hsctl` with them (D340).** The installer writes the
+  same networks into `hsctl.conf`; `io-test`, `write-volume` and
   `read-volume` use them unless `--networks` names others (`none`:
   devices' addresses). Why: a test of the storage path should measure
   the path the host's VM disks take.
@@ -323,7 +323,7 @@ that isn't `trusted` without TLS (§29.11).
   leader keeps the reports in memory and every 10 s reconciles the ports
   that carry an endpoint or have a role set, writing leases and weights
   into the map (format 17). Senders weight a device's endpoints by their
-  ports'. `hyperstorctl port list` and `port role` show and set them.
+  ports'. `hsctl port list` and `port role` show and set them.
   Claims (stage 4) are none yet, and the lending policy is `idle`, with
   no setting yet.
 
@@ -363,7 +363,7 @@ the cluster API, as the role `orchestrator` (beside `node`, `meta` and
   is `ListClaims` for now, read with renewals. glidex's scheduler is
   glidex's change, against these calls.
 - **As built** (I278): `ClaimPort`, `RenewClaim`, `ReleaseClaim`,
-  `ListClaims` and `SetLending` in the cluster API, and `hyperstorctl
+  `ListClaims` and `SetLending` in the cluster API, and `hsctl
   claim` and `port lending`. Claims and lending settings are in the map
   (format 18); the leader drops lapsed claims and gives the live ones to
   the reconciler, each port under its own lending setting, else the

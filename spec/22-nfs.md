@@ -122,7 +122,7 @@ certificate, F12), its service address and interface (D138), root
 squash (on by default), `all_squash` or an allowed uid range, the
 `user@domain` mapping, and the layout
 policy (`files`, `flexfiles` or `auto`; D128). It is created and
-changed through the cluster API and `hyperstorctl nfs export …`, by the
+changed through the cluster API and `hsctl nfs export …`, by the
 `storage-admin` role that manages NVMe-oF exports (19-administration.md
 §23), and audited like them. Every MDS instance reads the same records,
 so there is no `exports(5)` file to keep in step between instances.
@@ -455,7 +455,7 @@ those are what the MDS seals:
 - **The sealing key** is a cluster secret: the map service holds it
   encrypted under its cluster key (D162), as it holds S3 access keys
   (D231). `hyperstord` and the MDS fetch it over mutual TLS with the map
-  and keep it only in memory. `hyperstorctl sealing-key rotate` issues a new
+  and keep it only in memory. `hsctl sealing-key rotate` issues a new
   key under the next key id, audited; both are valid until every MDS
   instance has re-issued its stateids, then the old one is dropped.
 

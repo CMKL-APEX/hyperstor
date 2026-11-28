@@ -1,17 +1,23 @@
-# hyperstorctl
+# hsctl
 
 Manages and tests a cluster through the [cluster API](cluster-api.md).
 See [Managing a cluster](../admin-guide/managing.md).
 
-`hyperstorctl --help` lists the commands, one line each, and the options
-every command takes. `hyperstorctl help COMMAND` (or `COMMAND --help`)
+`hsctl --help` lists the commands, one line each, and the options
+every command takes. `hsctl help COMMAND` (or `COMMAND --help`)
 describes one command with the options that go with it, and `help GROUP`
 (`help snapshot`) lists a group's commands. All of it is read from the two
 tables below, so what they say is what `--help` says. Run with no command,
 it prints the usage line, on standard error, with status 2.
 
+Before v0.0.9 it was called `hyperstorctl`. `hyperstor-install` keeps
+`/usr/local/bin/hyperstorctl` as a link to `hsctl`, so scripts that use
+the old name go on working; a later release removes the link. Its
+configuration is `/etc/hyperstor/hsctl.conf`; on a host not yet
+installed again, `hsctl` reads `hyperstorctl.conf`.
+
 ```text
-usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|dataset list|dataset get|dataset set|dataset inherit|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--encrypt on|off] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256] [--dataset D] [--property P[=V]]... [--under TENANT[/PROJECT]]
+usage: hsctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|dataset list|dataset get|dataset set|dataset inherit|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--encrypt on|off] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256] [--dataset D] [--property P[=V]]... [--under TENANT[/PROJECT]]
 ```
 
 | Command | Does |
@@ -42,7 +48,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [-
 | `trash settings` | Shows `--pool`'s grace period and what a full pool does with its trash; with `--grace` or `--on-full`, sets them |
 | `scrub status` | Each pool's scrub, or `--pool`'s: its interval and deep interval, how long since its PG scrubbed longest ago was scrubbed (`OLDEST`) and scrubbed deep (`DEEPEST`), the PGs overdue, with holes unchecked twice running, damaged or inconsistent, and what the last 7 days' scrubs found. Up to a minute behind. Not cache pools |
 | `scrub pgs` | `--pool`'s PGs with their last light and deep scrub, how long ago, whether overdue, and what the newer one found; with `--overdue`, only the PGs overdue |
-| `scrub start` | Scrubs `--pool`'s placement groups now, or only those given with `--pg` (repeat it for several), ahead of their turn; `--deep` reads every block. An operation, done once each PG has been scrubbed since it started; `--wait SECS` follows it; `op cancel` stops it, and the PGs not yet begun are dropped. Not for cache pools. Asked of a member that isn't the leader, it goes on to the leader's API (from `member list`) with the certificates of `--tls` or `hyperstorctl.conf`, or exits with status 3 and says why it couldn't |
+| `scrub start` | Scrubs `--pool`'s placement groups now, or only those given with `--pg` (repeat it for several), ahead of their turn; `--deep` reads every block. An operation, done once each PG has been scrubbed since it started; `--wait SECS` follows it; `op cancel` stops it, and the PGs not yet begun are dropped. Not for cache pools. Asked of a member that isn't the leader, it goes on to the leader's API (from `member list`) with the certificates of `--tls` or `hsctl.conf`, or exits with status 3 and says why it couldn't |
 | `scrub set` | Changes `--pool`'s scrub settings: `--hours`, `--deep-every`, `--hole-repair`, `--deep-rate`; those not given stay as they are. Storage nodes follow them from the next placement group. A change that checks less than the defaults (scrub off, more than 168 hours, deep every more than 7 passes, holes only reported, under 32 MiB/s) is refused unless `--reason` says why; the reason goes in the audit log, and health warns while the pool's scrub is reduced. Through `--mgmt`, it needs a login of the last 10 minutes. Not for cache pools |
 | `clone-volume` | Creates a volume from the snapshot at `--epoch` of volume `--id`, sharing its data, named `--name`, with `--new-id` or a random id. With `--project N` the clone is that project's, which may be another tenant's (a disk cloned from a shared image); its tenant's realm must be allowed the parent's pool. A name another dataset of its project has is refused (`dataset_exists`) |
 | `expand-volume` | Grows volume `--id` to `--size`; never shrinks it. A client that has it attached sees the new size after it attaches again |
@@ -139,7 +145,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [-
 | `cert list` | Certificates the API issued (joins and renewals): serial, identity, expiry, revoked or not; and every revoked serial |
 | `cert revoke` | Revokes certificate `--serial`: every map service member refuses it, on the API and between members, until it would have expired. Storage nodes, the map service's data port and clients refuse it too once they hold the cluster map that lists it, which the command waits for; its second line says whether they do, or why not (the data path's TLS mode is `off`, or a storage node runs a release from before revocation lists) |
 | `cert show` | Prints the identity, serial and expiry of the certificate in `--file`, without the API: how to find the serial of a certificate the installer made |
-| `cert renew` | Renews the certificate in `--tls` (or the `tls` line of `hyperstorctl.conf`) through the API, with itself, once it is past two thirds of its 30 days; `--force` renews it now. Writes `admin.key` and `admin.crt` in place. For a client the installer doesn't renew, such as an enrolled scraper or management client: run it from a daily timer |
+| `cert renew` | Renews the certificate in `--tls` (or the `tls` line of `hsctl.conf`) through the API, with itself, once it is past two thirds of its 30 days; `--force` renews it now. Writes `admin.key` and `admin.crt` in place. For a client the installer doesn't renew, such as an enrolled scraper or management client: run it from a daily timer |
 | `op cancel` | Stops drain or device removal `--id`, bringing the devices back in; or a copy, whose new volume is deleted, or a move, unless it has switched pools already. A flatten or a purge can't be cancelled |
 
 | Option | Default | Meaning |
@@ -150,9 +156,9 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [-
 | `--socket PATH` | see below | Connect to the map service's local socket instead: no certificate needed (break-glass) |
 | `--mgmt URL` | `$HYPERSTOR_MGMT` | Go through [hyperstor-mgmt](hyperstor-mgmt.md) as a person, with an API token: `http://127.0.0.1:8852` (loopback, or an SSH tunnel) or `https://NAME:8852`. Not with `--api`, `--tls` or `--socket` |
 | `--token-file F` | `$HYPERSTOR_TOKEN` | With `--mgmt`: the file holding your API token (`hst_…`), a glidex API token for this cluster (`gxt_…`), a directory's access token for it (`gxctl auth token --cluster ID`), or the login `auth login` keeps. Never on the command line, where others could read it |
-| `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hyperstorctl.conf` names its `tls` directory |
+| `--mgmt-ca FILE` | the host's CAs, and the cluster's root on its hosts | With an `https://` `--mgmt`: also trust the CA certificates in `FILE`. Without it, the cluster's root is trusted where `hsctl.conf` names its `tls` directory |
 | `--in-realm R` | | With `--mgmt`: act in realm `R` alone, with your cluster-wide roles and your roles in `R`. Lists show only `R`'s tenants' volumes, buckets and keys, its placements, itself and the operations on its volumes; what isn't done in a realm (status, pools, devices, nodes, members, hosts, the audit) is refused (exit 4). Not `--realm`, which names the realm that `realm` and `s3 placement` commands change |
-| `--timeout-secs N` | `$HYPERSTOR_TIMEOUT`, else 5 | How long each call to the API may take before `hyperstorctl` gives up (exit status 3). On a slow or busy disk a change that writes the map service's pool several times can take longer; one that times out may still be made, so check before asking again |
+| `--timeout-secs N` | `$HYPERSTOR_TIMEOUT`, else 5 | How long each call to the API may take before `hsctl` gives up (exit status 3). On a slow or busy disk a change that writes the map service's pool several times can take longer; one that times out may still be made, so check before asking again |
 | `--wait SECS` | 0 | `status`: ask again every half second until health is `ok` (also waiting for an API that isn't answering yet). `out` and `in`: until no PG is backfilling or inactive. `drain`, `device remove`, `flatten-volume`, `copy-volume`, `move-volume`, `trash purge`, `pool delete --force`: follow the operation until it finishes. `pool set --pgs`: until the split is done. `op watch`: give up after SECS. `member add`: how long the new member may take to catch up (120 s at 0). Exit status 1 if SECS pass first |
 | `--json` | off | Print the API's answer as JSON, the form `curl` gets; the same as `-o json`. `-o yaml` prints it as YAML |
 | `--offset O` | 0 | `write-volume`, `read-volume`: where in the volume, in bytes (a multiple of 4096; K, M, G suffixes) |
@@ -162,7 +168,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [-
 | `--pool P` | the first data pool | The pool for `pgs`, `pg promote` (required), `pg-grid`, `volumes`, `create-volume` (default: its project's or tenant's `pool` property, else the first data pool) and `io-test` (`.meta`, pool 0, holds volume headers); the pool `copy-volume` and `move-volume` go to (required); `realm pool`: the pool whose realms it sets (required); `space`: one pool's space (default: every pool) |
 | `--pg N` | every PG | `pgs`: only this PG of the pool. `pg-grid --heat`: also this PG's top volumes. `pg promote`: only this PG |
 | `--mib N` | 16 | How much `io-test` writes, in MiB |
-| `--networks NAME[,NAME...]\|none` | the `networks` line of `hyperstorctl.conf`, else none | `io-test`, `write-volume`, `read-volume`: the cluster's data networks to reach storage nodes on, in order, at their endpoints there; `none`: at the devices' addresses |
+| `--networks NAME[,NAME...]\|none` | the `networks` line of `hsctl.conf`, else none | `io-test`, `write-volume`, `read-volume`: the cluster's data networks to reach storage nodes on, in order, at their endpoints there; `none`: at the devices' addresses |
 | `--device D` | | The device for `out`, `in`, `weight`, `device remove`, `pool add-device`, `pool remove-device` and `perf`; the member `pg promote` promotes |
 | `--weight W\|auto` | | `weight`: the weight to keep (0 or more; 0 places nothing on the device), or `auto` |
 | `--nearfull PCT` | 85 | `full-ratios`: where a device warns |
@@ -243,7 +249,7 @@ usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [-
 | `--file F` | | `cert show`: a certificate file (PEM) |
 | `--dry-run` | off | `drain`: change nothing; print the PGs that would move. `pool delete`: delete nothing; list what the pool holds. `device remove`: change nothing; print what would move, the pools left short and the space after. `pg promote`: change nothing; print what each member holds and what would be promoted |
 
-**Through hyperstor-mgmt.** With `--mgmt`, `hyperstorctl` is a person,
+**Through hyperstor-mgmt.** With `--mgmt`, `hsctl` is a person,
 not an administrator's certificate: make an API token on the dashboard
 (or `POST /auth/tokens`), keep it in a file only you can read, and your
 roles decide what you may do. What needs a fresh login (deleting,
@@ -262,18 +268,18 @@ see what that realm's administrators see.
 ```sh
 export HYPERSTOR_MGMT=https://the-map-service-host:8852
 export HYPERSTOR_TOKEN="$(cat ~/.hyperstor-token)"
-hyperstorctl status
+hsctl status
 ```
 
 Without `--api`, the address is `$HYPERSTOR_API`, else the `api` line
-of `/etc/hyperstor/hyperstorctl.conf` (written by
+of `/etc/hyperstor/hsctl.conf` (written by
 [hyperstor-install](hyperstor-install.md)), else `127.0.0.1:8850`. Likewise, without `--tls` the certificates are
 those of the `tls` line in that file, if any; with neither, it uses
 plain HTTP.
 
 On the map service's host, when neither `--api` nor `--tls` is given and
 the configuration's `socket` line names a socket that exists,
-`hyperstorctl` uses that local socket: the kernel tells the map service
+`hsctl` uses that local socket: the kernel tells the map service
 who is calling, and root and members of the `hyperstor-admin` group may
 do everything. This keeps working when certificates have expired or
 are lost. Elsewhere it uses the API address and the administrator
@@ -287,7 +293,7 @@ networks it used.
 `io-test`, `write-volume` and `read-volume` reach the storage nodes on
 the same networks as the host's VM disks and S3 gateway: the installer
 writes the host's client networks (its `--client-networks`) into the
-`networks` line of `hyperstorctl.conf`. `--networks` names others, and
+`networks` line of `hsctl.conf`. `--networks` names others, and
 `--networks none` uses the devices' addresses. A network the cluster
 doesn't have is warned about, and devices are reached at their
 addresses on it. Without the line or the option (a host the installer

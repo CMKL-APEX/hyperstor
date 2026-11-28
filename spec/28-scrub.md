@@ -123,7 +123,7 @@ The device counters stay for Prometheus, unchanged.
 
 ### 31.5 Health (D228)
 
-`GetStatus`, `hyperstorctl status` and the UI's health warn or fail for
+`GetStatus`, `hsctl status` and the UI's health warn or fail for
 these conditions:
 
 | Check | Level | When |
@@ -171,15 +171,15 @@ from the digest cache) per recovery.
 | `SetScrubSettings(pool, …, reason)` | write (step-up when weakening) | §31.3 |
 | `StartScrub(pool, pgs, deep)` | write | §31.6; returns an operation |
 
-**`hyperstorctl`:**
+**`hsctl`:**
 
 ```
-hyperstorctl scrub status [--pool P]
-hyperstorctl scrub pgs --pool P [--overdue]
-hyperstorctl scrub set --pool P [--hours N] [--deep-every N]
+hsctl scrub status [--pool P]
+hsctl scrub pgs --pool P [--overdue]
+hsctl scrub set --pool P [--hours N] [--deep-every N]
                        [--hole-repair repair|report] [--deep-rate MIB]
                        [--reason TEXT]
-hyperstorctl scrub start --pool P [--pg N ...] [--deep]
+hsctl scrub start --pool P [--pg N ...] [--deep]
 ```
 
 **Web UI:**
