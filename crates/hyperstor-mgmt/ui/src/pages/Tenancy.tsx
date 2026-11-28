@@ -12,14 +12,17 @@
 //   and membership of linked records) is read-only here (I413).
 // - Directories (security administrators): the trusted directories, their
 //   feed's age and staleness limit (D324), the operator tenant, ending a
-//   trust; offers, whose token is shown once and never kept (D306).
+//   trust; a directory trusted as a whole, its admission setting and
+//   default caps, and its tenants' opt-ins to approve or refuse (D345–D347);
+//   offers to a tenant or to a whole directory, whose token is shown once
+//   and never kept (D306).
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Modal, TokenReveal } from "@glidex/ui-kit";
 import { cluster, directoryOrigin, offerPin, ops, realms, tenants, trust } from "../api";
 import { OperationState, type Project, type Realm, type Tenant, type TrustedDirectory, type TrustOffer } from "../gen/hyperstor/v1/admin_pb";
 import type { SpaceRow } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, td, useCan, usePoll } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, td, useCan, usePoll } from "../ui";
 
 /** A realm list as hsctl takes it: names, or `any` for none. */
 const realmArg = (rs: string[]) => (rs.length ? rs.join(",") : "any");
@@ -726,8 +729,35 @@ function TenantsTab() {
 
 // ------------------------------------------------------------ Directories
 
+/** A cap on a tenant's bytes in a pool (D347): kept, not yet enforced. */
+type Cap = { pool: string; bytes: bigint };
+
+/** Caps as hsctl's `--cap` takes them, or `none`. */
+const capsArg = (cs: Cap[]) => (cs.length ? cs.map((c) => `${c.pool}=${c.bytes}`).join(",") : "none");
+
+/** Caps for people to read. */
+const capsText = (cs: Cap[]) => (cs.length ? cs.map((c) => `${c.pool} ${fmtBytes(c.bytes)}`).join(", ") : "none");
+
+/** Caps typed as `POOL=SIZE, …` (sizes as `1G`, `512M`); empty or `none`:
+ * none. Null when one doesn't read, or a size is 0. */
+function parseCaps(s: string): Cap[] | null {
+  const t = s.trim();
+  if (t === "" || t === "none") return [];
+  const out: Cap[] = [];
+  for (const part of t.split(",")) {
+    const [pool, size, ...rest] = part.split("=");
+    const bytes = size === undefined ? null : parseSize(size);
+    if (rest.length || !pool.trim() || bytes === null || bytes === 0n) return null;
+    out.push({ pool: pool.trim(), bytes });
+  }
+  return out;
+}
+
 type DirDialog =
   | { kind: "staleness"; d: TrustedDirectory }
+  | { kind: "admission"; d: TrustedDirectory }
+  | { kind: "decide"; d: TrustedDirectory; slug: string; approve: boolean }
+  | { kind: "endWhole"; d: TrustedDirectory }
   | { kind: "end"; d: TrustedDirectory; slug: string; name: string }
   | { kind: "operator"; tenant: number; name: string }
   | { kind: "offer" }
@@ -744,7 +774,12 @@ function DirectoriesTab() {
   const [minutes, setMinutes] = useState("");
   // The offer's fields. Its token is kept only in `made`, while the
   // dialog showing it is open: never in storage, a URL or a log.
-  const [f, setF] = useState({ tenant: "", directory: "", name: "", realm: "", url: "", pin: "", days: "7", ui: "" });
+  // `whole`: an offer to the directory as a whole (D345), with its
+  // admission setting and default caps (D346, D347).
+  const blank = { tenant: "", directory: "", name: "", realm: "", url: "", pin: "", days: "7", ui: "", whole: false, admit: "open", caps: "" };
+  const [f, setF] = useState(blank);
+  // A whole directory's setting and default caps, as changed (D347).
+  const [adm, setAdm] = useState({ admit: "open", caps: "" });
   const [made, setMade] = useState<{ token: string; offer?: TrustOffer } | null>(null);
   // The pin mgmt gives the offer's address (D343), unless another is
   // pasted ("Use another").
@@ -771,11 +806,17 @@ function DirectoriesTab() {
       offers.reload();
     }
   };
+  const offerCaps = f.whole ? parseCaps(f.caps) : [];
+  const admCaps = parseCaps(adm.caps);
   const offerCli = () =>
     [
-      `admission offer --tenant ${f.tenant || "SLUG"} --directory ${f.directory || "ISSUER"} --url ${f.url || "URL"}`,
+      f.whole
+        ? `admission offer --directory ${f.directory || "ISSUER"} --url ${f.url || "URL"}`
+        : `admission offer --tenant ${f.tenant || "SLUG"} --directory ${f.directory || "ISSUER"} --url ${f.url || "URL"}`,
       other && f.pin && `--pin ${f.pin}`,
-      f.name && `--name ${f.name}`,
+      !f.whole && f.name && `--name ${f.name}`,
+      f.whole && f.admit !== "open" && `--admit ${f.admit}`,
+      f.whole && offerCaps && offerCaps.length > 0 && `--cap ${capsArg(offerCaps)}`,
       f.realm && `--realm ${f.realm}`,
       f.days && f.days !== "7" && `--days ${f.days}`,
       f.ui && `--ui ${f.ui}`,
@@ -788,7 +829,9 @@ function DirectoriesTab() {
       <Card title="Trusted directories">
         <ErrorText error={dirs.error} />
         {(dirs.data?.directories ?? []).length === 0 && !dirs.error && (
-          <p className="text-sm text-slate-500">No directory is trusted: a directory&apos;s tenant redeems an offer (below) first.</p>
+          <p className="text-sm text-slate-500">
+            No directory is trusted: a directory&apos;s tenant, or for the whole directory its owner, redeems an offer (below) first.
+          </p>
         )}
         <div className="grid gap-4">
           {(dirs.data?.directories ?? []).map((d) => {
@@ -827,13 +870,67 @@ function DirectoriesTab() {
                     <span className="text-amber-700 dark:text-amber-400">Not applied yet (retried at every pull): {d.blocked.join("; ")}</span>
                   )}
                 </div>
+                {d.whole && (
+                  <div className="text-sm grid gap-1" data-testid={`whole-${directoryName(d.issuer)}`}>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <Pill tone="ok">trusted as a whole</Pill>
+                      <span>
+                        Its tenants opt in at the directory:{" "}
+                        {d.admit === "approval" ? "each waits for a security administrator's approval" : "each is admitted at once"}. Each admitted
+                        tenant starts with caps {capsText(d.caps)}.
+                      </span>
+                    </span>
+                    {can("secure") && (
+                      <span className="flex gap-2">
+                        <Button
+                          onClick={() => {
+                            setAdm({ admit: d.admit || "open", caps: d.caps.length ? capsArg(d.caps) : "" });
+                            setDialog({ kind: "admission", d });
+                          }}
+                        >
+                          Change admission
+                        </Button>
+                        <Button kind="danger" onClick={() => setDialog({ kind: "endWhole", d })}>
+                          End trust in the directory
+                        </Button>
+                      </span>
+                    )}
+                    {d.pending.length + d.refused.length > 0 && (
+                      <Table head={["Opted in at the directory", "Decision", ""]}>
+                        {[...d.pending, ...d.refused].map((t) => (
+                          <tr key={t.id} data-testid={`admission-${t.slug}`}>
+                            <td className={td}>
+                              {t.slug} <span className="text-xs text-slate-500 font-mono">{t.id}</span>
+                            </td>
+                            <td className={td}>
+                              <Pill tone={t.admission === "pending" ? "warn" : "muted"}>{t.admission}</Pill>
+                            </td>
+                            <td className={`${td} flex gap-2`}>
+                              {can("secure") && t.admission === "pending" && (
+                                <>
+                                  <Button onClick={() => setDialog({ kind: "decide", d, slug: t.slug, approve: true })}>Approve</Button>
+                                  <Button kind="danger" onClick={() => setDialog({ kind: "decide", d, slug: t.slug, approve: false })}>
+                                    Refuse
+                                  </Button>
+                                </>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </Table>
+                    )}
+                  </div>
+                )}
                 <Table head={["Tenant at the directory", "Tenant here", "Operator", ""]}>
                   {d.tenants.map((t) => (
                     <tr key={t.id} data-testid={`trusted-${t.slug}`}>
                       <td className={td}>
                         {t.slug} <span className="text-xs text-slate-500 font-mono">{t.id}</span>
                       </td>
-                      <td className={td}>{t.tenant ? `${t.name} (tenant ${t.tenant})` : "–"}</td>
+                      <td className={td}>
+                        {t.tenant ? `${t.name} (tenant ${t.tenant})` : "–"}
+                        {t.caps.length > 0 && <span className="text-xs text-slate-500"> caps {capsText(t.caps)}</span>}
+                      </td>
                       <td className={td}>{t.operator ? <Pill tone="ok">operator</Pill> : "–"}</td>
                       <td className={`${td} flex gap-2`}>
                         {can("secure") && t.tenant !== 0 && !t.operator && (
@@ -864,7 +961,7 @@ function DirectoriesTab() {
           can("secure") && (
             <Button
               onClick={() => {
-                setF({ tenant: "", directory: "", name: "", realm: "", url: window.location.origin, pin: "", days: "7", ui: "" });
+                setF({ ...blank, url: window.location.origin });
                 setOther(false);
                 setOwn({});
                 setDialog({ kind: "offer" });
@@ -876,14 +973,14 @@ function DirectoriesTab() {
         }
       >
         <ErrorText error={offers.error} />
-        <Table head={["Id", "State", "glidex tenant", "Name here", "Realm", "Directory", "Expires", "By", ""]} empty="No offers.">
+        <Table head={["Id", "State", "For", "Name here", "Realm", "Directory", "Expires", "By", ""]} empty="No offers.">
           {(offers.data ?? []).map((o) => (
-            <tr key={o.id} data-testid={`offer-${o.tenant}`}>
+            <tr key={o.id} data-testid={`offer-${o.scope === "directory" ? `directory-${directoryName(o.directory)}` : o.tenant}`}>
               <td className={`${td} font-mono text-xs`}>{o.id}</td>
               <td className={td}>
                 <Pill tone={o.state === "open" ? "warn" : o.state === "redeemed" ? "ok" : "muted"}>{o.state}</Pill>
               </td>
-              <td className={td}>{o.tenant}</td>
+              <td className={td}>{o.scope === "directory" ? `the whole directory (${o.admit || "open"})` : o.tenant}</td>
               <td className={td}>{o.name}</td>
               <td className={td}>{o.realm || "–"}</td>
               <td className={`${td} text-xs`}>{o.directory}</td>
@@ -929,8 +1026,68 @@ function DirectoriesTab() {
         >
           <p className="text-sm">
             {dialog.name ? `Tenant ${dialog.name} and its projects stay here, unlinked.` : "Its records here stay, unlinked."} mgmt
-            tells the directory. With its last tenant, the directory is no longer trusted and its people can&apos;t sign in. This
-            needs a login of the last 10 minutes.
+            tells the directory.{" "}
+            {dialog.d.whole
+              ? "The directory stays trusted as a whole, and the tenant may opt in again."
+              : "With its last tenant, the directory is no longer trusted and its people can't sign in."}{" "}
+            This needs a login of the last 10 minutes.
+          </p>
+        </ActionDialog>
+      )}
+      {dialog?.kind === "admission" && (
+        <ActionDialog
+          title={`How ${directoryName(dialog.d.issuer)}'s tenants are admitted`}
+          submit="Save"
+          disabled={admCaps === null}
+          cli={`admission directory --directory ${dialog.d.issuer} --admit ${adm.admit} --cap ${admCaps ? capsArg(admCaps) : "…"}`}
+          run={() => trust.setDirectoryAdmission({ directory: dialog.d.id, admit: adm.admit, setCaps: true, caps: admCaps ?? [] })}
+          onClose={close}
+        >
+          <Field label="Opt-ins">
+            <select className={input} value={adm.admit} onChange={(e) => setAdm((x) => ({ ...x, admit: e.target.value }))}>
+              <option value="open">open: admitted at once</option>
+              <option value="approval">approval: each waits for a security administrator</option>
+            </select>
+          </Field>
+          <Field label="Default caps (POOL=SIZE, comma-separated; empty: none)">
+            <input className={input} value={adm.caps} onChange={(e) => setAdm((x) => ({ ...x, caps: e.target.value }))} />
+          </Field>
+          {admCaps === null && <p className="text-xs text-red-700 dark:text-red-400">Caps read as POOL=SIZE, such as fast=100G.</p>}
+          <p className="text-xs text-slate-500">
+            The caps apply to tenants admitted from now on; those admitted keep theirs. Caps are kept, not yet enforced. This needs a
+            login of the last 10 minutes.
+          </p>
+        </ActionDialog>
+      )}
+      {dialog?.kind === "decide" && (
+        <ActionDialog
+          title={`${dialog.approve ? "Approve" : "Refuse"} ${dialog.slug}'s opt-in`}
+          submit={dialog.approve ? "Approve" : "Refuse"}
+          kind={dialog.approve ? "primary" : "danger"}
+          cli={`admission ${dialog.approve ? "approve" : "reject"} --directory ${dialog.d.issuer} --tenant ${dialog.slug}`}
+          run={() => trust.decideAdmission({ directory: dialog.d.id, tenant: dialog.slug, approve: dialog.approve })}
+          onClose={close}
+        >
+          <p className="text-sm">
+            {dialog.approve
+              ? `Its tenant is made here in realm ${dialog.d.realm} with a copy of the directory's default caps (${capsText(dialog.d.caps)}), and the feed brings its projects and members.`
+              : "It isn't admitted, and the directory learns so from the next report. Its administrator may opt in again."}{" "}
+            This needs a login of the last 10 minutes.
+          </p>
+        </ActionDialog>
+      )}
+      {dialog?.kind === "endWhole" && (
+        <ActionDialog
+          title={`End the trust in ${directoryName(dialog.d.issuer)}`}
+          submit="End trust"
+          kind="danger"
+          cli={`admission end --directory ${dialog.d.issuer}`}
+          run={() => trust.endTrust({ directory: dialog.d.id, tenant: "" })}
+          onClose={close}
+        >
+          <p className="text-sm">
+            Every admission of the directory ends: its tenants and their projects stay here, unlinked, and its people can&apos;t sign
+            in. mgmt tells the directory. This needs a login of the last 10 minutes.
           </p>
         </ActionDialog>
       )}
@@ -950,14 +1107,17 @@ function DirectoriesTab() {
       )}
       {dialog?.kind === "offer" && (
         <ActionDialog
-          title="Make an offer to a directory's tenant"
+          title={f.whole ? "Make an offer to a whole directory" : "Make an offer to a directory's tenant"}
           submit="Make"
+          disabled={offerCaps === null}
           cli={offerCli()}
           run={async () => {
             const r = await trust.createOffer({
-              tenant: f.tenant.trim(),
+              tenant: f.whole ? "" : f.tenant.trim(),
               directory: f.directory.trim(),
-              name: f.name.trim(),
+              name: f.whole ? "" : f.name.trim(),
+              admit: f.whole ? f.admit : "",
+              caps: f.whole ? (offerCaps ?? []) : [],
               realm: f.realm.trim(),
               url: f.url.trim(),
               // Empty: mgmt takes its own certificate's (D343).
@@ -969,15 +1129,49 @@ function DirectoriesTab() {
           }}
           onClose={close}
         >
-          <Field label="glidex tenant (its slug)">
-            <input className={input} value={f.tenant} onChange={set("tenant")} autoFocus />
-          </Field>
+          <fieldset className="flex gap-4 text-sm">
+            <legend className="sr-only">Offer to</legend>
+            <label className="flex items-center gap-1">
+              <input type="radio" name="offer-scope" checked={!f.whole} onChange={() => setF((x) => ({ ...x, whole: false }))} />
+              One tenant
+            </label>
+            <label className="flex items-center gap-1">
+              <input type="radio" name="offer-scope" checked={f.whole} onChange={() => setF((x) => ({ ...x, whole: true }))} />
+              The whole directory
+            </label>
+          </fieldset>
+          {!f.whole && (
+            <Field label="glidex tenant (its slug)">
+              <input className={input} value={f.tenant} onChange={set("tenant")} autoFocus />
+            </Field>
+          )}
           <Field label="Directory (its issuer, https://host/d/NAME)">
             <input className={input} value={f.directory} onChange={set("directory")} />
           </Field>
-          <Field label="Name here (default: the slug)">
-            <input className={input} value={f.name} onChange={set("name")} />
-          </Field>
+          {f.whole ? (
+            <>
+              <Field label="Opt-ins">
+                <select className={input} value={f.admit} onChange={set("admit")}>
+                  <option value="open">open: admitted at once</option>
+                  <option value="approval">approval: each waits for a security administrator</option>
+                </select>
+              </Field>
+              <Field label="Default caps (POOL=SIZE, comma-separated; empty: none)">
+                <input className={input} value={f.caps} onChange={set("caps")} />
+              </Field>
+              {offerCaps === null && <p className="text-xs text-red-700 dark:text-red-400">Caps read as POOL=SIZE, such as fast=100G.</p>}
+              <p className="text-xs text-slate-500" data-testid="whole-offer-note">
+                The directory&apos;s owner redeems it. Each of its tenants then opts in by itself, with no offer, and is listed
+                here.
+                {f.admit === "open" &&
+                  " With open, any tenant of the directory is admitted when it asks: if the directory lets anyone make a tenant, choose approval."}
+              </p>
+            </>
+          ) : (
+            <Field label="Name here (default: the slug)">
+              <input className={input} value={f.name} onChange={set("name")} />
+            </Field>
+          )}
           <Field label="Realm (a directory trusted for the first time; default: named after it)">
             <input className={input} value={f.realm} onChange={set("realm")} />
           </Field>
@@ -1036,20 +1230,27 @@ function DirectoriesTab() {
           <TokenReveal
             secret={made.token}
             label="offer token"
-            warning="It is shown this once, and admits one glidex tenant: pass it only to that tenant's administrator."
+            warning={
+              made.offer?.scope === "directory"
+                ? "It is shown this once, and trusts the whole directory: pass it only to the directory's owner."
+                : "It is shown this once, and admits one glidex tenant: pass it only to that tenant's administrator."
+            }
             copiedHint="Copied. They redeem it at their directory."
           >
             <div data-testid="offer-made" className="text-xs text-slate-500">
-              Offer {made.offer?.id} for {made.offer?.tenant}, until {fmtTime(made.offer?.expiresUnix ?? 0n)}, pinning SHA-256{" "}
-              <span className="font-mono">{made.offer?.pin}</span>. At the directory:
-              <code className="block mt-1 p-2 rounded-sm bg-slate-100 dark:bg-slate-800">gxctl tenant opt-in --offer TOKEN</code>
+              Offer {made.offer?.id} for {made.offer?.scope === "directory" ? "the whole directory" : made.offer?.tenant}, until{" "}
+              {fmtTime(made.offer?.expiresUnix ?? 0n)}, pinning SHA-256 <span className="font-mono">{made.offer?.pin}</span>. At the
+              directory:
+              <code className="block mt-1 p-2 rounded-sm bg-slate-100 dark:bg-slate-800">
+                {made.offer?.scope === "directory" ? "gxctl directory trust-cluster --offer TOKEN" : "gxctl tenant opt-in --offer TOKEN"}
+              </code>
             </div>
           </TokenReveal>
         </Modal>
       )}
       {dialog?.kind === "revoke" && (
         <ActionDialog
-          title={`Revoke the offer to ${dialog.o.tenant}`}
+          title={`Revoke the offer to ${dialog.o.scope === "directory" ? directoryName(dialog.o.directory) : dialog.o.tenant}`}
           submit="Revoke"
           kind="danger"
           cli={`admission revoke --id ${dialog.o.id}`}
