@@ -267,7 +267,8 @@ covered by tests that run on every change.
 | T2: `hyperstorctl --identity DIR` for the commands that move data; a host named by its `host` certificate whether it says so or not; a `host` certificate on map service members' hosts | Done |
 | T2: the addresses storage nodes serve without a certificate, reported to the leader and listed by `hyperstorctl data-tls status` (`GetDataTls`) | Done |
 | T2: `mgmt` certificates refused on the data path once glidex passes `--identity` | Planned |
-| T3: encryption on networks not marked trusted: TLS records from rustls, kernel TLS where the host check allows | Planned |
+| T3: sessions encrypted on networks not marked trusted, behind a cluster switch (map format 25): either end asks (`StartTlsOffer`, protocol version 12), and the rustls session moves to kernel TLS; plaintext connections from before are made again | Done |
+| T3: an installer check that the kernel has TLS (D407); G69's cost is measured (I462) | Planned |
 
 ## HS21: Kubernetes CSI driver
 

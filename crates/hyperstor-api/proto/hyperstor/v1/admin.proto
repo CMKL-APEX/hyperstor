@@ -62,7 +62,7 @@ service S3Service {
   // certificates, D233) only.
   rpc GetS3Gateway(GetS3GatewayRequest) returns (GetS3GatewayResponse);
 
-  // Asked by a gateway at CreateBucket (D406): whether the name is free
+  // Asked by a gateway at CreateBucket (D416): whether the name is free
   // in the project its bucket goes to, among the project's datasets
   // (D387), and the pool its `pool` property names. S3 gateways only.
   rpc PrepareBucket(PrepareBucketRequest) returns (PrepareBucketResponse);
@@ -797,7 +797,7 @@ message S3GatewayKey {
 message GetS3GatewayResponse {
   repeated S3GatewayKey keys = 1;
   repeated S3Placement placements = 2;
-  // The realm's buckets whose `readonly` is on (D405, D406): the gateway
+  // The realm's buckets whose `readonly` is on (D415, D416): the gateway
   // refuses writes to their objects.
   repeated S3ReadonlyBucket readonly_buckets = 3 [json_name = "readonly_buckets"];
 }

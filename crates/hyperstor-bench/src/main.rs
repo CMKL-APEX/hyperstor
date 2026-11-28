@@ -12,6 +12,8 @@
 //! don't allocate filesystem blocks.
 
 mod cpus;
+mod layout;
+mod tls;
 
 use hyperstor_engine::DensePolicy;
 use hyperstor_engine::*;
@@ -2385,6 +2387,16 @@ fn main() {
             let reactors: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(1);
             cluster_suite(&where_, reactors, secs);
         }
+        Some("layout") => {
+            // hyperstor-bench layout: the on-device index's leaf formats
+            // on the engine's real block maps (D43, point 99)
+            layout::suite();
+        }
+        Some("lookup") => {
+            // hyperstor-bench lookup: a page table against swizzled
+            // pointers on each step down the index (M6)
+            layout::lookup_suite();
+        }
         Some("adminload") => {
             // hyperstor-bench adminload (G17)
             adminload_suite(secs);
@@ -2500,6 +2512,21 @@ fn main() {
             }
         }
         Some("space-walk") => space_walk(),
+        // G69 (30-data-path-tls.md §33.10): the cost of encryption.
+        Some("tls-certs") => tls::certs(Path::new(args.get(2).expect("tls-certs DIR"))),
+        Some("tls-serve") => tls::serve(
+            args.get(2)
+                .and_then(|a| a.parse().ok())
+                .expect("tls-serve ADDR DIR"),
+            Path::new(args.get(3).expect("tls-serve ADDR DIR")),
+        ),
+        Some("tls") => tls::client(
+            args.get(2)
+                .and_then(|a| a.parse().ok())
+                .expect("tls ADDR DIR"),
+            Path::new(args.get(3).expect("tls ADDR DIR")),
+            secs,
+        ),
         _ => {
             eprintln!("usage: hyperstor-bench engine|raw <file> [size_gib] | mem | crc");
             std::process::exit(2);

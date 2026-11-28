@@ -15,6 +15,7 @@ use crate::{ClusterMap, PoolInfo, PoolKind};
 use glidex_raftstore::store::{StoreError, definition};
 use hyperstor_codec::{Dec, DecodeError, Enc};
 use hyperstor_proto::ScrubDetail;
+use redb::ReadableTable as _;
 use std::collections::BTreeMap;
 
 /// What one scrub of a PG did and found.

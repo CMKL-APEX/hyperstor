@@ -1428,6 +1428,13 @@ pub fn data_tls_text(mode: &str) -> String {
 /// nodes serve without a certificate (30-data-path-tls.md §33.4).
 pub fn data_tls_status_text(r: &pb::GetDataTlsResponse) -> String {
     let mut o = data_tls_text(&r.data_tls);
+    if r.encrypt {
+        o.push_str(if r.data_tls == "off" {
+            "sessions would stay encrypted on networks not marked trusted, but nothing authenticates in mode off\n"
+        } else {
+            "sessions stay encrypted, by kernel TLS, on networks not marked trusted and on addresses on no network\n"
+        });
+    }
     if r.data_tls != "allow" {
         return o;
     }

@@ -1135,8 +1135,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-auth"
-version = "0.1.1"
-source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.1#657d95c665d57dafb50fe1c5b895edaf2800d3cc"
+version = "0.2.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.2.0#cf980403edb1773b311e53207555ef33eb757132"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
@@ -1155,8 +1155,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-authd"
-version = "0.1.1"
-source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.1#657d95c665d57dafb50fe1c5b895edaf2800d3cc"
+version = "0.2.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.2.0#cf980403edb1773b311e53207555ef33eb757132"
 dependencies = [
  "libc",
  "libloading",
@@ -1171,8 +1171,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-raftstore"
-version = "0.1.1"
-source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.1#657d95c665d57dafb50fe1c5b895edaf2800d3cc"
+version = "0.2.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.2.0#cf980403edb1773b311e53207555ef33eb757132"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1191,8 +1191,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-tls"
-version = "0.1.1"
-source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.1#657d95c665d57dafb50fe1c5b895edaf2800d3cc"
+version = "0.2.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.2.0#cf980403edb1773b311e53207555ef33eb757132"
 dependencies = [
  "arc-swap",
  "http",
@@ -1216,8 +1216,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-topology"
-version = "0.1.1"
-source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.1#657d95c665d57dafb50fe1c5b895edaf2800d3cc"
+version = "0.2.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.2.0#cf980403edb1773b311e53207555ef33eb757132"
 dependencies = [
  "nix 0.32.0",
  "serde",
@@ -1225,8 +1225,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-trust"
-version = "0.1.1"
-source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.1#657d95c665d57dafb50fe1c5b895edaf2800d3cc"
+version = "0.2.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.2.0#cf980403edb1773b311e53207555ef33eb757132"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
@@ -1452,6 +1452,7 @@ dependencies = [
  "hyperstor-daemon",
  "hyperstor-engine",
  "hyperstor-meta",
+ "hyperstor-pki",
  "hyperstor-placement",
  "hyperstor-proto",
  "hyperstor-reactor",
@@ -1710,6 +1711,8 @@ dependencies = [
  "hyperstor-pki",
  "hyperstor-proto",
  "hyperstor-reactor",
+ "io-uring",
+ "libc",
  "rustls",
  "thiserror 2.0.21",
 ]
@@ -2987,9 +2990,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "4.5.0"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b317ef681e18f6091efbfab532eaf924a135c492d9d0299d0fbfae07e92a39b"
+checksum = "11175cc688ba1b9d3cec4fe582fd82cb97e2a82e28ccc8101b7b8030a8003280"
 dependencies = [
  "libc",
 ]

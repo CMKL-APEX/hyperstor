@@ -81,6 +81,31 @@ impl DataTls {
     }
 }
 
+impl ClusterMap {
+    /// Whether an authenticated session to or from `ip` stays encrypted
+    /// (D25, D405; 30-data-path-tls.md §33.9): the cluster encrypts, and
+    /// `ip` is on no network marked trusted. An address on no network is
+    /// encrypted: only a network the operator named can be marked
+    /// trusted. A loopback address never leaves the host: encrypted only
+    /// where a network not marked trusted names it.
+    pub fn encrypts(&self, ip: std::net::IpAddr) -> bool {
+        if !self.data_tls_encrypt || self.data_tls == DataTls::Off {
+            return false;
+        }
+        let ip = match ip {
+            std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, std::net::IpAddr::V4),
+            v4 => v4,
+        };
+        let mut on = self.networks.values().filter(|n| n.contains(ip));
+        if ip.is_loopback() {
+            let named: Vec<_> = on.collect();
+            !named.is_empty() && named.iter().all(|n| !n.trusted)
+        } else {
+            !on.any(|n| n.trusted)
+        }
+    }
+}
+
 /// A revoked certificate or identity as the map carries it (D384;
 /// 30-data-path-tls.md §33.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,6 +463,10 @@ pub struct ClusterMap {
     /// Whether connections on the storage network authenticate (D373;
     /// 30-data-path-tls.md §33.4).
     pub data_tls: DataTls,
+    /// Whether authenticated sessions stay encrypted on networks not
+    /// marked trusted (D405; 30-data-path-tls.md §33.9): off in an
+    /// upgraded cluster until an operator turns it on.
+    pub data_tls_encrypt: bool,
     /// Certificates and identities the data path refuses (D384), as the
     /// map service's list has them (19-administration.md §23.8): by
     /// serial, or by [`REVOKED_ID_PREFIX`] and an identity's URI. The map
@@ -445,11 +474,11 @@ pub struct ClusterMap {
     /// node reads the format.
     pub revoked: BTreeMap<String, RevokedCert>,
     /// Volumes whose dataset property `readonly` is on (29-hsfs.md §32.3,
-    /// D405), by lineage and branch, as their chunks are named: their
+    /// D415), by lineage and branch, as their chunks are named: their
     /// primaries refuse clients' writes. The map service works them out
     /// from the properties and the volumes.
     pub readonly: BTreeSet<(u128, u32)>,
-    /// Buckets whose `readonly` is on (D405), by tenant and name: S3
+    /// Buckets whose `readonly` is on (D415), by tenant and name: S3
     /// gateways refuse writes to their objects.
     pub readonly_buckets: BTreeSet<(u32, String)>,
     /// Devices an operator asked to convert to v0.0.8's shard format
@@ -541,6 +570,24 @@ pub struct NetworkDef {
 }
 
 impl NetworkDef {
+    /// Whether `ip` is in the network's subnet (an InfiniBand network
+    /// holds no IP address).
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        let Some(cidr) = self.matches.strip_prefix("subnet ") else {
+            return false;
+        };
+        let Some((net, len)) = cidr.split_once('/') else {
+            return false;
+        };
+        match (net.parse(), len.parse()) {
+            (Ok(net), Ok(len)) => {
+                ip.is_ipv4() == std::net::IpAddr::is_ipv4(&net)
+                    && hyperstor_fabric::model::in_subnet(ip, net, len)
+            }
+            _ => false,
+        }
+    }
+
     /// A network from its parts as the cluster file and `SetNetwork`
     /// (D284) give them: its kind (`control`, `data` or `both`), and its
     /// match (`subnet IP/LEN`, or `ib PREFIX` in four groups).
@@ -1570,7 +1617,7 @@ impl ClusterMap {
         self.epoch
     }
 
-    /// Sets the read-only volumes and buckets (D405): true, and a new
+    /// Sets the read-only volumes and buckets (D415): true, and a new
     /// epoch, if that changes the map.
     pub fn set_readonly(
         &mut self,
@@ -2076,9 +2123,13 @@ impl ClusterMap {
         // project has moved; 22: pools that require capabilities (D371);
         // 23: the data path's TLS mode other than `off` (D373).
         // 24: revoked certificates (D384), only while there are any.
-        // 25: read-only volumes and buckets (D405), only while there are
+        // 25: sessions encrypted on untrusted networks (D405), only while
+        // that is on.
+        // 26: read-only volumes and buckets (D415), only while there are
         // any.
         let format = if !self.readonly.is_empty() || !self.readonly_buckets.is_empty() {
+            26
+        } else if self.data_tls_encrypt {
             25
         } else if !self.revoked.is_empty() {
             24
@@ -2404,6 +2455,9 @@ impl ClusterMap {
             }
         }
         if format >= 25 {
+            e.bool(self.data_tls_encrypt);
+        }
+        if format >= 26 {
             e.u32(self.readonly.len() as u32);
             for (lineage, branch) in &self.readonly {
                 e.u128(*lineage).u32(*branch);
@@ -2419,7 +2473,7 @@ impl ClusterMap {
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=25).contains(&v) {
+        if !(1..=26).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2761,6 +2815,9 @@ impl ClusterMap {
             }
         }
         if v >= 25 {
+            m.data_tls_encrypt = d.bool()?;
+        }
+        if v >= 26 {
             for _ in 0..d.u32()? {
                 m.readonly.insert((d.u128()?, d.u32()?));
             }
@@ -2860,11 +2917,14 @@ pub fn parse_cluster(text: &str) -> Result<ClusterMap, String> {
         let num = |s: &str| s.parse::<u64>().map_err(|_| bad("expected a number"));
         match w[0] {
             "cluster" if w.len() == 2 => map.cluster_id = num(w[1])? as u128,
-            // data-tls off|allow|require: the mode a new cluster starts in
-            // (D373, D380); a file without the line starts `off`.
-            "data-tls" if w.len() == 2 => {
+            // data-tls off|allow|require [encrypt]: the mode a new cluster
+            // starts in (D373, D380), and whether its sessions stay
+            // encrypted on networks not marked trusted (D405); a file
+            // without the line starts `off`.
+            "data-tls" if w.len() == 2 || (w.len() == 3 && w[2] == "encrypt") => {
                 map.data_tls =
                     DataTls::parse(w[1]).ok_or_else(|| bad("data-tls is off, allow or require"))?;
+                map.data_tls_encrypt = w.len() == 3;
             }
             "node" if w.len() >= 5 && w[2] == "rack" => {
                 let node = num(w[1])? as u32;
@@ -4395,7 +4455,68 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert_eq!(DataTls::parse("on"), None);
     }
 
-    /// D405: read-only volumes travel in format 25, only while there are
+    /// D405: the encryption switch travels in format 25, only while it
+    /// is on, and the cluster file turns it on; what it encrypts is every
+    /// address on no network marked trusted, never loopback, and nothing
+    /// in mode `off`.
+    #[test]
+    fn sessions_are_encrypted_off_trusted_networks_once_switched_on() {
+        let format = |b: &[u8]| u32::from_le_bytes(b[..4].try_into().unwrap());
+        let ip = |s: &str| s.parse::<std::net::IpAddr>().unwrap();
+        let mut m = ClusterMap::new(7);
+        m.add_node(1, &["127.0.0.1:7001".parse().unwrap()], 0);
+        m.data_tls = DataTls::Allow;
+        let before = m.encode();
+        assert_eq!(format(&before), 23);
+        assert!(!m.encrypts(ip("192.0.2.5")), "off until switched on");
+        m.data_tls_encrypt = true;
+        let b = m.encode();
+        assert_eq!(format(&b), 25);
+        assert!(ClusterMap::decode(&b).unwrap().data_tls_encrypt);
+        m.networks.insert(
+            "fabric".into(),
+            NetworkDef::parse("data", true, "subnet 10.1.0.0/16").unwrap(),
+        );
+        m.networks.insert(
+            "office".into(),
+            NetworkDef::parse("both", false, "subnet 192.0.2.0/24").unwrap(),
+        );
+        m.networks.insert(
+            "ib".into(),
+            NetworkDef::parse("data", true, "ib fe80:0000:0000:0000").unwrap(),
+        );
+        assert!(!m.encrypts(ip("10.1.2.3")), "a trusted network");
+        assert!(!m.encrypts(ip("::ffff:10.1.2.3")), "the same, as IPv6");
+        assert!(m.encrypts(ip("192.0.2.5")), "an untrusted network");
+        assert!(m.encrypts(ip("198.51.100.1")), "on no network");
+        assert!(m.encrypts(ip("2001:db8::1")), "on no network");
+        assert!(
+            !m.encrypts(ip("127.0.0.1")) && !m.encrypts(ip("::1")),
+            "loopback"
+        );
+        m.networks.insert(
+            "lo".into(),
+            NetworkDef::parse("data", false, "subnet 127.0.0.0/8").unwrap(),
+        );
+        assert!(m.encrypts(ip("127.0.0.1")), "loopback named untrusted");
+        m.networks.remove("lo");
+        m.data_tls = DataTls::Off;
+        assert!(!m.encrypts(ip("192.0.2.5")), "mode off");
+        m.data_tls_encrypt = false;
+        m.networks.clear();
+        m.data_tls = DataTls::Allow;
+        assert_eq!(m.encode(), before);
+
+        let file = |line: &str| {
+            super::parse_cluster(&format!("cluster 7\n{line}\nnode 0 rack 0 1.2.3.4:1\n"))
+        };
+        let on = file("data-tls allow encrypt").unwrap();
+        assert!(on.data_tls_encrypt && on.data_tls == DataTls::Allow);
+        assert!(!file("data-tls allow").unwrap().data_tls_encrypt);
+        assert!(file("data-tls allow encrypted").is_err());
+    }
+
+    /// D415: read-only volumes travel in format 26, only while there are
     /// any; a map without them keeps the format before.
     #[test]
     fn read_only_volumes_travel_only_while_there_are_any() {
@@ -4408,7 +4529,9 @@ pool 1 v replicated size 2 min 1 pgs 8
             !m.set_readonly(set.clone(), BTreeSet::new()),
             "the same sets change nothing"
         );
-        let back = ClusterMap::decode(&m.encode()).unwrap();
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 26);
+        let back = ClusterMap::decode(&b).unwrap();
         assert_eq!(back.readonly, set);
         assert_eq!(back, m);
         // Buckets alone take the format too.

@@ -221,6 +221,7 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         tenant_realms: map.tenant_realms.clone(),
         project_tenants: map.project_tenants.clone(),
         data_tls: map.data_tls,
+        data_tls_encrypt: map.data_tls_encrypt,
         revoked: map.revoked.clone(),
         readonly: map.readonly.clone(),
         readonly_buckets: map.readonly_buckets.clone(),

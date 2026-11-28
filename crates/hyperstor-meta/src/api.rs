@@ -2116,6 +2116,7 @@ impl ClusterService for Api {
         let (map, ..) = self.published().await?;
         Ok(pb::GetDataTlsResponse {
             data_tls: map.data_tls.as_str().into(),
+            encrypt: map.data_tls_encrypt,
             unauthenticated_known: peers.is_some(),
             unauthenticated: peers
                 .unwrap_or_default()
@@ -2137,7 +2138,10 @@ impl ClusterService for Api {
         ctx: RequestContext,
         req: ServiceRequest<'_, pb::SetDataTlsRequest>,
     ) -> ServiceResult<pb::SetDataTlsResponse> {
-        let target = format!("data path TLS mode={}", req.mode);
+        let target = match req.encrypt {
+            Some(e) => format!("data path TLS mode={} encrypt={e}", req.mode),
+            None => format!("data path TLS mode={}", req.mode),
+        };
         let who = self.authorize(&ctx, "SetDataTls", &target, true)?;
         let mode = hyperstor_map::DataTls::parse(req.mode).ok_or_else(|| {
             admin::invalid(
@@ -2147,7 +2151,11 @@ impl ClusterService for Api {
         })?;
         let (reply, rx) = oneshot();
         self.tx
-            .send(Admin::SetDataTls { mode, reply })
+            .send(Admin::SetDataTls {
+                mode,
+                encrypt: req.encrypt,
+                reply,
+            })
             .map_err(|_| ConnectError::unavailable("map service stopped"))?;
         let r = rx.recv().await;
         audit(
@@ -2155,15 +2163,20 @@ impl ClusterService for Api {
             "SetDataTls",
             &target,
             &match &r {
-                Some(Ok((epoch, was))) => format!("ok, was {}, map epoch {epoch}", was.as_str()),
+                Some(Ok((epoch, was, was_encrypt))) => format!(
+                    "ok, was {}{}, map epoch {epoch}",
+                    was.as_str(),
+                    if *was_encrypt { " encrypt" } else { "" }
+                ),
                 Some(Err(e)) => format!("failed: {e}"),
                 None => "failed: map service stopped".into(),
             },
         );
         match r {
-            Some(Ok((map_epoch, was))) => Ok(pb::SetDataTlsResponse {
+            Some(Ok((map_epoch, was, was_encrypt))) => Ok(pb::SetDataTlsResponse {
                 map_epoch,
                 was: was.as_str().into(),
+                was_encrypt,
                 ..Default::default()
             }
             .into()),
@@ -4294,7 +4307,7 @@ impl Api {
                 self.volume_in(&scope, *id, &who, rpc, &target).await?
             }
         }
-        // Rolling back a read-only volume changes what it reads (D405).
+        // Rolling back a read-only volume changes what it reads (D415).
         if let crate::SnapOp::Rollback { id, .. } = &op {
             self.not_readonly(&self.volume_any(*id).await?, &who, rpc, &target)
                 .await?;

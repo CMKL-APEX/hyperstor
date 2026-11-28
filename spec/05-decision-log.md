@@ -2001,6 +2001,36 @@ drafting, the owner chose as recommended:
 | 363 | Whether C1 waits for encryption on the wire (HS20 T3): no, the docs saying trusted networks only (recommended); it waits | C1 now, for trusted networks | D404 |
 | 364 | D397–D401, taken while drafting: settle as written (recommended); keep open | Settled as written | D397–D401 |
 
+## Data-path TLS, stage T3: encryption (2026-11-27)
+
+Stage T3 encrypts sessions on networks not marked trusted (D25, D372).
+`Network.trusted` is false unless set, so read literally D25 would start
+encrypting every upgraded cluster at the roll. G68 then held on the
+hosts' kernel (I460).
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 365 | When encryption starts: behind a cluster setting, off for an upgraded cluster and on for a new install, with addresses on no network encrypted (recommended); D25 as written, from the roll; or only on networks named and not marked trusted | Behind a setting, as recommended | D405 |
+| 366 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D406 |
+| 367 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D407 |
+
+## The on-device index's layout: measured (2026-11-27)
+
+Proposed refinements to D43 (range keys, checksums out of the leaves,
+the tree as the checkpoint, a buffer pool with swizzling, a persistent
+free-space map, 64-bit addresses) were reviewed, and the first
+measurements taken (02-benchmarks.md, 2026-11-27, `hyperstor-bench
+layout`). Open for the owner:
+
+| # | Point | Data so far | Recommendation |
+|---|---|---|---|
+| 368 | Leaf format: per-block entries (D43, point 99's a); range keys; range keys with packed leaves | Ranges + packed 1.1–2.6 GiB per TiB on every workload measured, 40–74% less than per-block (4.3); plain ranges reach 6.9 on fragmented VM disks | Ranges with packed leaves, after a trace check (MSR, Tencent) |
+| 369 | Checksums: in the leaves; pages of their own (point 99's b); NVMe protection information where formatted (c); inline in packed entries and in pages of their own for ranges | With ranges, CRC pages are 1.11 of 1.1–2.6 GiB per TiB. A separate page costs 5% per read one at a time and halves the reads a saturated drive serves (2026-11-28, M3) | Inline in packed entries, pages of their own for ranges; (c) where drives support it (G40, M7) |
+| 370 | Checkpoints as a copy-on-write tree over the log (D43, point 12) | Ranges + packed write −22% to +17% of today's paged checkpoints at 1.6–25% density, less when sparser | As D43, with ranges + packed |
+| 371 | A buffer pool: a page table first, swizzling only if lookups show in profiles | Inner nodes at most 14 MiB per TiB. A page table costs 0.18–0.47 µs more per lookup than swizzled pointers, about 0.25–0.3% of a request's CPU (2026-11-28, M6) | Page table first |
+| 372 | Free space at open: walked from the tree (today's rebuild); bitmap pages written at checkpoint; a tree of free extents | Open time not measured yet (M4) | Bitmap pages |
+| 373 | 64-bit physical addresses in the same incompatible step | Range entries carry 64-bit already; packed leaves keep 32-bit offsets from a 64-bit base | Yes |
+
 ## Datasets, stage H1: `readonly` and buckets (2026-11-27)
 
 `readonly` can't be enforced at the lease, because only read-write
@@ -2009,5 +2039,5 @@ service.
 
 | # | Point | Answer | Result |
 |---|---|---|---|
-| 365 | How a read-only volume behaves: primaries refuse writes and it still attaches and reads (recommended); rw leases refused, so it can't be attached until read-only leases exist; or build read-only leases first | Primaries refuse writes | D405 |
-| 366 | How the gateway learns names and properties: it asks the API at `CreateBucket`, and read-only buckets travel with the keys (recommended); or everything travels with the keys | Ask the API at `CreateBucket` | D406 |
+| 379 | How a read-only volume behaves: primaries refuse writes and it still attaches and reads (recommended); rw leases refused, so it can't be attached until read-only leases exist; or build read-only leases first | Primaries refuse writes | D415 |
+| 380 | How the gateway learns names and properties: it asks the API at `CreateBucket`, and read-only buckets travel with the keys (recommended); or everything travels with the keys | Ask the API at `CreateBucket` | D416 |
