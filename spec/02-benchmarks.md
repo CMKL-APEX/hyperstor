@@ -3022,7 +3022,7 @@ Findings:
 - Not measured: several connections per core, and the full data path
   (engine, replication).
 
-## 2026-11-28: The on-device index's open questions: open time, snapshots, metadata, protection information (M4, M7; #299)
+## 2026-11-28: The on-device index's open questions: open time, snapshots, metadata, protection information (M4, M7, G40; #299)
 
 The questions 08-engine.md §7.6 left open, measured on a 2× AMD EPYC
 7742 host, each run pinned to idle CPUs. Points 374–377 in
@@ -3155,5 +3155,50 @@ intervals after 3.
 | Samsung PM983 1.92 TB | 1.2 | 512, 4096 | None |
 
 The PM1733's 4096+64 format leaves 56 bytes per block beside the 8 of
-protection information: room for our own CRC32C. Its speed is not
-measured: that needs a drive reformatted, which erases it.
+protection information: room for our own CRC32C.
+
+**Speed, measured 2026-11-28** on one PM1733 taken out of the pilot
+for the purpose (another 2× EPYC 7742 host, Linux 6.8, fio 3.36), each
+format made with `nvme format --ms=0` (metadata in a separate buffer).
+Random 4 KiB over the first 32 GiB, written in full first so reads hit
+the media; 20 s per job after 2 s of ramp; QD32 with 4 jobs; fio pinned
+to 8 CPUs of the drive's NUMA node. "Block": `io_uring`, `O_DIRECT` on
+the block device, as the engine does today. "Passthrough":
+`io_uring_cmd` on the namespace's character device. "PRACT": the drive
+inserts protection information on writes and checks and strips it on
+reads. "Host PI": fio computes the 16-bit guard and the drive checks it.
+IOPS, with p99 latency in µs and fio's CPU in %.
+
+| Format | Path | Reads QD1 | Reads QD32 × 4 | Writes QD1 | Writes QD32 × 4 |
+|---|---|---|---|---|---|
+| 4096 | block | 4,706 (301, 6) | 873,870 (313, 97) | 4,132 (399, 5) | 588,996 (362, 67) |
+| 4096 | passthrough | 4,983 (208, 4) | 1,024,777 (285, 85) | 4,990 (206, 4) | 590,620 (362, 50) |
+| 4096+8, PI type 1 | block, the kernel's PI | 4,677 (301, 5) | 758,923 (346, 88) | 4,075 (399, 6) | 580,729 (391, 80) |
+| 4096+8, PI type 1 | passthrough, PRACT | 4,978 (212, 4) | 1,018,346 (285, 85) | 4,988 (208, 4) | 589,804 (362, 52) |
+| 4096+8, PI type 1 | passthrough, host PI | 4,880 (285, 10) | 255,540 (643, 100) | 4,987 (196, 10) | 256,631 (610, 100) |
+| 4096+64, PI type 1 | passthrough, host PI | 4,829 (285, 10) | 248,938 (635, 100) | 4,987 (196, 10) | 258,128 (627, 100) |
+| 4096+64, no PI | passthrough, 64 bytes of metadata | 4,974 (218, 4) | 753,190 (297, 85) | 4,984 (208, 5) | 590,530 (371, 65) |
+
+1. **The drive's own protection information costs nothing**: with
+   PRACT, reads and writes match the plain format at every depth. It
+   guards the drive's internal path only, not the host's memory or the
+   bus before the controller. The engine gets it through passthrough,
+   or on the block device by turning off the kernel's own generation
+   and checks (`integrity/write_generate` and `read_verify` in sysfs),
+   after which Linux's NVMe driver sets PRACT; that path is not
+   measured here (G40).
+2. **The kernel's protection information costs 13% of saturated
+   reads** (874k to 759k) and 13 points more CPU on writes: the block
+   layer computes and checks the 16-bit guard in software.
+3. **Host PI in fio is CPU-bound** (100% at 250k IOPS): fio computes
+   the T10 CRC16 in software. It measures fio, not the drive; our
+   engine already computes CRC32C in hardware for every block.
+4. **64 bytes of metadata per block cost 26% of saturated reads**
+   (1.02M to 753k) even without protection information; writes and
+   QD1 are unchanged. 8 bytes cost nothing (PRACT row). Keeping our
+   CRC32C in a drive's metadata is not free on reads at saturation.
+5. Passthrough serves 17% more saturated reads than the block device
+   (1.02M against 874k) with less CPU, a lead for #248 (G57).
+6. One read at a time takes about 200 µs on this host in every format,
+   slow for this drive; the host's power settings were not checked.
+   It is the same for every row, so the comparison holds.
