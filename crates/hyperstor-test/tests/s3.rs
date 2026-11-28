@@ -18,6 +18,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+fn json(body: &str) -> serde_json::Value {
+    serde_json::from_str(body).unwrap_or_else(|e| panic!("{e}: {body}"))
+}
+
 /// A gateway started by hand, killed when dropped.
 struct Gateway(Child, PathBuf);
 
@@ -1032,4 +1036,86 @@ fn the_installer_binds_a_members_gateway_to_its_realm() {
     assert_eq!(at(&id2, &secret2, &["create", "photos"]), "created");
     assert_eq!(at(&id2, &secret2, &["roundtrip", "photos"]), "roundtrip ok");
     assert_eq!(at(&id1, &secret1, &["denied"]), "InvalidAccessKeyId");
+}
+
+/// Buckets as datasets (D387, D420, D421): CreateBucket asks the map
+/// service, so a name a volume of the key's project has is refused, and
+/// the project's `pool` holds the bucket's objects; `readonly=on` makes
+/// the gateway refuse writes while reads go on.
+#[test]
+fn buckets_are_datasets_of_their_project() {
+    let mut c = Cluster::all_in_one("s3datasets", 3);
+    install(&c.root, &[]);
+    let acme = c.ctl(&["tenant", "create", "--name", "acme"]).ok();
+    let acme = acme
+        .out
+        .split("(id ")
+        .nth(1)
+        .unwrap()
+        .split(')')
+        .next()
+        .unwrap()
+        .to_string();
+    let made = c.ctl(&["s3", "key", "create", "--tenant", &acme]).ok();
+    let line = made.out.lines().next().unwrap().to_string();
+    let (id, secret) = line.split_once(' ').unwrap();
+    let (id, secret) = (id.to_string(), secret.trim().to_string());
+    c.ctl(&[
+        "create-volume",
+        "--size",
+        "1M",
+        "--name",
+        "logs",
+        "--tenant",
+        &acme,
+    ])
+    .ok();
+    c.start_s3();
+    let gw_log = c.scratch.path("s3.log");
+    wait_for("the gateway's keys", 30, || {
+        log(&gw_log).contains("1 access keys").then_some(())
+    });
+    let Some(python) = sdk_python() else { return };
+    let ca = c.pki().join("root.crt");
+    let port = c.s3_port;
+    let step = |s: &[&str]| sdk(&python, port, &ca, &id, &secret, s);
+
+    // A volume of the project has the name.
+    assert_eq!(step(&["create", "logs"]), "BucketAlreadyExists");
+    assert_eq!(step(&["create", "data"]), "created");
+    assert_eq!(step(&["put", "data", "a"]), "put");
+    let list = json(&c.hsfs(&["list", "-t", "bucket", "acme", "--json"]).ok().out);
+    assert_eq!(list["datasets"][0]["name"], "acme/default/data", "{list}");
+
+    // Read-only: writes refused, reads served; back off, writes again.
+    c.hsfs(&["set", "readonly=on", "acme/default/data"]).ok();
+    wait_for("the gateway's read-only bucket", 15, || {
+        (step(&["put", "data", "b"]) == "AccessDenied").then_some(())
+    });
+    assert_eq!(step(&["get", "data", "a"]), "got");
+    c.hsfs(&["inherit", "readonly", "acme/default/data"]).ok();
+    wait_for("the bucket writable again", 15, || {
+        (step(&["put", "data", "b"]) == "put").then_some(())
+    });
+
+    // The tenant's `pool` holds a new bucket's objects.
+    wait_for("every device's kind", 20, || {
+        let s = c.ctl(&["status", "--json"]);
+        (s.out.matches("\"kind\":\"file\"").count() == 3).then_some(())
+    });
+    c.ctl(&["pool", "create", "--name", "second", "--classes", "file"])
+        .ok();
+    wait_for("pool second in the map", 10, || {
+        c.ctl(&["pools"]).has("second").then_some(())
+    });
+    c.hsfs(&["set", "pool=second", "acme"]).ok();
+    assert_eq!(step(&["create", "more"]), "created");
+    let b = json(
+        &c.ctl(&[
+            "s3", "bucket", "show", "--tenant", &acme, "--name", "more", "--json",
+        ])
+        .ok()
+        .out,
+    );
+    assert_eq!(b["bucket"]["data_pool"], "second", "{b}");
 }

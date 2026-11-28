@@ -223,6 +223,8 @@ fn head(map: &ClusterMap) -> Vec<u8> {
         data_tls: map.data_tls,
         data_tls_encrypt: map.data_tls_encrypt,
         revoked: map.revoked.clone(),
+        readonly: map.readonly.clone(),
+        readonly_buckets: map.readonly_buckets.clone(),
         upgrades: map.upgrades.clone(),
         host_names: Default::default(),
     }

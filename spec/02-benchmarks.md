@@ -3250,7 +3250,7 @@ IOPS, with p99 latency in µs and fio's CPU in %.
 
 `hyperstor-bench open` as in the open-time section above (same host,
 same CPUs, same cases), after building the allocator in one pass and
-reading the log ahead in 16 MiB reads (I464). Before → after, in ms.
+reading the log ahead in 16 MiB reads (I467). Before → after, in ms.
 
 | GiB | Device | Case | Allocator | Log scan | Open |
 |---|---|---|---|---|---|

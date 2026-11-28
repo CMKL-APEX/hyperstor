@@ -1041,6 +1041,18 @@ fn allowed(caps: &[Capability], key: &WireKey, write: bool, now_unix: u64) -> Re
     Ok(())
 }
 
+/// Why a write to `key` is refused, if it is a chunk of a volume whose
+/// `readonly` property is on (D420).
+fn read_only(map: &ClusterMap, key: &WireKey) -> Option<String> {
+    if map.readonly.is_empty() {
+        return None;
+    }
+    let (lineage, branch) = heat::volume_of(&key.name)?;
+    map.readonly.contains(&(lineage, branch)).then(|| {
+        format!("the volume of lineage {lineage:032x} branch {branch} is read-only (readonly=on)")
+    })
+}
+
 fn err(code: Code, map: &ClusterMap, detail: impl Into<String>) -> Msg {
     Msg::Error {
         code,
@@ -2539,6 +2551,17 @@ impl ShardState {
                     .get(&to.pool)
                     .is_some_and(|p| p.capabilities)
                 && let Err(why) = allowed(&caps, key, write, unix_now())
+            {
+                reply(&err(Code::Denied, &self.map(), why), &[]);
+                continue;
+            }
+            // A read-only volume's chunks take no client's writes of data
+            // (D420): dropping a snapshot's versions and flattening are the
+            // map service's to refuse. Peers (instance 0) carry what a
+            // primary already decided.
+            if instance != 0
+                && let Msg::Write { key, .. } | Msg::Exec { key, .. } = &msg
+                && let Some(why) = read_only(&self.map(), key)
             {
                 reply(&err(Code::Denied, &self.map(), why), &[]);
                 continue;

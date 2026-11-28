@@ -8,7 +8,7 @@ import { useSearchParams } from "react-router-dom";
 import { fmtRate } from "../perf";
 import { cluster, inScope, realms } from "../api";
 import type { Snapshot, Volume } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, realmOf, td, useCan, usePoll, useRealm, useScope } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, parseSize, realmOf, td, useCan, useNarrow, usePoll, useRealm, useScope } from "../ui";
 
 type Dialog =
   | { kind: "create" }
@@ -59,13 +59,14 @@ function Snapshots({ v, open }: { v: Volume; open: (d: Dialog) => void }) {
 export default function Volumes() {
   const can = useCan();
   const realm = useRealm();
+  const narrow = useNarrow();
   // The tenant and project picked in the header (D310): their volumes
   // alone, and new ones go there.
   const scope = useScope();
   // The cluster's pools, or acting in a realm, those it may use: its own,
   // then those open to every realm.
   const status = usePoll(async () => {
-    if (!realm) return (await cluster.getStatus({})).pools.filter((p) => p.id !== 0).map((p) => ({ id: p.id, name: p.name }));
+    if (!narrow) return (await cluster.getStatus({})).pools.filter((p) => p.id !== 0).map((p) => ({ id: p.id, name: p.name }));
     const r = await realms.listRealms({});
     const mine = r.realms.flatMap((x) => x.poolIds.map((id, i) => ({ id, name: x.pools[i] })));
     return [...mine, ...r.openPoolIds.map((id, i) => ({ id, name: r.openPools[i] }))];
@@ -90,7 +91,7 @@ export default function Volumes() {
   const [target, setTarget] = useState<number | null>(null);
   const [copy, setCopy] = useState(false);
   const [tenant, setTenant] = useState("");
-  const top = usePoll(async () => (realm ? [] : (await cluster.listTopVolumes({ limit: 10 })).volumes), 5000);
+  const top = usePoll(async () => (narrow ? [] : (await cluster.listTopVolumes({ limit: 10 })).volumes), 5000);
   // From the Advisor: a volume to show (`?id=`), in its pool.
   const [params] = useSearchParams();
   const want = params.get("id");
@@ -112,7 +113,7 @@ export default function Volumes() {
 
   return (
     <>
-    {!realm && (
+    {!narrow && (
     <Card title="Busiest volumes now">
       <ErrorText error={top.error} />
       <Table head={["Volume", "Pool", "Requests/s", "MiB/s"]} empty="No volume traffic in the last window.">

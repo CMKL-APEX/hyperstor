@@ -175,7 +175,7 @@ impl Runner {
             .map_err(|e| TokenError::Store(e.to_string()))?
     }
 
-    async fn leads(&self) -> bool {
+    pub(super) async fn leads(&self) -> bool {
         let (reply, rx) = oneshot();
         self.tx.send(Admin::Leads(reply)).is_ok() && matches!(rx.recv().await, Some(Ok(())))
     }

@@ -473,6 +473,14 @@ pub struct ClusterMap {
     /// service mirrors them here only while the mode isn't `off` and every
     /// node reads the format.
     pub revoked: BTreeMap<String, RevokedCert>,
+    /// Volumes whose dataset property `readonly` is on (29-hsfs.md §32.3,
+    /// D420), by lineage and branch, as their chunks are named: their
+    /// primaries refuse clients' writes. The map service works them out
+    /// from the properties and the volumes.
+    pub readonly: BTreeSet<(u128, u32)>,
+    /// Buckets whose `readonly` is on (D420), by tenant and name: S3
+    /// gateways refuse writes to their objects.
+    pub readonly_buckets: BTreeSet<(u32, String)>,
     /// Devices an operator asked to convert to v0.0.8's shard format
     /// (D274, `hyperstorctl device upgrade`): each node converts its own
     /// the next time it opens them, and the map service drops a device
@@ -1609,6 +1617,22 @@ impl ClusterMap {
         self.epoch
     }
 
+    /// Sets the read-only volumes and buckets (D420): true, and a new
+    /// epoch, if that changes the map.
+    pub fn set_readonly(
+        &mut self,
+        readonly: BTreeSet<(u128, u32)>,
+        buckets: BTreeSet<(u32, String)>,
+    ) -> bool {
+        if self.readonly == readonly && self.readonly_buckets == buckets {
+            return false;
+        }
+        self.readonly = readonly;
+        self.readonly_buckets = buckets;
+        self.epoch += 1;
+        true
+    }
+
     /// Sets the revoked certificates and identities (D384), as the map
     /// service's list has them: true, and a new epoch, if that changes the
     /// map.
@@ -2101,7 +2125,11 @@ impl ClusterMap {
         // 24: revoked certificates (D384), only while there are any.
         // 25: sessions encrypted on untrusted networks (D405), only while
         // that is on.
-        let format = if self.data_tls_encrypt {
+        // 26: read-only volumes and buckets (D420), only while there are
+        // any.
+        let format = if !self.readonly.is_empty() || !self.readonly_buckets.is_empty() {
+            26
+        } else if self.data_tls_encrypt {
             25
         } else if !self.revoked.is_empty() {
             24
@@ -2429,13 +2457,23 @@ impl ClusterMap {
         if format >= 25 {
             e.bool(self.data_tls_encrypt);
         }
+        if format >= 26 {
+            e.u32(self.readonly.len() as u32);
+            for (lineage, branch) in &self.readonly {
+                e.u128(*lineage).u32(*branch);
+            }
+            e.u32(self.readonly_buckets.len() as u32);
+            for (tenant, name) in &self.readonly_buckets {
+                e.u32(*tenant).str(name);
+            }
+        }
         e.into_vec()
     }
 
     pub fn decode(b: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Dec::new(b);
         let v = d.u32()?;
-        if !(1..=25).contains(&v) {
+        if !(1..=26).contains(&v) {
             return Err(DecodeError::Invalid {
                 field: "map version",
                 value: v as u64,
@@ -2778,6 +2816,14 @@ impl ClusterMap {
         }
         if v >= 25 {
             m.data_tls_encrypt = d.bool()?;
+        }
+        if v >= 26 {
+            for _ in 0..d.u32()? {
+                m.readonly.insert((d.u128()?, d.u32()?));
+            }
+            for _ in 0..d.u32()? {
+                m.readonly_buckets.insert((d.u32()?, d.str()?.to_string()));
+            }
         }
         d.finish()?;
         Ok(m)
@@ -4468,6 +4514,35 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert!(on.data_tls_encrypt && on.data_tls == DataTls::Allow);
         assert!(!file("data-tls allow").unwrap().data_tls_encrypt);
         assert!(file("data-tls allow encrypted").is_err());
+    }
+
+    /// D420: read-only volumes travel in format 26, only while there are
+    /// any; a map without them keeps the format before.
+    #[test]
+    fn read_only_volumes_travel_only_while_there_are_any() {
+        let mut m = ClusterMap::new(7);
+        let before = m.encode();
+        let set: BTreeSet<(u128, u32)> = [(0xabcd, 0), (0xabcd, 3), (9, 1)].into();
+        let buckets: BTreeSet<(u32, String)> = [(4, "logs".to_string())].into();
+        assert!(m.set_readonly(set.clone(), BTreeSet::new()));
+        assert!(
+            !m.set_readonly(set.clone(), BTreeSet::new()),
+            "the same sets change nothing"
+        );
+        let b = m.encode();
+        assert_eq!(u32::from_le_bytes(b[..4].try_into().unwrap()), 26);
+        let back = ClusterMap::decode(&b).unwrap();
+        assert_eq!(back.readonly, set);
+        assert_eq!(back, m);
+        // Buckets alone take the format too.
+        assert!(m.set_readonly(BTreeSet::new(), buckets.clone()));
+        let back = ClusterMap::decode(&m.encode()).unwrap();
+        assert_eq!(back.readonly_buckets, buckets);
+        assert_eq!(back, m);
+        assert!(m.set_readonly(BTreeSet::new(), BTreeSet::new()));
+        let mut plain = m.clone();
+        plain.epoch = 1;
+        assert_eq!(plain.encode(), before);
     }
 
     /// D384: revoked certificates travel in format 24, only while there
