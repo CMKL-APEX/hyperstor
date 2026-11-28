@@ -185,7 +185,7 @@ async fn prepare(
     tenant: u32,
     project: u32,
     name: &str,
-) -> Result<u32, ApiError> {
+) -> Result<(u32, u32), ApiError> {
     use hyperstor_api::proto::hyperstor::v1 as pb;
     let mut why = Vec::new();
     for a in addrs {
@@ -204,7 +204,10 @@ async fn prepare(
             })
             .await
         {
-            Ok(r) => return Ok(r.into_owned().data_pool),
+            Ok(r) => {
+                let r = r.into_owned();
+                return Ok((r.data_pool, r.project));
+            }
             Err(e) if hyperstor_api::reason_of(&e).as_deref() == Some("dataset_exists") => {
                 return Err(ApiError::new(
                     409,
@@ -1923,38 +1926,51 @@ async fn create_bucket(
             )
         });
     };
-    // Its name among the project's datasets and its pool (D387, D421).
-    let pool = match &state.api {
+    // Its name among the project's datasets, claimed (D387, D421, D424),
+    // and its pool. The record names the project the name is claimed in,
+    // so deleting the bucket frees it.
+    let (pool, claimed) = match &state.api {
         Some((addrs, tls)) => prepare(addrs, tls, tenant, project, name).await?,
-        None => 0,
+        None => (0, 0),
     };
+    let project = if claimed == 0 { project } else { claimed };
     let data = if pool == 0 { data } else { Pool::Id(pool) };
     let n = name.to_string();
     let r = state
         .reactors
         .call(move |s3| async move {
-            // A pool made since this reactor's map (a placement's or the
-            // `pool` property's) is in a newer one: asked for once.
-            let unknown = |p: &Pool| matches!(p, Pool::Id(id) if !s3.client().map().pools.contains_key(id));
-            if unknown(&data) || unknown(&index) {
-                let _ = s3.client().refresh_map().await;
+            let made = async {
+                // A pool made since this reactor's map (a placement's or
+                // the `pool` property's) is in a newer one: asked for once.
+                let unknown =
+                    |p: &Pool| matches!(p, Pool::Id(id) if !s3.client().map().pools.contains_key(id));
+                if unknown(&data) || unknown(&index) {
+                    let _ = s3.client().refresh_map().await;
+                }
+                let map = s3.client().map();
+                let id = |p: &Pool| match p {
+                    Pool::Id(id) => map.pools.contains_key(id).then_some(*id),
+                    Pool::Name(n) => map.pools.values().find(|q| &q.name == n).map(|q| q.id),
+                };
+                let (Some(d), Some(i)) = (id(&data), id(&index)) else {
+                    eprintln!(
+                        "hyperstor-s3: the pools for new buckets ({data:?}, {index:?}) aren't in the map"
+                    );
+                    return Err(ApiError::new(
+                        503,
+                        "ServiceUnavailable",
+                        "the bucket pools don't exist",
+                    ));
+                };
+                Ok(s3.create_bucket_in(&n, tenant, project, i, d).await)
             }
-            let map = s3.client().map();
-            let id = |p: &Pool| match p {
-                Pool::Id(id) => map.pools.contains_key(id).then_some(*id),
-                Pool::Name(n) => map.pools.values().find(|q| &q.name == n).map(|q| q.id),
-            };
-            let (Some(d), Some(i)) = (id(&data), id(&index)) else {
-                eprintln!(
-                    "hyperstor-s3: the pools for new buckets ({data:?}, {index:?}) aren't in the map"
-                );
-                return Err(ApiError::new(
-                    503,
-                    "ServiceUnavailable",
-                    "the bucket pools don't exist",
-                ));
-            };
-            Ok(s3.create_bucket_in(&n, tenant, project, i, d).await)
+            .await;
+            // Not made: its claim is freed rather than left to age.
+            if claimed != 0 && !matches!(made, Ok(Ok(_))) {
+                let names = crate::names::Names::open(s3.client().clone());
+                let _ = names.release(claimed, &n, crate::names::Owner::Bucket).await;
+            }
+            made
         })
         .await??;
     r?;

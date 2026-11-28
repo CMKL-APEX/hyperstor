@@ -673,7 +673,11 @@ hsfs inherit pool acme/ml           # back to the tenant's
   back from the trash whose name was taken, `NAME-restored`. Volumes in
   no project (glidex's image volumes) are not checked. Two datasets
   that shared a name before are listed as `name@<volume id>` and
-  `name@bucket`, and addressed that way, until one is renamed.
+  `name@bucket`, and addressed that way, until one is renamed. Several
+  creates of one name at once make one dataset; the others are refused.
+  A create that stops halfway (its member restarting) holds its name
+  for up to 10 minutes. Upgrade every map service member before relying
+  on this: one from before the index doesn't claim names.
 - **`pool`** acts now: a volume created without a pool goes to the pool
   its project's or tenant's `pool` names, else the first data pool; a
   new bucket's objects go there instead of its placement's data pool.

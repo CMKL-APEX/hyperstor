@@ -644,18 +644,27 @@ impl S3Service for Api {
         // create names it.
         let tenancy = self.tenancy().await?;
         let project = tenancy.bucket_project(req.tenant, req.project);
-        self.name_free(
+        let data_pool = self.default_pool(req.tenant, project).await?.unwrap_or(0);
+        // Claimed for the bucket the gateway makes next (D424); it frees
+        // the name if it doesn't, and deleting the bucket frees it later.
+        self.claim_name(
             req.tenant,
             project,
             req.name,
+            hyperstor_s3::names::Owner::Bucket,
             &who,
             "PrepareBucket",
             &target,
         )
         .await?;
-        let data_pool = self.default_pool(req.tenant, project).await?.unwrap_or(0);
+        let claimed = if req.name.is_empty() {
+            0
+        } else {
+            tenancy.project_of(tenancy.tenant_of(req.tenant, project), project)
+        };
         Ok(pb::PrepareBucketResponse {
             data_pool,
+            project: claimed,
             ..Default::default()
         }
         .into())

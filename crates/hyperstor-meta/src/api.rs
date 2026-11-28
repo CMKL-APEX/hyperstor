@@ -3569,9 +3569,6 @@ impl ClusterService for Api {
             },
             p => p,
         };
-        // A dataset's name is unique in its project (D360, I459).
-        self.name_free(tenant, project, req.name, &who, "CreateVolume", &target)
-            .await?;
         // Only in a pool the tenant's realm may use (D249, D258).
         let realms = self.realms().await?;
         let realm = realms.realm_of(tenant);
@@ -3588,6 +3585,21 @@ impl ClusterService for Api {
                 "pool_not_in_realm",
             ));
         }
+        // A dataset's name is unique in its project: claimed for the
+        // volume's id before it is made, freed if it isn't (D360, D424).
+        let id =
+            id.unwrap_or_else(|| u128::from_be_bytes(admin::random_bytes(16).try_into().unwrap()));
+        let owner = hyperstor_s3::names::Owner::Volume(id);
+        self.claim_name(
+            tenant,
+            project,
+            req.name,
+            owner,
+            &who,
+            "CreateVolume",
+            &target,
+        )
+        .await?;
         let r = match self.full_pools().await.remove(&pool) {
             Some(why) => Some(Err((crate::VolumeFault::Full, why))),
             None => {
@@ -3597,7 +3609,7 @@ impl ClusterService for Api {
                         pool,
                         size: req.size,
                         name: req.name.to_string(),
-                        id,
+                        id: Some(id),
                         tenant,
                         project,
                         reply,
@@ -3616,6 +3628,9 @@ impl ClusterService for Api {
                 None => "failed: map service stopped".into(),
             },
         );
+        if !matches!(r, Some(Ok(_))) {
+            self.release_name(tenant, project, req.name, owner).await;
+        }
         let v = volume_result(r)?;
         Ok(pb::CreateVolumeResponse {
             volume: buffa::MessageField::some(volume_pb(&v)),
@@ -3699,6 +3714,9 @@ impl ClusterService for Api {
             },
         );
         let v = volume_result(r)?;
+        // In the trash, its name is free in its project (D387, D424).
+        let owner = hyperstor_s3::names::Owner::Volume(v.id);
+        self.release_name(v.tenant, v.project, &v.name, owner).await;
         Ok(pb::DeleteVolumeResponse {
             purge_unix: self.purge_at(v.pool, v.trashed_unix),
             ..Default::default()
@@ -3937,13 +3955,24 @@ impl ClusterService for Api {
         }
         // The copy is a dataset of the volume's project: its name is
         // unique there, so one named by none is `NAME-copy` (D360, I459).
+        let owner = hyperstor_s3::names::Owner::Volume(new_id);
         let name = if req.name.is_empty() {
-            self.free_name(v.tenant, v.project, &v.name, "copy").await?
+            self.free_name(v.tenant, v.project, &v.name, "copy", owner)
+                .await?
         } else {
-            self.name_free(v.tenant, v.project, req.name, &who, "CopyVolume", &target)
-                .await?;
+            self.claim_name(
+                v.tenant,
+                v.project,
+                req.name,
+                owner,
+                &who,
+                "CopyVolume",
+                &target,
+            )
+            .await?;
             req.name.to_string()
         };
+        let claimed = name.clone();
         let op = self
             .start_op(
                 &who,
@@ -3959,7 +3988,15 @@ impl ClusterService for Api {
                 format!("copying {} to pool {}", v.name, req.pool),
                 Some(v.tenant),
             )
-            .await?;
+            .await;
+        let op = match op {
+            Ok(op) => op,
+            Err(e) => {
+                self.release_name(v.tenant, v.project, &claimed, owner)
+                    .await;
+                return Err(e);
+            }
+        };
         Ok(pb::CopyVolumeResponse {
             volume: Some(volume_pb(&v)).into(),
             new_id: format!("{new_id:032x}"),
@@ -4312,11 +4349,17 @@ impl Api {
             self.not_readonly(&self.volume_any(*id).await?, &who, rpc, &target)
                 .await?;
         }
-        // A clone is a dataset of its project: its name is unique there
-        // (D360, I459).
+        // A clone is a dataset of its project: its name is unique there,
+        // claimed for the clone's id before it is made and freed if it
+        // isn't (D360, D424).
+        let mut claimed = None;
         if let crate::SnapOp::Clone {
-            id, name, owner, ..
-        } = &op
+            id,
+            name,
+            owner,
+            new_id,
+            ..
+        } = &mut op
         {
             let (tenant, project) = match owner {
                 Some(o) => *o,
@@ -4325,8 +4368,13 @@ impl Api {
                     (v.tenant, v.project)
                 }
             };
-            self.name_free(tenant, project, name, &who, rpc, &target)
+            let clone = *new_id.get_or_insert_with(|| {
+                u128::from_be_bytes(admin::random_bytes(16).try_into().unwrap())
+            });
+            let held = hyperstor_s3::names::Owner::Volume(clone);
+            self.claim_name(tenant, project, name, held, &who, rpc, &target)
                 .await?;
+            claimed = Some((tenant, project, name.clone(), held));
         }
         // Snapshots and clones make more to keep: none in a full pool.
         let full = match &op {
@@ -4357,6 +4405,11 @@ impl Api {
                     None => "failed: map service stopped".into(),
                 },
             );
+        }
+        if let Some((tenant, project, name, owner)) = claimed
+            && !matches!(r, Some(Ok(_)))
+        {
+            self.release_name(tenant, project, &name, owner).await;
         }
         volume_result(r)
     }
@@ -4637,6 +4690,7 @@ pub fn spawn(
                 let router = tenants::register(api.clone(), router);
                 let router = datasets::register(api.clone(), router);
                 tokio::spawn(api.clone().readonly_upkeep());
+                tokio::spawn(api.clone().names_upkeep());
                 let router = trust::register(api.clone(), router);
                 let router = admin::register(api.clone(), router);
                 let service = connectrpc::ConnectRpcService::new(router);

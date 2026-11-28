@@ -10,11 +10,12 @@ use super::realms::Scope;
 use super::{Api, audit, volume_result, with_reason};
 use crate::datasets::{self, Entry, Id, Kind, Level, Path, Props, Source, Unresolved};
 use crate::tenancy::Tenancy;
-use crate::{Admin, BucketDone, BucketOp};
+use crate::{Admin, BucketDone, BucketOp, NameDone, NameOp};
 use connectrpc::{ConnectError, RequestContext, ServiceRequest, ServiceResult};
 use hyperstor_api::proto::hyperstor::v1 as pb;
 use hyperstor_api::{DatasetService, DatasetServiceExt};
 use hyperstor_reactor::chan::oneshot;
+use hyperstor_s3::names::{Claim, Holder, Owner};
 use std::sync::Arc;
 
 pub(super) fn register(api: Arc<Api>, router: connectrpc::Router) -> connectrpc::Router {
@@ -85,13 +86,16 @@ impl Api {
         Ok(out)
     }
 
-    /// Refuses a new dataset of `tenant`'s `project` named `name` when
-    /// another live one there has it (D360, I459), audited as `op`.
-    pub(super) async fn name_free(
+    /// Claims `name` in `tenant`'s `project` for `owner` before it is made
+    /// (D360, D424), refusing it when another live dataset there has it,
+    /// audited as `op`. Datasets in no project, or unnamed, claim nothing.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn claim_name(
         &self,
         tenant: u32,
         project: u32,
         name: &str,
+        owner: Owner,
         who: &str,
         op: &str,
         target: &str,
@@ -102,8 +106,10 @@ impl Api {
         if project == 0 || name.is_empty() {
             return Ok(());
         }
-        let entries = self.datasets(&tenancy).await?;
-        match datasets::clash(&tenancy, &entries, tenant, project, name) {
+        match self
+            .try_claim(&tenancy, tenant, project, name, owner)
+            .await?
+        {
             None => Ok(()),
             Some(why) => {
                 audit(who, op, target, &format!("failed: {why}"));
@@ -117,24 +123,189 @@ impl Api {
         }
     }
 
+    /// Claims `name` in `project` (resolved) for `owner`, or says why not.
+    /// A row held for a dataset that doesn't exist, past its grace, is
+    /// taken over; until the index is complete the datasets are asked too.
+    async fn try_claim(
+        &self,
+        tenancy: &Tenancy,
+        tenant: u32,
+        project: u32,
+        name: &str,
+        owner: Owner,
+    ) -> Result<Option<String>, ConnectError> {
+        let new = Holder {
+            owner,
+            claimed_ms: hyperstor_s3::now_ms(),
+        };
+        let mut replace = None;
+        for _ in 0..8 {
+            let claim = NameOp::Claim {
+                project,
+                name: name.into(),
+                new,
+                replace,
+            };
+            match self.name_op(claim).await? {
+                NameDone::Claim(Claim::Claimed) => {
+                    if !self.names_complete().await? {
+                        let entries = self.datasets(tenancy).await?;
+                        if let Some(why) = datasets::clash(tenancy, &entries, tenant, project, name)
+                        {
+                            self.release_resolved(project, name, owner).await;
+                            return Ok(Some(why));
+                        }
+                    }
+                    return Ok(None);
+                }
+                NameDone::Raced => replace = None,
+                NameDone::Claim(Claim::Held(h)) => {
+                    let entries = self.datasets(tenancy).await?;
+                    if let Some(why) = datasets::clash(tenancy, &entries, tenant, project, name) {
+                        return Ok(Some(why));
+                    }
+                    if h.fresh(new.claimed_ms) && h.owner != owner {
+                        return Ok(Some(format!("{name:?} is being made in project {project}")));
+                    }
+                    replace = Some(h);
+                }
+                d => return Err(ConnectError::internal(format!("a claim answered {d:?}"))),
+            }
+        }
+        Err(ConnectError::unavailable(format!(
+            "name {name:?} kept changing in project {project}"
+        )))
+    }
+
+    /// Frees `name` in `tenant`'s `project` if `owner` holds it (D424): its
+    /// dataset was deleted, or never made. A failure is only logged: the
+    /// next claim of the name finds its dataset gone.
+    pub(super) async fn release_name(&self, tenant: u32, project: u32, name: &str, owner: Owner) {
+        let Ok(tenancy) = self.tenancy().await else {
+            return;
+        };
+        let tenant = tenancy.tenant_of(tenant, project);
+        let project = tenancy.project_of(tenant, project);
+        if project != 0 && !name.is_empty() {
+            self.release_resolved(project, name, owner).await;
+        }
+    }
+
+    async fn release_resolved(&self, project: u32, name: &str, owner: Owner) {
+        let release = NameOp::Release {
+            project,
+            name: name.into(),
+            owner,
+        };
+        if let Err(e) = self.name_op(release).await {
+            eprintln!(
+                "hyperstor-meta: name {name:?} of project {project} not freed: {}",
+                e.message.as_deref().unwrap_or("")
+            );
+        }
+    }
+
     /// The name a dataset of `tenant`'s `project` takes in place of `name`
-    /// when its caller named none: `name-SUFFIX`, `-2`… if `name` is taken
-    /// in the project, else `name`.
+    /// when its caller named none, claimed for `owner`: `name-SUFFIX`,
+    /// `-2`… if `name` is taken in the project, else `name`.
     pub(super) async fn free_name(
         &self,
         tenant: u32,
         project: u32,
         name: &str,
         suffix: &str,
+        owner: Owner,
     ) -> Result<String, ConnectError> {
         let tenancy = self.tenancy().await?;
         let tenant = tenancy.tenant_of(tenant, project);
         let project = tenancy.project_of(tenant, project);
-        let entries = self.datasets(&tenancy).await?;
-        if datasets::clash(&tenancy, &entries, tenant, project, name).is_none() {
-            return Ok(name.into());
+        for _ in 0..8 {
+            let entries = self.datasets(&tenancy).await?;
+            let pick = if datasets::clash(&tenancy, &entries, tenant, project, name).is_none() {
+                name.to_string()
+            } else {
+                datasets::free_name(&entries, tenant, project, name, suffix)
+            };
+            if project == 0
+                || self
+                    .try_claim(&tenancy, tenant, project, &pick, owner)
+                    .await?
+                    .is_none()
+            {
+                return Ok(pick);
+            }
         }
-        Ok(datasets::free_name(&entries, tenant, project, name, suffix))
+        Err(ConnectError::unavailable(format!(
+            "no free name for {name:?} in project {project}"
+        )))
+    }
+
+    async fn name_op(&self, op: NameOp) -> Result<NameDone, ConnectError> {
+        let (reply, rx) = oneshot();
+        self.tx
+            .send(Admin::Names { op, reply })
+            .map_err(|_| ConnectError::unavailable("map service stopped"))?;
+        volume_result(rx.recv().await)
+    }
+
+    async fn names_complete(&self) -> Result<bool, ConnectError> {
+        match self.name_op(NameOp::Complete).await? {
+            NameDone::Complete(c) => Ok(c),
+            d => Err(ConnectError::internal(format!(
+                "a name check answered {d:?}"
+            ))),
+        }
+    }
+
+    /// Indexes the datasets made before the name index (D424), on the
+    /// leader, until it is complete: each named one of a project gets its
+    /// row, with no grace, unless someone holds the name already.
+    pub(super) async fn names_upkeep(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            if !self.admin.runner.leads().await {
+                continue;
+            }
+            match self.index_names().await {
+                Ok(()) => return,
+                Err(e) => eprintln!(
+                    "hyperstor-meta: names not indexed yet: {}",
+                    e.message.as_deref().unwrap_or("")
+                ),
+            }
+        }
+    }
+
+    async fn index_names(&self) -> Result<(), ConnectError> {
+        if self.names_complete().await? {
+            return Ok(());
+        }
+        let tenancy = self.tenancy().await?;
+        let mut n = 0;
+        for e in self.datasets(&tenancy).await? {
+            if e.project == 0 || e.name.is_empty() {
+                continue;
+            }
+            let owner = match e.id {
+                Id::Volume(id) => Owner::Volume(id),
+                Id::Bucket(_) => Owner::Bucket,
+            };
+            let claim = NameOp::Claim {
+                project: e.project,
+                name: e.name.clone(),
+                new: Holder {
+                    owner,
+                    claimed_ms: 0,
+                },
+                replace: None,
+            };
+            if let NameDone::Claim(Claim::Claimed) = self.name_op(claim).await? {
+                n += 1;
+            }
+        }
+        self.name_op(NameOp::MarkComplete).await?;
+        eprintln!("hyperstor-meta: dataset names indexed ({n} added)");
+        Ok(())
     }
 
     /// The pool a new volume of `tenant`'s `project` goes to when its

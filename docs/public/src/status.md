@@ -214,6 +214,7 @@ covered by tests that run on every change.
 | hsfs H0: a pool flag requires capabilities (D371); clients show sealed capabilities on each connection and reactors serve a flagged pool's chunks only as granted, read-only where so; nothing issues capabilities yet | In progress |
 | hsfs H1, first part: dataset names `tenant/project/name` over volumes and buckets (qualified where a project's names repeat), every property of §32.3 set on a tenant, project or dataset and inherited with its source, `pool` choosing a volume's pool, names unique in a project (copies `-copy`, restores `-restored`), DatasetService, `hsctl dataset` and `hsfs`; `readonly`, bucket names and the other properties not enforced yet | In progress |
 | hsfs H1, second part: `readonly=on` on a volume (set on it or inherited) makes its chunks' primaries refuse clients' writes while it still reads, and on a bucket its gateways refuse writes; both in the cluster map; expand, rollback and flatten refused; CreateBucket asks the map service (PrepareBucket) for the name among the project's datasets and the `pool` | Done |
+| hsfs H1: a dataset's name claimed in a key-value index (store 2) before it is made, by any member, and freed when it is deleted or not made; stale claims taken over; datasets from before the index indexed by the leader | Done |
 
 ## HS15: Tenancy: quotas and fair share between tenants
 

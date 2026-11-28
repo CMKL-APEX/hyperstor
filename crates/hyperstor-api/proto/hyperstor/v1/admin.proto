@@ -79,6 +79,9 @@ message PrepareBucketResponse {
   // The pool for its objects; 0: the placement's. `already_exists`
   // (`dataset_exists`) when another dataset of the project has the name.
   uint32 data_pool = 1 [json_name = "data_pool"];
+  // The project whose name it claimed for the bucket (D424), for the
+  // bucket's record, so deleting it frees the name; 0: none claimed.
+  uint32 project = 2;
 }
 
 // Realms (20-tenants.md §24.8, 04-decisions.md D248–D253): groups of
