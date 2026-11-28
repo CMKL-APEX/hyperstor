@@ -450,6 +450,47 @@ pub struct IndexStats {
     pub map_bytes: u64,
 }
 
+/// The log read ahead in large reads while it is scanned at open (D417):
+/// a record's header and then its body were each a synchronous read, 8–13 s
+/// for a quarter of a 1 GiB log on an NVMe file (02-benchmarks.md,
+/// 2026-11-28). The window never reads past `end`, where the ring's pass
+/// from the head ends.
+struct ReadAhead {
+    buf: AlignedBuf,
+    /// The LSN of the window's first block, and its blocks.
+    at: u64,
+    len: u64,
+    end: u64,
+}
+
+impl ReadAhead {
+    /// 16 MiB a read, as [`Shard::header_after`] reads the rest of the ring.
+    const CHUNK: u64 = 4096;
+
+    fn new(end: u64) -> Self {
+        Self {
+            buf: AlignedBuf::zeroed(0),
+            at: 0,
+            len: 0,
+            end,
+        }
+    }
+
+    /// Log blocks `[lsn, lsn + n)`, which must end by `end`.
+    fn blocks(&mut self, sh: &Shard, lsn: u64, n: u64) -> Result<&[u8], EngineError> {
+        if lsn < self.at || lsn + n > self.at + self.len {
+            let len = n.max(Self::CHUNK).min(self.end - lsn);
+            if self.buf.len() < len as usize * BLOCK {
+                self.buf = AlignedBuf::zeroed(len as usize * BLOCK);
+            }
+            sh.read_log_into(lsn, &mut self.buf[..len as usize * BLOCK])?;
+            (self.at, self.len) = (lsn, len);
+        }
+        let off = (lsn - self.at) as usize * BLOCK;
+        Ok(&self.buf[off..off + n as usize * BLOCK])
+    }
+}
+
 /// One shard of a device.
 /// One round of a commit, planned by [`Shard::commit_begin`] and waiting
 /// for its writes (I199).
@@ -1025,20 +1066,19 @@ impl Shard {
     }
 
     fn rebuild_allocator(&mut self) -> Result<(), EngineError> {
-        let mut a = Allocator::new(self.region.data_start(), self.region.data_blocks());
         let mut used: Vec<(u64, u64)> = self.index.used_extents().collect();
         if let Some(c) = &self.ckpt {
             used.extend(c.runs.iter().copied());
         }
         used.extend(self.legacy_blob.iter().copied());
         used.extend(self.pages.values().flat_map(|p| p.runs.iter().copied()));
-        for (s, n) in used {
-            if !a.reserve(s, n) {
-                return Err(EngineError::Corrupt(format!(
+        // One pass over the extents sorted (D417).
+        let mut a = Allocator::from_used(self.region.data_start(), self.region.data_blocks(), used)
+            .map_err(|(s, n)| {
+                EngineError::Corrupt(format!(
                     "extent {s}+{n} is outside the data region or used twice"
-                )));
-            }
-        }
+                ))
+            })?;
         // The directory's copy last, and only if its blocks are free: a
         // build from before copies reads past it, and may have written
         // over it before this one opened the device again (D269).
@@ -1259,9 +1299,9 @@ impl Shard {
         let mut out = Vec::new();
         let mut lsn = self.head_lsn;
         let mut chain = self.chain;
+        let mut ahead = ReadAhead::new(self.head_lsn + self.ring);
         while lsn - self.head_lsn < self.ring {
-            let hdr = self.read_log(lsn, 1)?;
-            let Some(h) = self.header(&hdr, lsn) else {
+            let Some(h) = self.header(ahead.blocks(self, lsn, 1)?, lsn) else {
                 break;
             };
             let nblocks = h.nblocks;
@@ -1272,11 +1312,7 @@ impl Shard {
             {
                 break;
             }
-            let full = if nblocks == 1 {
-                hdr
-            } else {
-                self.read_log(lsn, nblocks)?
-            };
+            let full = ahead.blocks(self, lsn, nblocks)?;
             let payload = &full[self.hlen()..self.hlen() + h.plen];
             if crc32c_append(self.salt, payload) != h.pcrc {
                 break;

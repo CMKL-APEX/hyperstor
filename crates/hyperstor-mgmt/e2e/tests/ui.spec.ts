@@ -1,7 +1,8 @@
 // The web UI in a browser against a real cluster (global-setup.ts): the
 // first administrator's claim, roles, the pages and their actions,
 // tokens shown once, single sign-on, logging out, and tenancy (realms,
-// tenants, projects, and a fake glidex directory's records and offers). In order: one
+// tenants, projects, and fake glidex directories' records and offers, one
+// trusted as a whole). In order: one
 // cluster, its people and volumes carry over.
 import { expect, test, type Page } from "@playwright/test";
 
@@ -528,6 +529,40 @@ test("the tenant and project pickers show theirs, and new volumes go there", asy
   await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
 });
 
+test("someone with roles in a tenant and a project only sees theirs", async ({ page }) => {
+  // As a glidex directory's people have them (D321): no realm to act in.
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByLabel("Roles in realms").fill("storage-admin@tenant:lab, viewer@project:lab/web");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("storage-admin@tenant:lab");
+  await page.getByRole("button", { name: "Log out" }).click();
+  await logIn(page, "bob");
+  // No realm picked for them, and every call answers (it was refused
+  // with "a realm is 1-63 of a-z, 0-9 and -").
+  await expect(page.getByLabel("Realm")).toHaveCount(0);
+  for (const hidden of ["Overview", "Nodes", "Pools", "Members", "Audit"]) {
+    await expect(page.getByRole("link", { name: hidden })).toHaveCount(0);
+  }
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-lab-default-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-lab-web-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create volume" })).toBeVisible();
+  await expect(page.getByText("invalid_argument")).toHaveCount(0);
+  await page.getByRole("link", { name: "Security" }).click();
+  await expect(page.getByRole("tab", { name: "Join tokens" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Log out" }).click();
+  // Back to none, for the tests after.
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByLabel("Roles in realms").fill("");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("none");
+});
+
 test("a browser holds two accounts and switches between them", async ({ page }) => {
   // A password's account and the identity provider's: one each.
   await logIn(page, "ann");
@@ -550,6 +585,24 @@ test("a browser holds two accounts and switches between them", async ({ page }) 
   await page.getByRole("menuitem", { name: "Sign out of all accounts" }).click();
   await expect(page.getByLabel("Username")).toBeVisible();
   await expect(page.getByTestId("held-accounts")).toHaveCount(0);
+});
+
+test("someone whose name has an @ is given roles and deleted", async ({ page }) => {
+  // The identity provider's person is named by their email; a glidex
+  // directory's by <id>@<realm>. The UI puts the name in the path,
+  // encoded, which mgmt read undecoded ("not a user name").
+  const sso = process.env.HS_SSO!;
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  const row = page.getByTestId(`person-${sso}`);
+  await row.getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByRole("checkbox", { name: "viewer" }).check();
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(row).toContainText("viewer");
+  await row.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(row).toHaveCount(0);
 });
 
 /** The tenancy page's tab `name`. */
@@ -775,6 +828,80 @@ test("tenancy: a directory's records are read-only, offers are shown once and re
   await page.getByTestId("offer-bio").getByRole("button", { name: "Revoke" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
   await expect(page.getByTestId("offer-bio")).toContainText("revoked");
+});
+
+test("tenancy: a directory trusted as a whole: opt-ins decided, its setting changed, offered and ended", async ({ page }) => {
+  // ui-e2e-cluster's school: trusted as a whole (D345), opt-ins held for
+  // approval (D346), each capped at 1 GiB (D347); art and music wait.
+  await logIn(page, "ann");
+  await tenancy(page, "Directories");
+  const whole = page.getByTestId("whole-school");
+  const dialog = page.getByRole("dialog");
+  await expect(whole).toContainText("trusted as a whole");
+  await expect(whole).toContainText("approval");
+  await expect(whole).toContainText("1.0 GiB");
+  await expect(page.getByTestId("admission-art")).toContainText("pending");
+  // Approved: its tenant made here with a copy of the default caps.
+  await page.getByTestId("admission-art").getByRole("button", { name: "Approve" }).click();
+  await expect(dialog).toContainText(/hyperstorctl admission approve --directory \S+ --tenant art/);
+  await dialog.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByTestId("admission-art")).toHaveCount(0);
+  await expect(page.getByTestId("trusted-art")).toContainText("caps");
+  await expect(page.getByTestId("trusted-art")).toContainText("1.0 GiB");
+  // Refused: listed, with nothing more to decide.
+  await page.getByTestId("admission-music").getByRole("button", { name: "Refuse" }).click();
+  await expect(dialog).toContainText(/hyperstorctl admission reject --directory \S+ --tenant music/);
+  await dialog.getByRole("button", { name: "Refuse" }).click();
+  await expect(page.getByTestId("admission-music")).toContainText("refused");
+  await expect(page.getByTestId("admission-music").getByRole("button")).toHaveCount(0);
+  // The setting and default caps changed; art keeps its own (D347).
+  await whole.getByRole("button", { name: "Change admission" }).click();
+  const caps = dialog.getByLabel(/^Default caps/);
+  const pool = (await caps.inputValue()).split("=")[0];
+  expect(pool).not.toBe("");
+  await dialog.getByLabel("Opt-ins").selectOption("open");
+  await caps.fill("nonsense");
+  await expect(dialog.getByRole("button", { name: "Save" })).toBeDisabled();
+  await caps.fill(`${pool}=2G`);
+  await expect(dialog).toContainText(`--admit open --cap ${pool}=${2n << 30n}`);
+  await dialog.getByRole("button", { name: "Save" }).click();
+  await expect(whole).toContainText("each is admitted at once");
+  await expect(whole).toContainText("2.0 GiB");
+  await expect(page.getByTestId("trusted-art")).toContainText("1.0 GiB");
+  // An offer to another whole directory, its token shown once.
+  await page.getByRole("button", { name: "Make an offer" }).click();
+  await dialog.getByLabel("The whole directory").check();
+  await expect(dialog.getByLabel(/^glidex tenant/)).toHaveCount(0);
+  await dialog.getByLabel(/^Directory/).fill("https://id.example/d/campus");
+  await expect(page.getByTestId("whole-offer-note")).toContainText("choose approval");
+  await dialog.getByLabel("Opt-ins").selectOption("approval");
+  await expect(page.getByTestId("whole-offer-note")).not.toContainText("choose approval");
+  await dialog.getByLabel(/^Default caps/).fill(`${pool}=5G`);
+  await expect(dialog).toContainText("hyperstorctl admission offer --directory https://id.example/d/campus --url https://");
+  await expect(dialog).toContainText(`--admit approval --cap ${pool}=${5n << 30n}`);
+  await dialog.getByRole("button", { name: "Make" }).click();
+  await expect(page.getByTestId("offer-made")).toContainText("the whole directory");
+  await expect(dialog).toContainText("gxctl directory trust-cluster --offer TOKEN");
+  const token = await dialog.getByLabel("offer token").inputValue();
+  expect(token).toMatch(/^gxo_/);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  const offer = page.getByTestId("offer-directory-campus");
+  await expect(offer).toContainText("the whole directory (approval)");
+  await expect(offer).toContainText("open");
+  expect(await page.content()).not.toContain(token);
+  await offer.getByRole("button", { name: "Revoke" }).click();
+  await dialog.getByRole("button", { name: "Revoke" }).click();
+  await expect(offer).toContainText("revoked");
+  // Ended as a whole: no longer trusted; art stays, unlinked (D316).
+  await whole.getByRole("button", { name: "End trust in the directory" }).click();
+  await expect(dialog).toContainText(/hyperstorctl admission end --directory \S+/);
+  await expect(dialog).not.toContainText("--tenant");
+  await dialog.getByRole("button", { name: "End trust" }).click();
+  await expect(page.getByTestId("directory-school")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Tenants & projects" }).click();
+  const art = page.getByTestId("tree-tenant-art");
+  await expect(art).toBeVisible();
+  await expect(art).not.toContainText("from directory");
 });
 
 test("tenancy: a viewer sees realms and tenants with no actions", async ({ page }) => {

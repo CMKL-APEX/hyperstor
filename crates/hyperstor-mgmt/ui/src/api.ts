@@ -329,9 +329,25 @@ export function grantOf(g: string): [string, string | null] {
   return i < 0 ? [g, null] : [g.slice(0, i), g.slice(i + 1)];
 }
 
-/** The realms a person holds grants in, by name. */
+/** Whether a grant's place is a tenant or a project (`tenant:lab`,
+ * `project:lab/web`, D301) rather than a realm. */
+export function inTenancy(place: string | null): boolean {
+  return place != null && (place.startsWith("tenant:") || place.startsWith("project:"));
+}
+
+/** The realms a person holds grants in, by name: not their tenants' or
+ * projects', which aren't realms one can act in (D265). */
 export function grantRealms(roles: string[]): string[] {
-  return [...new Set(roles.map((g) => grantOf(g)[1]).filter((r): r is string => r != null))].sort();
+  return [
+    ...new Set(roles.map((g) => grantOf(g)[1]).filter((r): r is string => r != null && !inTenancy(r))),
+  ].sort();
+}
+
+/** Whether a person's grants are all in tenants or projects: no role
+ * cluster-wide or in a realm. They see a realm's pages, across their
+ * tenants and projects, without acting in a realm. */
+export function onlyInTenancy(roles: string[]): boolean {
+  return roles.length > 0 && roles.every((g) => inTenancy(grantOf(g)[1]));
 }
 
 /** The roles in effect acting in `realm` (null: the cluster as a whole):
@@ -340,6 +356,15 @@ export function rolesIn(roles: string[], realm: string | null): string[] {
   return roles
     .map(grantOf)
     .filter(([, r]) => r == null || r === realm)
+    .map(([role]) => role);
+}
+
+/** The roles that may allow an action acting in `realm`: rolesIn's, and
+ * those in tenants and projects, which mgmt checks against each row. */
+export function rolesMaybe(roles: string[], realm: string | null): string[] {
+  return roles
+    .map(grantOf)
+    .filter(([, r]) => r == null || r === realm || inTenancy(r))
     .map(([role]) => role);
 }
 

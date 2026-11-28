@@ -42,7 +42,7 @@ design is split by topic, with section numbers kept across files.
   what was built, the decisions taken while building it (I1…), what to
   discuss with the owner, and bugs the tests found;
   `spec/02-benchmarks.md` has the measurements.
-- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127–D144, D147–D149, D150–D153, D154–D202, D214, D218–D230, D234, D235, D243–D275, D283, D286, D359–D404, D420, D421, D424 and D27 in 04-decisions.md, and the
+- **Settled with the project owner:** D1–D19, D38–D55, D61–D68, D69–D126, D127–D144, D147–D149, D150–D153, D154–D202, D214, D218–D230, D234, D235, D243–D275, D283, D286, D359–D404, D420, D421, D423, D424 and D27 in 04-decisions.md, and the
   choices behind D28–D31 and D34–D37; I427 and I430 (I425 retired by
   D355) and host checks G60 and G61.
 - **Open for the owner's review:** D20–D26, D28–D37, D56–D60 and D66's merge

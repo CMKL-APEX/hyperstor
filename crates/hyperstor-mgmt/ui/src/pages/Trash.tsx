@@ -5,7 +5,7 @@
 import { useState } from "react";
 import { cluster, trash } from "../api";
 import type { TrashItem } from "../gen/hyperstor/v1/cluster_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, realmOf, td, useCan, usePoll, useRealm } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, realmOf, td, useCan, usePoll, useNarrow, useRealm } from "../ui";
 
 type Dialog = { kind: "restore" | "purge"; item: TrashItem } | { kind: "settings"; pool: number };
 
@@ -69,7 +69,8 @@ export default function Trash() {
   const can = useCan();
   const items = usePoll(async () => (await trash.listTrash({ pool: 0 })).items, 5000);
   const realm = useRealm();
-  const status = usePoll(async () => (realm ? null : await cluster.getStatus({})), 0);
+  const narrow = useNarrow();
+  const status = usePoll(async () => (narrow ? null : await cluster.getStatus({})), 0);
   const pools = (status.data?.pools ?? []).filter((p) => p.id !== 0);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [name, setName] = useState("");

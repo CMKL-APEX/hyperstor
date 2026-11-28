@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Modal, TokenReveal } from "@glidex/ui-kit";
 import { cluster, inScope, realms, s3, tenants } from "../api";
 import type { S3Bucket } from "../gen/hyperstor/v1/admin_pb";
-import { ActionDialog, Button, Card, Cli, ErrorText, Field, Table, fmtBytes, fmtTime, input, td, useCan, usePoll, useRealm, useScope } from "../ui";
+import { ActionDialog, Button, Card, Cli, ErrorText, Field, Table, fmtBytes, fmtTime, input, td, useCan, usePoll, useNarrow, useRealm, useScope } from "../ui";
 
 const named = (b: S3Bucket) => `${b.tenant}/${b.name}`;
 /** A pool by name, or by id when it was deleted since. */
@@ -189,9 +189,10 @@ function Placements({ realmNames }: { realmNames: string[] }) {
   const can = useCan();
   const list = usePoll(async () => (await s3.listS3Placements({})).placements, 0);
   const acting = useRealm();
+  const narrow = useNarrow();
   // Acting in a realm (D265), the pools it may use.
   const status = usePoll(async () => {
-    if (!acting) return (await cluster.getStatus({})).pools.filter((p) => p.id !== 0).map((p) => p.name);
+    if (!narrow) return (await cluster.getStatus({})).pools.filter((p) => p.id !== 0).map((p) => p.name);
     const r = await realms.listRealms({});
     return [...r.realms.flatMap((x) => x.pools), ...r.openPools];
   }, 0);

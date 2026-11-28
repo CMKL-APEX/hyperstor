@@ -2014,6 +2014,19 @@ hosts' kernel (I460).
 | 366 | How both ends agree: either may ask, in protocol version 12, and the answerer says which; older callers get plaintext in `allow` and are refused in `require` (recommended); or the caller decides alone | Either may ask | D406 |
 | 367 | Kernel TLS first, since G68 holds and every call site then stays as it is, with records in userspace only if a host lacks it (recommended); or records in userspace first, as §33.9 had it | Kernel TLS first | D407 |
 
+## Per-project storage in trust reports (#390, 2026-11-28)
+
+The trust report sent glidex's per-project list (glidex D89) empty since
+the repin to glidex v0.0.8 (I415), so the directory blocked no
+project's delete. Asked how the list should match hyperstor's own
+refusals (`holds()`), the owner chose as recommended:
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 381 | Trash: volumes in the trash count in a project's `volumes`, so a project holding only trash blocks its delete, the tenant totals unchanged (recommended); or trash doesn't count | Trash counts | D423 |
+| 382 | S3 keys: not counted per project, as a key is the tenant's (recommended); or a key counts to its default project | Not per project | D423 |
+| 383 | Freshness: a report may be 30 s old, accepted and noted as in glidex D89 (recommended); or a call to the cluster at delete time | Accepted | D423 |
+
 ## The on-device index's layout: measured (2026-11-27)
 
 Proposed refinements to D43 (range keys, checksums out of the leaves,

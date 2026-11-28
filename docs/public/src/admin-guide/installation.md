@@ -521,7 +521,8 @@ hyperstorctl cluster set-operator --tenant 12
 A directory with many tenants (a university and its labs) would take an
 offer per tenant. Instead, offer the directory itself, once: its owner
 redeems the offer, and its tenants then opt in by themselves, with no
-offer each.
+offer each. The Tenancy page's Directories tab does the same as these
+commands, for security administrators.
 
 ```bash
 # An offer to the whole directory: no --tenant.
