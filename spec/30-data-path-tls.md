@@ -5,7 +5,7 @@ end, with certificates of the cluster CA. Part of the hyperstor design;
 sections keep their numbers across documents, so `§N` in one document is
 the same section everywhere (see [README.md](README.md)).
 
-Status: **design.** D372–D380, D382–D386 and D405–D407 are settled with the owner
+Status: **design.** D372–D380, D382–D386 and D405–D407 are settled with the owner, and D414 is open for review
 (05-decision-log.md points 335–347, 349, 350 and 365–367, 2026-11-25 to 27). G67 and G68
 hold on one host (I445, I460); G69 is measured (I462). Stages T0
 and T1 are built (01-implementation-notes.md I444, I445): connections
@@ -231,7 +231,7 @@ Milestone HS20 (17-milestones.md §21).
   at 1 MiB and 17–23% fewer 4 KiB requests; userspace records aren't
   built (D407).
 
-### 33.11 Encryption (D405–D407)
+### 33.11 Encryption (D405–D407, D414)
 
 **When.** A cluster setting beside the mode (D405): `hyperstorctl
 data-tls set --mode allow --encrypt on`, or `data-tls allow encrypt` in
@@ -251,7 +251,10 @@ TLS unless its address is on a network marked trusted (26-networks.md
   would encrypt every upgraded cluster at the roll, fast fabrics too.
 - **Turning it on** is refused while a storage node that is up runs a
   build from before version 12: it couldn't keep a session, nor read
-  the map's format 25.
+  the map's format 25. It is also refused (D414, I463) in mode `off`,
+  while the map service member's kernel lacks TLS, and while a node
+  that is up doesn't keep an encrypted session the member asks for and
+  answer a ping through it; such nodes are named.
 
 **Who decides** (D406; protocol version 12):
 
@@ -282,6 +285,12 @@ kernel: `TCP_ULP tls`, then `TLS_TX` and `TLS_RX`, for AES-128-GCM,
 AES-256-GCM or ChaCha20-Poly1305. The reactor's sends and receives then
 carry records unchanged, as G68 showed. A host whose kernel can't take
 them fails the session, and the connection is closed.
+
+- **The `tls` module** (D414). Linux loads it on demand only for a
+  process with CAP_NET_ADMIN, which the services lack, so
+  `hyperstor-install` loads it and lists it in
+  `/etc/modules-load.d/hyperstor-tls.conf`; `hyperstor-install check`
+  reports it as `ktls`.
 
 - **Kept connections.** One made in plaintext before its address was
   encrypted is made again at its next use, by every caller whose map

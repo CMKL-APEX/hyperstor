@@ -2574,7 +2574,7 @@ impl ShardState {
                         &self.map(),
                         "this node doesn't start TLS: it has no identity, or the cluster's mode is off",
                     );
-                    match hyperstor_client::rpc::answer_start_tls(
+                    let answered = hyperstor_client::rpc::answer_start_tls(
                         &s,
                         &tx,
                         h.req,
@@ -2582,8 +2582,25 @@ impl ShardState {
                         no,
                         offer,
                     )
-                    .await
-                    {
+                    .await;
+                    // The test hook: a kernel without TLS fails to keep
+                    // the session (D414).
+                    let answered = match answered {
+                        Ok(Some(p))
+                            if p.encrypted
+                                && self
+                                    .older
+                                    .borrow()
+                                    .as_ref()
+                                    .is_some_and(|(n, o)| o.no_ktls(*n)) =>
+                        {
+                            Err(hyperstor_client::rpc::RpcError::Protocol(
+                                "kernel TLS: No such file or directory (os error 2)".into(),
+                            ))
+                        }
+                        a => a,
+                    };
+                    match answered {
                         // A revoked certificate is refused at the
                         // handshake (D384).
                         Ok(Some(p)) if hyperstor_client::cert_revoked(&self.map(), &p) => {
