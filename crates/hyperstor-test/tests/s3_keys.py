@@ -9,6 +9,8 @@ environment, never the command line. Steps:
 - create BUCKET [PLACEMENT]: CreateBucket, with PLACEMENT as its
   LocationConstraint if given; prints "created" or the error code.
 - roundtrip BUCKET: puts an object, reads it back and lists it.
+- put BUCKET KEY: PutObject; prints "put" or the error code.
+- get BUCKET KEY: GetObject; prints "got" or the error code.
 - denied: ListBuckets; prints the error code it gets, or "allowed".
 - presigned BUCKET: a presigned PUT works, and is refused with an
   x-amz-* header it doesn't sign, as S3 refuses it.
@@ -62,6 +64,18 @@ def main():
         keys = [o["Key"] for o in s3.list_objects_v2(Bucket=args[0]).get("Contents", [])]
         assert keys == ["k"], keys
         print("roundtrip ok")
+    elif step == "put":
+        try:
+            s3.put_object(Bucket=args[0], Key=args[1], Body=b"a dataset's object")
+            print("put")
+        except botocore.exceptions.ClientError as e:
+            print(code(e))
+    elif step == "get":
+        try:
+            s3.get_object(Bucket=args[0], Key=args[1])["Body"].read()
+            print("got")
+        except botocore.exceptions.ClientError as e:
+            print(code(e))
     elif step == "has":
         # Whether this key finds the bucket (a moved one, D303).
         try:
