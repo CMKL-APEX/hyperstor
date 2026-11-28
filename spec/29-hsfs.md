@@ -13,7 +13,7 @@ holding the keys, and reactors checking capabilities in pools that
 require them; nothing issues a capability yet, and peers aren't told
 from clients until D25. I459: dataset names over volumes and buckets,
 every property kept and inherited, `pool` enforced, and `hsfs`; I461:
-`readonly` for volumes; D387–D389 and D420–D421 settled 2026-11-27, points 351–353, 379 and 380). The order agreed with the owner (2026-11-25):
+`readonly` for volumes; I468: the name index; D387–D389 and D420–D421 settled 2026-11-27, D424 2026-11-28, points 351–353, 379, 380 and 384). The order agreed with the owner (2026-11-25):
 H0, then the data path's mutual TLS (D25), then H1 and H2. D360–D371 are settled with the owner
 (05-decision-log.md points 323–334, 2026-11-24 and 2026-11-25), D361 (the name `hsfs`)
 and D367 (no striping across clusters) among them. Host checks G62–G66
@@ -53,7 +53,8 @@ filesystem ([00-filesystem.md](00-filesystem.md) F1–F12), volumes
 - A name is unique in its project (D387): a new volume, clone or bucket
   may not take one another dataset there has; a copy named by none is
   `NAME-copy`. Two that shared a name before are addressed as
-  `name@<volume id>` and `name@bucket`.
+  `name@<volume id>` and `name@bucket`. The name is claimed in an index
+  before the dataset is made, so two makers never both take it (D424).
 
 Why: one place for quotas, grants, snapshots and replication, and
 glidex maps a project to one subtree.

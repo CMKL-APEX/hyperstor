@@ -1118,4 +1118,21 @@ fn buckets_are_datasets_of_their_project() {
         .out,
     );
     assert_eq!(b["bucket"]["data_pool"], "second", "{b}");
+
+    // Deleting a bucket at the gateway frees its name at once, for a
+    // bucket or a volume (D424).
+    assert_eq!(step(&["drop", "more"]), "dropped");
+    assert_eq!(step(&["create", "more"]), "created");
+    assert_eq!(step(&["drop", "more"]), "dropped");
+    c.ctl(&[
+        "create-volume",
+        "--size",
+        "1M",
+        "--name",
+        "more",
+        "--tenant",
+        &acme,
+    ])
+    .ok();
+    assert_eq!(step(&["create", "more"]), "BucketAlreadyExists");
 }

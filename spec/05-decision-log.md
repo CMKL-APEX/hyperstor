@@ -2059,3 +2059,12 @@ service.
 |---|---|---|---|
 | 379 | How a read-only volume behaves: primaries refuse writes and it still attaches and reads (recommended); rw leases refused, so it can't be attached until read-only leases exist; or build read-only leases first | Primaries refuse writes | D420 |
 | 380 | How the gateway learns names and properties: it asks the API at `CreateBucket`, and read-only buckets travel with the keys (recommended); or everything travels with the keys | Ask the API at `CreateBucket` | D421 |
+
+## Datasets, stage H1: a name index (2026-11-28)
+
+Names unique in a project (D387) were checked by reading every dataset,
+so two creates at once could both take one.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 384 | Where the index lives: a key-value table claimed by one-row batches, from any member (recommended); rows in Raft through the leader; a lock on the leader around today's scan | A key-value table | D424 |

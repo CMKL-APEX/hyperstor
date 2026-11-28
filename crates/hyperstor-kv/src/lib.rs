@@ -33,6 +33,8 @@ use thiserror::Error;
 pub const NS_KV: u8 = 4;
 /// The S3 gateways' store (§28.1).
 pub const S3_STORE: u64 = 1;
+/// Datasets' names in their projects (29-hsfs.md §32.3, D424).
+pub const DATASETS_STORE: u64 = 2;
 
 /// Entries read per lookup.
 const PAGE: u32 = 1000;

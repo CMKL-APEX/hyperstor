@@ -117,29 +117,37 @@ impl TrashService for Api {
         // A volume back from the trash is a dataset of its project again:
         // its name is unique there, so one whose name was taken meanwhile
         // comes back as `NAME-restored`, as in its pool (D360, I459).
+        let mut claimed = None;
         let name = if epoch.is_some() {
             (!req.name.is_empty()).then(|| req.name.to_string())
         } else {
             let v = self.volume_any(id).await?;
-            if req.name.is_empty() {
-                let free = self
-                    .free_name(v.tenant, v.project, &v.name, "restored")
-                    .await?;
-                (free != v.name).then_some(free)
+            let owner = hyperstor_s3::names::Owner::Volume(id);
+            let name = if req.name.is_empty() {
+                self.free_name(v.tenant, v.project, &v.name, "restored", owner)
+                    .await?
             } else {
-                self.name_free(
+                self.claim_name(
                     v.tenant,
                     v.project,
                     req.name,
+                    owner,
                     &who,
                     "RestoreFromTrash",
                     &target,
                 )
                 .await?;
-                Some(req.name.to_string())
-            }
+                req.name.to_string()
+            };
+            claimed = Some((v.tenant, v.project, name.clone(), owner));
+            (name != v.name).then_some(name)
         };
         let r = self.trash_op(TrashOp::Restore { id, epoch, name }).await;
+        if let Some((tenant, project, name, owner)) = &claimed
+            && r.is_err()
+        {
+            self.release_name(*tenant, *project, name, *owner).await;
+        }
         audit(
             &who,
             "RestoreFromTrash",

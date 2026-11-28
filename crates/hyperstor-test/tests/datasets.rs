@@ -2,7 +2,8 @@
 //! 04-decisions.md D360, D361): volumes named `tenant/project/name`,
 //! properties set on a tenant, a project or a dataset and inherited down,
 //! `pool` choosing where a volume goes, names unique in a project (copies
-//! and restores taking their own), and `hsfs` as `hyperstorctl dataset`.
+//! and restores taking their own, claimed once however many ask, D424),
+//! and `hsfs` as `hyperstorctl dataset`.
 
 use hyperstor_test::*;
 
@@ -329,4 +330,64 @@ fn a_read_only_volume_reads_and_refuses_writes() {
     c.hsfs(&["inherit", "readonly", "acme/ml"]).ok();
     write().ok();
     c.ctl(&["expand-volume", "--id", &v, "--size", "8M"]).ok();
+}
+
+/// D424: a name is claimed in the index before its dataset is made, so of
+/// several creates of one name at once only one makes it; deleting it frees
+/// the name; datasets made before the index are indexed by the leader.
+#[test]
+fn a_name_is_taken_once_however_many_ask() {
+    let c = Cluster::all_in_one("names", 3);
+    let acme = made_id(&c.ctl(&["tenant", "create", "--name", "acme"]).ok());
+    let ml = made_id(
+        &c.ctl(&["project", "create", "--tenant", &acme, "--name", "ml"])
+            .ok(),
+    );
+    let create = |name: &str| {
+        c.ctl(&[
+            "create-volume",
+            "--size",
+            "1M",
+            "--pool",
+            "1",
+            "--name",
+            name,
+            "--project",
+            &ml,
+        ])
+    };
+    // Made before the index is complete: checked against the datasets,
+    // then indexed with the others.
+    let early = volume_id(&create("early").ok());
+    wait_for("the names indexed", 90, || {
+        c.meta_log().contains("dataset names indexed").then_some(())
+    });
+    assert!(create("early").expect(1).has("unique in its project"));
+
+    // Six at once: one is made, five are refused, whichever member or
+    // order.
+    let runs: Vec<Run> = std::thread::scope(|s| {
+        let all: Vec<_> = (0..6).map(|_| s.spawn(|| create("dup"))).collect();
+        all.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let made: Vec<&Run> = runs.iter().filter(|r| r.code == 0).collect();
+    assert_eq!(made.len(), 1, "{runs:#?}");
+    for r in runs.iter().filter(|r| r.code != 0) {
+        assert!(r.has("unique in its project"), "{}", r.out);
+    }
+    let dup = volume_id(made[0]);
+    let listed = c.hsfs(&["list"]).ok();
+    assert_eq!(
+        listed.out.matches("acme/ml/dup").count(),
+        1,
+        "{}",
+        listed.out
+    );
+
+    // Deleting frees the name; the trash doesn't hold it (D387).
+    for id in [&dup, &early] {
+        c.ctl(&["delete-volume", "--id", id]).ok();
+    }
+    create("dup").ok();
+    create("early").ok();
 }

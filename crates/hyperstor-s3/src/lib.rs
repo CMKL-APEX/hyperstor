@@ -16,6 +16,7 @@ pub mod dates;
 pub mod gateway;
 pub mod keys;
 pub mod layout;
+pub mod names;
 pub mod sigv4;
 pub mod xml;
 
@@ -531,9 +532,17 @@ impl S3 {
             return Err(S3Error::BucketNotEmpty(name.into()));
         }
         match self.kv.delete_table(&b.table.name).await {
-            Err(KvError::NoTable(_)) => Err(S3Error::NoSuchBucket(name.into())),
-            r => Ok(r?),
+            Err(KvError::NoTable(_)) => return Err(S3Error::NoSuchBucket(name.into())),
+            r => r?,
         }
+        // Its name in its project is free again (D424). A bucket made
+        // before its record named its project left it to the next claim.
+        if b.info.project != 0 {
+            names::Names::open(self.kv.client().clone())
+                .release(b.info.project, name, names::Owner::Bucket)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Object `key`'s index entry, if it exists (HEAD).

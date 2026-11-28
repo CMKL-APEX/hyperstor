@@ -311,6 +311,12 @@ pub enum Admin {
         op: BucketOp,
         reply: VolumeReply<BucketDone>,
     },
+    /// Datasets' names in their projects, read and claimed as a client
+    /// of the key-value store (D424).
+    Names {
+        op: NameOp,
+        reply: VolumeReply<NameDone>,
+    },
     /// The trash: what's in it, restore, purge (19-administration.md §23.9.3).
     Trash {
         op: TrashOp,
@@ -766,6 +772,75 @@ async fn run_bucket_op(
                 .await
                 .map_err(fault)?,
         ),
+    })
+}
+
+/// What the API does with datasets' names ([`Admin::Names`], D424).
+#[derive(Debug)]
+pub enum NameOp {
+    Holder {
+        project: u32,
+        name: String,
+    },
+    /// Claims the name if no one holds it, or `replace` still does.
+    Claim {
+        project: u32,
+        name: String,
+        new: hyperstor_s3::names::Holder,
+        replace: Option<hyperstor_s3::names::Holder>,
+    },
+    Release {
+        project: u32,
+        name: String,
+        owner: hyperstor_s3::names::Owner,
+    },
+    /// Whether every dataset made before the index has its row.
+    Complete,
+    MarkComplete,
+}
+
+#[derive(Debug)]
+pub enum NameDone {
+    Holder(Option<hyperstor_s3::names::Holder>),
+    Claim(hyperstor_s3::names::Claim),
+    /// The row changed between the claim and its reading: ask again.
+    Raced,
+    Released(bool),
+    Complete(bool),
+}
+
+/// Runs a name operation as a client of the cluster (D424).
+async fn run_name_op(
+    c: std::rc::Rc<hyperstor_client::Client>,
+    op: NameOp,
+) -> Result<NameDone, (VolumeFault, String)> {
+    use hyperstor_kv::KvError;
+    let names = hyperstor_s3::names::Names::open(c);
+    let fault = |e: KvError| (VolumeFault::Unavailable, format!("the name index: {e}"));
+    Ok(match op {
+        NameOp::Holder { project, name } => {
+            NameDone::Holder(names.holder(project, &name).await.map_err(fault)?)
+        }
+        NameOp::Claim {
+            project,
+            name,
+            new,
+            replace,
+        } => match names.claim(project, &name, new, replace).await {
+            Ok(c) => NameDone::Claim(c),
+            Err(KvError::Conflict) => NameDone::Raced,
+            Err(e) => return Err(fault(e)),
+        },
+        NameOp::Release {
+            project,
+            name,
+            owner,
+        } => NameDone::Released(names.release(project, &name, owner).await.map_err(fault)?),
+        NameOp::Complete => NameDone::Complete(names.complete().await.map_err(fault)?),
+        NameOp::MarkComplete => {
+            names.mark_complete().await.map_err(fault)?;
+            NameDone::Complete(true)
+        }
     })
 }
 
@@ -3795,6 +3870,17 @@ impl Meta {
                             let c = c.await?;
                             c.refresh_map().await.map_err(volume_fault)?;
                             run_bucket_op(c, op).await
+                        };
+                        let _ = reply.send(r.await);
+                    });
+                }
+                Admin::Names { op, reply } => {
+                    let c = connect(client.clone());
+                    hyperstor_reactor::spawn(async move {
+                        let r = async {
+                            let c = c.await?;
+                            c.refresh_map().await.map_err(volume_fault)?;
+                            run_name_op(c, op).await
                         };
                         let _ = reply.send(r.await);
                     });
