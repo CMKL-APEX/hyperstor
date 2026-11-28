@@ -212,6 +212,11 @@ and pNFS front end, are in 22-nfs.md §26.11; G54–G55, for load and drives, in
   which guard sizes (16 or 64 bits); whether writes and reads through
   `uring_cmd` passthrough carry it and the drive checks it; and what it
   costs in throughput against CRCs kept by the engine.
+  **Answered for the drives at hand** (02-benchmarks.md, 2026-11-28;
+  point 377): Samsung PM1733 offers 4096+8 and 4096+64 with a 16-bit
+  guard only, PM983 nothing; passthrough carries it and the drive checks
+  it; the drive's own (PRACT) costs nothing, 64 bytes of metadata cost
+  26% of saturated reads. Drives with 64-bit guards remain.
 - **G41. Connectors for KV-cache offload** (point 102). For the inference
   engines glidex users run (vLLM with its KV connector, LMCache, Mooncake,
   NVIDIA Dynamo's KV block manager), at the versions current then: the

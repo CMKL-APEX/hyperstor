@@ -3854,7 +3854,7 @@ export type GetS3GatewayResponse = Message<"hyperstor.v1.GetS3GatewayResponse"> 
   placements: S3Placement[];
 
   /**
-   * The realm's buckets whose `readonly` is on (D415, D416): the gateway
+   * The realm's buckets whose `readonly` is on (D420, D421): the gateway
    * refuses writes to their objects.
    *
    * @generated from field: repeated hyperstor.v1.S3ReadonlyBucket readonly_buckets = 3 [json_name = "readonly_buckets"];
@@ -3877,7 +3877,7 @@ export type GetS3GatewayResponseJson = {
   placements?: S3PlacementJson[];
 
   /**
-   * The realm's buckets whose `readonly` is on (D415, D416): the gateway
+   * The realm's buckets whose `readonly` is on (D420, D421): the gateway
    * refuses writes to their objects.
    *
    * @generated from field: repeated hyperstor.v1.S3ReadonlyBucket readonly_buckets = 3 [json_name = "readonly_buckets"];
@@ -8757,7 +8757,7 @@ export const S3Service: GenService<{
     output: typeof GetS3GatewayResponseSchema;
   },
   /**
-   * Asked by a gateway at CreateBucket (D416): whether the name is free
+   * Asked by a gateway at CreateBucket (D421): whether the name is free
    * in the project its bucket goes to, among the project's datasets
    * (D387), and the pool its `pool` property names. S3 gateways only.
    *

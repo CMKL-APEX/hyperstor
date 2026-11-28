@@ -597,7 +597,7 @@ impl S3Service for Api {
                 .filter(|p| p.realm == realm)
                 .map(|p| placement_pb(p, &map, &realms))
                 .collect(),
-            // From the published map, as any member has it (D415, D416).
+            // From the published map, as any member has it (D420, D421).
             readonly_buckets: map
                 .readonly_buckets
                 .iter()

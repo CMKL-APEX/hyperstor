@@ -474,11 +474,11 @@ pub struct ClusterMap {
     /// node reads the format.
     pub revoked: BTreeMap<String, RevokedCert>,
     /// Volumes whose dataset property `readonly` is on (29-hsfs.md §32.3,
-    /// D415), by lineage and branch, as their chunks are named: their
+    /// D420), by lineage and branch, as their chunks are named: their
     /// primaries refuse clients' writes. The map service works them out
     /// from the properties and the volumes.
     pub readonly: BTreeSet<(u128, u32)>,
-    /// Buckets whose `readonly` is on (D415), by tenant and name: S3
+    /// Buckets whose `readonly` is on (D420), by tenant and name: S3
     /// gateways refuse writes to their objects.
     pub readonly_buckets: BTreeSet<(u32, String)>,
     /// Devices an operator asked to convert to v0.0.8's shard format
@@ -1617,7 +1617,7 @@ impl ClusterMap {
         self.epoch
     }
 
-    /// Sets the read-only volumes and buckets (D415): true, and a new
+    /// Sets the read-only volumes and buckets (D420): true, and a new
     /// epoch, if that changes the map.
     pub fn set_readonly(
         &mut self,
@@ -2125,7 +2125,7 @@ impl ClusterMap {
         // 24: revoked certificates (D384), only while there are any.
         // 25: sessions encrypted on untrusted networks (D405), only while
         // that is on.
-        // 26: read-only volumes and buckets (D415), only while there are
+        // 26: read-only volumes and buckets (D420), only while there are
         // any.
         let format = if !self.readonly.is_empty() || !self.readonly_buckets.is_empty() {
             26
@@ -4516,7 +4516,7 @@ pool 1 v replicated size 2 min 1 pgs 8
         assert!(file("data-tls allow encrypted").is_err());
     }
 
-    /// D415: read-only volumes travel in format 26, only while there are
+    /// D420: read-only volumes travel in format 26, only while there are
     /// any; a map without them keeps the format before.
     #[test]
     fn read_only_volumes_travel_only_while_there_are_any() {

@@ -107,6 +107,10 @@ pub struct Older {
     /// Replies a node loses: it handles the request, then drops the
     /// connection instead of answering, this many more times.
     lost_replies: Mutex<std::collections::HashMap<(u32, u16), u32>>,
+    /// Nodes whose kernel lacks TLS (D414): a session they'd keep
+    /// encrypted fails as handing it to the kernel fails there, and the
+    /// connection is dropped.
+    no_ktls: Mutex<HashSet<u32>>,
 }
 
 impl Older {
@@ -135,6 +139,20 @@ impl Older {
 
     pub fn unknown(&self, node: u32, kind: u16) -> bool {
         self.unknown.lock().unwrap().contains(&(node, kind))
+    }
+
+    /// `node`'s kernel lacks TLS while `missing`.
+    pub fn set_no_ktls(&self, node: u32, missing: bool) {
+        let mut s = self.no_ktls.lock().unwrap();
+        if missing {
+            s.insert(node);
+        } else {
+            s.remove(&node);
+        }
+    }
+
+    pub fn no_ktls(&self, node: u32) -> bool {
+        self.no_ktls.lock().unwrap().contains(&node)
     }
 
     /// `node` handles the next `n` requests of `kind`, and drops the

@@ -144,7 +144,7 @@ pub struct Property {
 
 /// Every property, in §32.3's order. Two act on volumes so far: `pool`,
 /// the pool new volumes go to when their creation names none (I459), and
-/// `readonly`, whose volumes' primaries refuse writes (D415).
+/// `readonly`, whose volumes' primaries refuse writes (D420).
 pub const PROPERTIES: &[Property] = &[
     Property {
         name: "quota",

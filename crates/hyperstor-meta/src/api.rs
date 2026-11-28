@@ -4307,7 +4307,7 @@ impl Api {
                 self.volume_in(&scope, *id, &who, rpc, &target).await?
             }
         }
-        // Rolling back a read-only volume changes what it reads (D415).
+        // Rolling back a read-only volume changes what it reads (D420).
         if let crate::SnapOp::Rollback { id, .. } = &op {
             self.not_readonly(&self.volume_any(*id).await?, &who, rpc, &target)
                 .await?;

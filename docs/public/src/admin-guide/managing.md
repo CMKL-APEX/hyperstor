@@ -442,7 +442,10 @@ hyperstorctl data-tls set --mode allow --encrypt on
 | Loopback | Only where a network not marked trusted names it |
 
 - A session that stays encrypted runs in the kernel's TLS (the `tls`
-  module). It costs about 0.5 s of CPU per GB on each end: one reactor
+  module, which `hyperstor-install` loads and has loaded at every boot;
+  `hyperstor-install check` shows it as `ktls`). `--encrypt on` is
+  refused in mode `off`, and while a storage node that is up can't keep
+  an encrypted session; the nodes are named. It costs about 0.5 s of CPU per GB on each end: one reactor
   moves roughly half as much large I/O as in plaintext, and 4 KiB
   requests take about 18 µs longer. Mark networks trusted where nobody
   else can reach them.

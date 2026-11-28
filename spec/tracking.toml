@@ -1217,7 +1217,7 @@ tests = [
 
 [[milestone.item]]
 what = "hsfs H1, second part: `readonly=on` on a volume (set on it or inherited) makes its chunks' primaries refuse clients' writes while it still reads, and on a bucket its gateways refuse writes; both in the cluster map; expand, rollback and flatten refused; CreateBucket asks the map service (PrepareBucket) for the name among the project's datasets and the `pool`"
-spec = ["29-hsfs.md §32.3", "D387", "D415", "D416", "I461"]
+spec = ["29-hsfs.md §32.3", "D387", "D420", "D421", "I461"]
 status = "done"
 tests = [
     "datasets::a_read_only_volume_reads_and_refuses_writes",
@@ -1716,9 +1716,12 @@ tests = [
 ]
 
 [[milestone.item]]
-what = "T3: an installer check that the kernel has TLS (D407); G69's cost is measured (I462)"
-spec = ["30-data-path-tls.md §33.10", "G69", "D407", "I462"]
-status = "planned"
+what = "T3: the installer loads the kernel's `tls` module and checks it (`ktls`); `--encrypt on` refused until every node that is up keeps an encrypted session (D414, I463); G69's cost is measured (I462)"
+spec = ["30-data-path-tls.md §33.10", "30-data-path-tls.md §33.11", "G69", "D407", "D414", "I462", "I463"]
+status = "done"
+tests = [
+    "cluster::encryption_is_refused_until_every_node_keeps_an_encrypted_session",
+]
 
 [[milestone]]
 id = "HS21"

@@ -108,7 +108,7 @@ enum Pool {
 struct Served {
     keys: Keys,
     placements: std::collections::HashMap<String, (Pool, Pool)>,
-    /// Buckets whose `readonly` is on, by tenant and name (D415, D416).
+    /// Buckets whose `readonly` is on, by tenant and name (D420, D421).
     readonly: std::collections::HashSet<(u32, String)>,
 }
 
@@ -176,7 +176,7 @@ async fn fetch(
     Err(why.join("; "))
 }
 
-/// What the cluster API says of a new bucket (D416): the pool its
+/// What the cluster API says of a new bucket (D421): the pool its
 /// project's or tenant's `pool` names (0: the placement's), or why it may
 /// not be made, as the error to answer.
 async fn prepare(
@@ -503,7 +503,7 @@ struct State {
     domains: Vec<String>,
     served: std::sync::RwLock<Arc<Served>>,
     /// The cluster API's addresses and the gateway's identity, when it
-    /// serves from them: CreateBucket asks it first (D416).
+    /// serves from them: CreateBucket asks it first (D421).
     api: Option<(Vec<String>, Arc<rustls::ClientConfig>)>,
 }
 
@@ -881,7 +881,7 @@ async fn route(state: &State, req: http::Request<Incoming>) -> Result<Response<B
     let m = req.method().clone();
     let host = header(req.headers(), "host").map(str::to_string);
     let target = target_of(host.as_deref(), &path, &state.domains)?;
-    // A read-only bucket's objects take no writes (D415); the bucket may
+    // A read-only bucket's objects take no writes (D420); the bucket may
     // still be deleted, as a read-only volume's snapshots may.
     let writes = match (&target, &m) {
         (Target::Object(b, _), &Method::PUT | &Method::POST | &Method::DELETE)
@@ -1923,7 +1923,7 @@ async fn create_bucket(
             )
         });
     };
-    // Its name among the project's datasets and its pool (D387, D416).
+    // Its name among the project's datasets and its pool (D387, D421).
     let pool = match &state.api {
         Some((addrs, tls)) => prepare(addrs, tls, tenant, project, name).await?,
         None => 0,
