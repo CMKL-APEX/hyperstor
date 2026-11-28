@@ -1181,6 +1181,37 @@ fn ask_scrub_now(
     again
 }
 
+/// A PG's scrub ask as [`ask_scrub_now`] noted it: when, and whether deep.
+type NotedAsk = ((u32, u32), (Instant, bool));
+
+/// After an ask to scrub `pgs` that their primary didn't wholly take (it
+/// answered fewer queued, or didn't answer): each PG still noted as that
+/// ask (`noted`, as [`ask_scrub_now`] left it) is asked again
+/// [`SCRUB_RETRY`] after it rather than [`SCRUB_ASK_AGAIN`] (I471, #479).
+/// A newer ask (deep after light) is left as it is.
+fn retry_scrub_soon(asked: &mut HashMap<(u32, u32), (Instant, bool)>, noted: &[NotedAsk]) {
+    for (k, n) in noted {
+        if asked.get(k) != Some(n) {
+            continue;
+        }
+        match n.0.checked_sub(SCRUB_ASK_AGAIN - SCRUB_RETRY) {
+            Some(t) => {
+                asked.insert(*k, (t, n.1));
+            }
+            // Too soon after the process started to date it back: asked
+            // again at the next look.
+            None => {
+                asked.remove(k);
+            }
+        }
+    }
+}
+
+/// How soon a PG its primary didn't take is asked for again (I471): a
+/// node whose map hasn't caught up with the published one yet (the PG not
+/// clean, or another primary, there) drops it.
+pub const SCRUB_RETRY: Duration = Duration::from_secs(5);
+
 /// How long before a primary is asked again to scrub a PG it was asked
 /// to (D229, D230): it moved, or the scrub was cut short.
 pub const SCRUB_ASK_AGAIN: Duration = Duration::from_secs(600);
@@ -1563,31 +1594,62 @@ impl Meta {
                 .collect()
         };
         if !ask.is_empty() {
-            hyperstor_reactor::spawn(self.clone().ask_scrub(ask, deep, cancel));
+            hyperstor_reactor::spawn(self.clone().ask_scrub(ask, deep, cancel, !cancel));
         }
         Ok((done, total))
     }
 
     /// Sends `ScrubNow` for `pgs` to each one's primary, as the published
-    /// map has it; a device that doesn't answer is asked again later.
-    async fn ask_scrub(self: Rc<Self>, pgs: Vec<(u32, u32)>, deep: bool, cancel: bool) {
+    /// map has it; a device that doesn't answer is asked again later. With
+    /// `retry`, PGs a primary didn't take (or that have none reachable) are
+    /// asked for again [`SCRUB_RETRY`] after, not [`SCRUB_ASK_AGAIN`] (I471).
+    async fn ask_scrub(
+        self: Rc<Self>,
+        pgs: Vec<(u32, u32)>,
+        deep: bool,
+        cancel: bool,
+        retry: bool,
+    ) {
         use hyperstor_proto::Msg;
         let map = self.published.borrow().clone();
+        let noted = |pgs: &[(u32, u32)]| -> Vec<NotedAsk> {
+            let asked = self.scrub_asked.borrow();
+            pgs.iter()
+                .filter_map(|k| asked.get(k).map(|n| (*k, *n)))
+                .collect()
+        };
+        let not_taken = |n: Vec<NotedAsk>| {
+            if retry {
+                retry_scrub_soon(&mut self.scrub_asked.borrow_mut(), &n);
+            }
+        };
         let mut by: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+        let mut none = Vec::new();
         for k in pgs {
-            if let Some(d) = map.pg(k.0, k.1).and_then(|i| i.primary()) {
-                by.entry(d).or_default().push(k);
+            match map.pg(k.0, k.1).and_then(|i| i.primary()) {
+                Some(d) => by.entry(d).or_default().push(k),
+                None => none.push(k),
             }
         }
+        not_taken(noted(&none));
         for (d, pgs) in by {
+            let n = noted(&pgs);
             let Some(addr) = map.device_addr(d) else {
+                not_taken(n);
                 continue;
             };
+            let sent = pgs.len() as u32;
             let asked = async {
                 let c = self.conn(addr).await.ok()?;
                 c.call(&Msg::ScrubNow { pgs, deep, cancel }, &[]).await.ok()
             };
-            let _ = hyperstor_reactor::time::timeout(Duration::from_secs(5), asked).await;
+            let taken = matches!(
+                hyperstor_reactor::time::timeout(Duration::from_secs(5), asked).await,
+                Ok(Some((Msg::ScrubNowOk { queued }, _))) if queued >= sent
+            );
+            if !taken {
+                not_taken(n);
+            }
         }
     }
 
@@ -1657,7 +1719,8 @@ impl Meta {
             });
             drop(asked);
             if !ask.is_empty() {
-                hyperstor_reactor::spawn(self.clone().ask_scrub(ask, false, false));
+                // Not retried soon: each ask counts towards RECOVERY_ASKS.
+                hyperstor_reactor::spawn(self.clone().ask_scrub(ask, false, false, false));
             }
         }
     }
@@ -5844,6 +5907,35 @@ mod tests {
         let later = t + SCRUB_ASK_AGAIN;
         assert!(ask_scrub_now(&mut asked, k, false, later));
         assert!(ask_scrub_now(&mut asked, (1, 8), true, t));
+    }
+
+    /// I471 (#479): a PG its primary didn't take is asked for again
+    /// SCRUB_RETRY after, not SCRUB_ASK_AGAIN; a newer ask stands.
+    #[test]
+    fn a_scrub_ask_not_taken_is_asked_again_soon() {
+        let mut asked = HashMap::new();
+        // Dated far enough from the process's start to date back.
+        let t = Instant::now() + SCRUB_ASK_AGAIN;
+        let (a, b) = ((1, 7), (1, 8));
+        assert!(ask_scrub_now(&mut asked, a, true, t));
+        assert!(ask_scrub_now(&mut asked, b, false, t));
+        let noted: Vec<_> = [a, b].iter().map(|k| (*k, asked[k])).collect();
+        // b is asked deep meanwhile: that ask isn't the one not taken.
+        assert!(ask_scrub_now(&mut asked, b, true, t));
+        retry_scrub_soon(&mut asked, &noted);
+        assert!(!ask_scrub_now(&mut asked, a, true, t + SCRUB_RETRY / 2));
+        assert!(ask_scrub_now(&mut asked, a, true, t + SCRUB_RETRY));
+        assert!(asked[&a].1, "still a deep ask");
+        assert!(!ask_scrub_now(&mut asked, b, true, t + SCRUB_RETRY));
+        // Too soon after start to date back: asked again at the next look.
+        let mut fresh = HashMap::new();
+        let early = Instant::now();
+        if early.checked_sub(SCRUB_ASK_AGAIN).is_none() {
+            assert!(ask_scrub_now(&mut fresh, a, false, early));
+            let n = vec![(a, fresh[&a])];
+            retry_scrub_soon(&mut fresh, &n);
+            assert!(ask_scrub_now(&mut fresh, a, false, early));
+        }
     }
 
     /// Hosts that join (19-administration.md §23.4.2) are added down, get the

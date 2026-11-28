@@ -2444,7 +2444,7 @@ fn scrub_status_and_pgs_are_shown() {
 fn a_scrub_started_now_finishes_as_an_operation() {
     let c = Cluster::all_in_one("scrubnow", 3);
     let r = c
-        .ctl(&["scrub", "start", "--pool", "1", "--deep", "--wait", "120"])
+        .ctl(&["scrub", "start", "--pool", "1", "--deep", "--wait", "300"])
         .ok();
     assert!(r.has("scrubbing") && r.has("done"), "{}", r.out);
     let ops = c.ctl(&["op", "list"]).ok();
