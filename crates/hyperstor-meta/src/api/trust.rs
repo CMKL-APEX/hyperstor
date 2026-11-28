@@ -1578,19 +1578,29 @@ impl TrustService for Api {
             .iter()
             .map(|(_, id)| (*id, glidex_trust::StorageReport::default()))
             .collect();
-        // Volumes (not in the trash) and their provisioned size.
+        // Volumes and their provisioned size: a tenant's not in the
+        // trash, a project's with it (D423).
         let (map, ..) = self.published().await?;
         let mut bytes: std::collections::BTreeMap<u32, u64> = Default::default();
+        let mut held = Vec::new();
         for pool in map.pools.keys().filter(|&&p| p != hyperstor_map::META_POOL) {
             let (reply, rx) = hyperstor_reactor::chan::oneshot();
             self.tx
                 .send(crate::Admin::ListVolumes {
                     pool: *pool,
-                    trash: false,
+                    trash: true,
                     reply,
                 })
                 .map_err(|_| ConnectError::unavailable("map service stopped"))?;
             for v in super::volume_result(rx.recv().await)? {
+                held.push(Held::Volume {
+                    tenant: v.tenant,
+                    project: v.project,
+                    size: v.size,
+                });
+                if v.state == crate::VolumeState::Trashed {
+                    continue;
+                }
                 let owner = t.tenant_of(v.tenant, v.project);
                 if let Some(c) = counts.get_mut(&owner) {
                     c.volumes += 1;
@@ -1607,6 +1617,11 @@ impl TrustService for Api {
         // until the counters existed): the leader's counts, which this
         // call needs anyway (mgmt asks the leader).
         let view = self.space().await?;
+        held.extend(view.volumes.iter().map(|v| Held::Used {
+            tenant: v.tenant,
+            project: v.project,
+            bytes: super::space::used_bytes(v),
+        }));
         for (owner, b) in super::space::used_by_tenant(&view, &t) {
             if let Some(c) = counts.get_mut(&owner) {
                 c.volume_used_bytes = b;
@@ -1620,10 +1635,16 @@ impl TrustService for Api {
             return Err(ConnectError::internal("not a list"));
         };
         for b in buckets {
+            let bytes = b.counts.map_or(0, |(_, bytes)| bytes);
+            held.push(Held::Bucket {
+                tenant: b.tenant,
+                project: b.project,
+                bytes,
+            });
             let owner = t.tenant_of(b.tenant, b.project);
             if let Some(c) = counts.get_mut(&owner) {
                 c.buckets += 1;
-                c.bucket_bytes += b.counts.map_or(0, |(_, bytes)| bytes);
+                c.bucket_bytes += bytes;
             }
         }
         for k in self.s3_rows("key", crate::s3keys::keys).await? {
@@ -1631,6 +1652,7 @@ impl TrustService for Api {
                 c.s3_keys += 1;
             }
         }
+        let mut projects = project_reports(&t, &held);
         let mut reported: Vec<glidex_trust::StorageTenantReport> = here
             .iter()
             .map(|(gid, id)| glidex_trust::StorageTenantReport {
@@ -1638,9 +1660,9 @@ impl TrustService for Api {
                 suspended: tenants.iter().any(|x| &x.id == gid && x.suspended),
                 admission: AdmissionStatus::Admitted,
                 storage: counts.remove(id).unwrap_or_default(),
-                // Per project (glidex D89): not sent yet, so the
-                // directory blocks no project's delete (I415, #390).
-                project_storage: Vec::new(),
+                // Per project (glidex D89, D423): what blocks a
+                // project's delete at the directory.
+                project_storage: projects.remove(id).unwrap_or_default(),
             })
             .collect();
         // Opt-ins not admitted: their status, nothing held (D346).
@@ -1827,9 +1849,227 @@ impl TrustService for Api {
     }
 }
 
+/// One thing that counts to a project in a trust report, with the
+/// tenant and project its record names.
+#[derive(Debug, Clone, Copy)]
+enum Held {
+    /// A volume, in the trash or not, and its provisioned size.
+    Volume {
+        tenant: u32,
+        project: u32,
+        size: u64,
+    },
+    /// The bytes a volume uses (D339).
+    Used {
+        tenant: u32,
+        project: u32,
+        bytes: u64,
+    },
+    /// A bucket and its objects' bytes.
+    Bucket {
+        tenant: u32,
+        project: u32,
+        bytes: u64,
+    },
+}
+
+/// What each project linked to glidex holds, by its tenant now, for the
+/// trust report (glidex D89, D423): only projects with a glidex id that
+/// hold a volume (in the trash too) or a bucket, as `holds()` would
+/// refuse their delete. A moved project counts to its new tenant (D303);
+/// a bucket counts to its tenant's project as `bucket_project` says
+/// (I379). S3 keys are the tenant's, so no project counts them.
+fn project_reports(
+    t: &Tenancy,
+    held: &[Held],
+) -> std::collections::BTreeMap<u32, Vec<glidex_trust::StorageProjectReport>> {
+    use std::collections::BTreeMap;
+    let mut by: BTreeMap<u32, (glidex_trust::StorageReport, u64)> = BTreeMap::new();
+    let volume_project = |tenant, project| t.project_of(t.tenant_of(tenant, project), project);
+    for h in held {
+        match *h {
+            Held::Volume {
+                tenant,
+                project,
+                size,
+            } => {
+                let e = by.entry(volume_project(tenant, project)).or_default();
+                e.0.volumes += 1;
+                e.1 += size;
+            }
+            Held::Used {
+                tenant,
+                project,
+                bytes,
+            } => {
+                let e = by.entry(volume_project(tenant, project)).or_default();
+                e.0.volume_used_bytes += bytes;
+            }
+            Held::Bucket {
+                tenant,
+                project,
+                bytes,
+            } => {
+                let e = by.entry(t.bucket_project(tenant, project)).or_default();
+                e.0.buckets += 1;
+                e.0.bucket_bytes += bytes;
+            }
+        }
+    }
+    let mut out: BTreeMap<u32, Vec<glidex_trust::StorageProjectReport>> = BTreeMap::new();
+    for (id, (mut storage, size)) in by {
+        let Some(p) = t.project(id) else { continue };
+        storage.volume_gib = size.div_ceil(1 << 30);
+        if p.glidex_id.is_empty() || !storage.holds_any() {
+            continue;
+        }
+        out.entry(p.tenant)
+            .or_default()
+            .push(glidex_trust::StorageProjectReport {
+                project: p.glidex_id.clone(),
+                storage,
+            });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_report_counts_each_linked_project_that_holds_something() {
+        let mut t = Tenancy::default();
+        for (id, default_project) in [(10, 100), (11, 110)] {
+            t.tenants.push(tenancy::Tenant {
+                id,
+                name: format!("t{id}"),
+                directory: "https://id.acme.example/d/acme".into(),
+                glidex_id: format!("gt{id}"),
+                default_project,
+                created_unix: 0,
+                created_by: String::new(),
+            });
+        }
+        let project = |id: u32, tenant: u32, made_in: u32, glidex: &str| tenancy::Project {
+            id,
+            tenant,
+            name: format!("p{id}"),
+            state: tenancy::ProjectState::Active,
+            glidex_id: glidex.into(),
+            created_unix: 0,
+            created_by: String::new(),
+            made_in,
+        };
+        t.projects = vec![
+            project(100, 10, 10, "default"),
+            project(101, 10, 10, "volumes"),
+            project(102, 10, 10, "trash"),
+            project(103, 10, 10, "bucket"),
+            project(104, 10, 10, ""),
+            // Moved from t10 to t11 (D303): its headers still say t10.
+            project(105, 11, 10, "moved"),
+            project(106, 10, 10, "empty"),
+            project(110, 11, 11, "default-11"),
+        ];
+        let gib = 1u64 << 30;
+        let held = [
+            // A volume naming no project counts to the default one.
+            Held::Volume {
+                tenant: 10,
+                project: 0,
+                size: gib,
+            },
+            Held::Volume {
+                tenant: 10,
+                project: 101,
+                size: gib,
+            },
+            Held::Volume {
+                tenant: 10,
+                project: 101,
+                size: gib + 1,
+            },
+            Held::Used {
+                tenant: 10,
+                project: 101,
+                bytes: 4096,
+            },
+            // Only in the trash: still held (D423).
+            Held::Volume {
+                tenant: 10,
+                project: 102,
+                size: gib,
+            },
+            Held::Used {
+                tenant: 10,
+                project: 102,
+                bytes: 512,
+            },
+            Held::Bucket {
+                tenant: 10,
+                project: 103,
+                bytes: 77,
+            },
+            // A local project isn't reported.
+            Held::Volume {
+                tenant: 10,
+                project: 104,
+                size: gib,
+            },
+            Held::Bucket {
+                tenant: 10,
+                project: 104,
+                bytes: 1,
+            },
+            Held::Volume {
+                tenant: 10,
+                project: 105,
+                size: gib,
+            },
+            // Used bytes alone (a volume being forgotten) hold nothing.
+            Held::Used {
+                tenant: 10,
+                project: 106,
+                bytes: 9,
+            },
+            // A bucket naming another tenant's project stays its
+            // tenant's, in its default project (I379).
+            Held::Bucket {
+                tenant: 10,
+                project: 110,
+                bytes: 5,
+            },
+        ];
+        let r = project_reports(&t, &held);
+        let of = |tenant: u32| -> Vec<(String, glidex_trust::StorageReport)> {
+            r.get(&tenant)
+                .into_iter()
+                .flatten()
+                .map(|p| (p.project.clone(), p.storage.clone()))
+                .collect()
+        };
+        let storage =
+            |volumes, volume_gib, used, buckets, bucket_bytes| glidex_trust::StorageReport {
+                volumes,
+                volume_gib,
+                volume_used_bytes: used,
+                buckets,
+                bucket_bytes,
+                ..Default::default()
+            };
+        assert_eq!(
+            of(10),
+            vec![
+                ("default".into(), storage(1, 1, 0, 1, 5)),
+                ("volumes".into(), storage(2, 3, 4096, 0, 0)),
+                ("trash".into(), storage(1, 1, 512, 0, 0)),
+                ("bucket".into(), storage(0, 0, 0, 1, 77)),
+            ]
+        );
+        assert_eq!(of(11), vec![("moved".into(), storage(1, 1, 0, 0, 0))]);
+        assert!(r.values().flatten().all(|p| p.storage.s3_keys == 0));
+    }
 
     #[test]
     fn pins_urls_and_realms_read_as_offers_need() {
