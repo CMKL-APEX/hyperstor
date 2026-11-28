@@ -141,11 +141,16 @@ pub(super) fn rows(
 pub(super) fn used_by_tenant(view: &SpaceView, tenancy: &Tenancy) -> BTreeMap<u32, u64> {
     let mut out = BTreeMap::new();
     for v in &view.volumes {
-        let (h, s, t) = split(v);
         *out.entry(tenancy.tenant_of(v.tenant, v.project))
-            .or_default() += h + s + t;
+            .or_default() += used_bytes(v);
     }
     out
+}
+
+/// The bytes a volume uses, one copy, trash included (D339).
+pub(super) fn used_bytes(v: &VolumeSpace) -> u64 {
+    let (h, s, t) = split(v);
+    h + s + t
 }
 
 #[cfg(test)]

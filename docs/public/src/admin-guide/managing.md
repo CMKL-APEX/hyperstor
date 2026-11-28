@@ -537,6 +537,14 @@ Reports to a glidex directory send each tenant's `USED` summed over the
 pools as `volume_used_bytes`. A project moved to another tenant takes
 its counts along.
 
+Reports also list each project linked to glidex that holds a volume or
+a bucket, with its own counts. Volumes in the trash count here, so the
+directory refuses to delete a project that still holds anything on
+this cluster, its trash included. A report can be up to 30 s old. If
+the directory deletes a project that got its first volume after the
+last report, this cluster keeps the project and its data, unlinked from
+glidex.
+
 ### Copying and moving between pools
 
 ```sh
@@ -620,15 +628,23 @@ minutes asks for one.
   it may go unheard before its people are refused (change it; 0 is the
   default, an hour); its tenants, the operator tenant (make one, or
   clear it), and ending the trust in a tenant (its records stay,
-  unlinked). **Offers**: make one for a directory's tenant, and revoke
-  an open one. The directory pins the certificate mgmt serves at the
+  unlinked). A directory trusted as a whole also shows how its
+  tenants' opt-ins are admitted and the caps each admitted tenant
+  starts with (**Change admission**), each opt-in waiting for approval
+  (**Approve** or **Refuse**) or refused, and **End trust in the
+  directory**, which ends every admission of it
+  ([Trusting a directory as a whole](installation.md#trusting-a-directory-as-a-whole)).
+  **Offers**: make one for a directory's tenant, or choose **The whole
+  directory** for one its owner redeems, with its opt-in setting and
+  default caps (`POOL=SIZE`, comma-separated); revoke an open one. The directory pins the certificate mgmt serves at the
   address it reaches mgmt by (mgmt's own address, not a proxy's): the
   dialog shows the SHA-256 of mgmt's own certificate, which the offer
   takes. Where mgmt serves another one there (its Tailscale
   certificate), choose **Use another** and paste that one's
   (`openssl s_client -connect HOST:PORT </dev/null | openssl x509
   -noout -fingerprint -sha256`). The offer's token is shown once: copy
-  it and pass it only to that tenant's administrator.
+  it and pass it only to that tenant's administrator, or for a whole
+  directory to its owner.
 
 People with only `viewer`, `operator` or `storage-admin` see the
 Realms and Tenants tabs with what their role allows; security

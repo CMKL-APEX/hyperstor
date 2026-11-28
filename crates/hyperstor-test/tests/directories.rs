@@ -3,8 +3,9 @@
 //! hyperstor-mgmt, the directory's realm and tenant made, the feed's
 //! projects made, renamed, deleted (one holding a volume kept, unlinked)
 //! and moved between its tenants, what it owns refused to commands here
-//! while the feed still changes it, reports with storage counts, the
-//! operator tenant, and the trust ended from either side.
+//! while the feed still changes it, reports with storage counts (per
+//! tenant and per project, trash included), the operator tenant, and the
+//! trust ended from either side.
 
 use glidex_trust::fake::FakeDirectory;
 use hyperstor_test::*;
@@ -259,6 +260,16 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
     let space = c.ctl(&["space"]).ok();
     assert!(space.has("acme/api-v2"), "{}", space.out);
     assert!(space.has(&(512u64 << 10).to_string()), "{}", space.out);
+    // And per project (glidex D89, D423), so the directory holds p2's
+    // delete: its volume and the bytes it uses.
+    wait_for("p2's storage in the report", 30, || {
+        let s = dir
+            .cluster(&c.cluster_id)?
+            .project_storage
+            .get("p2")?
+            .clone();
+        (s.volumes == 1 && s.volume_gib == 1 && s.volume_used_bytes == 512 << 10).then_some(())
+    });
     dir.remove_row("projects", "p2");
     wait_for("the project kept, unlinked", 30, || {
         let (_, g) = project(&c, "acme", "api-v2")?;
@@ -316,6 +327,33 @@ fn a_directory_s_feed_makes_its_tenants_and_projects() {
         let s = dir.cluster(&c.cluster_id)?.storage.get("t2")?.clone();
         (s.volume_used_bytes == 256 << 10).then_some(())
     });
+    // The moved project is reported with its volume; in the trash, it
+    // still holds p3's delete (D423); purged, p3 holds nothing and isn't
+    // reported.
+    let p3 = |volumes: u64| {
+        wait_for(&format!("p3 reported with {volumes} volumes"), 30, || {
+            let c = dir.cluster(&c.cluster_id)?;
+            let s = c.project_storage.get("p3").cloned().unwrap_or_default();
+            (s.volumes == volumes).then_some(())
+        })
+    };
+    p3(1);
+    c.ctl(&["delete-volume", "--id", &lab_disk]).ok();
+    wait_for("lab's report without the trashed volume", 30, || {
+        let s = dir.cluster(&c.cluster_id)?.storage.get("t2")?.clone();
+        (s.volumes == 0).then_some(())
+    });
+    p3(1);
+    c.ctl(&["trash", "purge", "--id", &lab_disk, "--wait", "60"])
+        .ok();
+    p3(0);
+    assert!(
+        !dir.cluster(&c.cluster_id)
+            .unwrap()
+            .project_storage
+            .contains_key("p3"),
+        "a project holding nothing isn't reported"
+    );
 
     // The operator tenant: a tenant of a trusted directory only.
     let local = tenant_id(&c, "local").unwrap().to_string();
