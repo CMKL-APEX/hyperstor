@@ -3144,6 +3144,25 @@ intervals after 3.
 3. A larger log is the cheaper lever: B+tree pages per put fall with
    puts per leaf per checkpoint.
 
+### Key–value entries in a running cluster (point 375)
+
+What the metadata tree would hold today, on the four-host pilot
+(2026-11-28). `hyperstor-bench kvcount PATH` (new) opens a copy of a
+device offline and counts entries per PG; it prints counts only.
+Copies of the two file devices of one host: they hold 2–3 PGs of
+`.meta` each (the NVMe devices, by weight, hold the rest), up to 22
+entries per PG; the largest object of the volume pool had 293. The
+largest metadata objects are the audit log's, one per day
+(`hyperstorctl audit list --since 365d`, counted by day): 21–116
+records a day in a normal week, and one day of at least 9,783 (the
+listing stops at 10,000). The largest seen was 660,000, one day of a
+client stuck in a loop (2026-10-24, I188).
+
+The key–value store is what can grow past that: a range splits at
+64 MiB (25-kv-ranges.md §28.4), about 670,000 entries of 100 bytes, and
+a PG holds many ranges. Ten million keys in one PG, where the Bε-tree
+starts to pay (above), is a table of about 256 GB in a pool of 256 PGs.
+
 ### Protection information on the drives at hand (M7, G40)
 
 `nvme id-ns` and `nvme id-ctrl` (nvme-cli). All drives are formatted

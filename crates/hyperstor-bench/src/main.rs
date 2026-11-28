@@ -12,6 +12,7 @@
 //! don't allocate filesystem blocks.
 
 mod cpus;
+mod kvcount;
 mod layout;
 mod open;
 mod tls;
@@ -2408,6 +2409,11 @@ fn main() {
             // hyperstor-bench metadata: pages a copy-on-write B+tree and a
             // Bε-tree write per update, checkpointed over the log (D44, G15)
             versions::meta_suite();
+        }
+        Some("kvcount") => {
+            // hyperstor-bench kvcount PATH: key-value entries per PG on a
+            // copy of a device (point 375); never a live device
+            kvcount::suite(args.get(2).expect("hyperstor-bench kvcount PATH"));
         }
         Some("lookup") => {
             // hyperstor-bench lookup: a page table against swizzled
