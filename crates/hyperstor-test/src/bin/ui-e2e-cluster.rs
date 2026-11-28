@@ -10,8 +10,9 @@
 //! default project and one in its project `web`; and a fake glidex
 //! directory `uni` (glidex-trust's) whose tenant `physics`, with its
 //! project `optics`, redeemed an offer, so the tenancy page shows records
-//! linked to a directory. It
-//! prints one JSON line: `url`, the claim code, the people's password,
+//! linked to a directory; and a second, `school`, trusted as a whole with
+//! opt-ins held for approval, whose tenants `art` and `music` wait for a
+//! decision (D345, D346). It prints one JSON line: `url`, the claim code, the people's password,
 //! and the provider's person; then runs until its standard input closes,
 //! and removes everything.
 
@@ -126,6 +127,40 @@ fn main() {
     wait_for("the directory's project", 60, || {
         c.ctl(&["tenant", "list"]).ok().has("optics").then_some(())
     });
+    // A directory trusted as a whole (D345), its opt-ins held for
+    // approval (D346), each admitted one capped at 1 GiB in the first pool
+    // (D347): its tenants art and music wait for a decision.
+    let school = rt.block_on(FakeDirectory::start("school")).unwrap();
+    let art = school.add_tenant("s1", "art");
+    let music = school.add_tenant("s2", "music");
+    let pools = c.ctl(&["--json", "pools"]).ok();
+    let pools: serde_json::Value = serde_json::from_str(&pools.out).unwrap();
+    let pool = pools["pools"][0]["name"].as_str().unwrap().to_string();
+    let offer = c
+        .ctl(&[
+            "admission",
+            "offer",
+            "--directory",
+            school.issuer(),
+            "--url",
+            &c.mgmt_url(),
+            "--admit",
+            "approval",
+            "--cap",
+            &format!("{pool}=1G"),
+        ])
+        .ok();
+    let token = offer
+        .out
+        .split_whitespace()
+        .find(|w| w.starts_with("gxo_"))
+        .unwrap_or_else(|| panic!("{}", offer.out))
+        .to_string();
+    rt.block_on(school.trust_cluster(&token)).unwrap();
+    for t in [&art, &music] {
+        let s = rt.block_on(school.opt_in(&c.cluster_id, t)).unwrap();
+        assert_eq!(s, glidex_trust::AdmissionStatus::Pending);
+    }
     let claim = c.claim_code();
     println!(
         "{}",
@@ -141,5 +176,6 @@ fn main() {
     let _ = std::io::stdin().read_to_end(&mut Vec::new());
     drop(c);
     drop(dir);
+    drop(school);
     drop(rt);
 }
