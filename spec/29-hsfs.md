@@ -282,8 +282,12 @@ Part of HS14, in stages. N0 (22-nfs.md §26.10) needs H0–H2.
   and an `/etc/fstab` line work through a `mount.fuse.hsfs` helper on
   the distributions we ship, and that no package claims `hsfs` (Solaris
   used the name for its ISO 9660 driver; check Linux distributions).
-  The name half holds for Debian 13 and Fedora (I459, 2026-11-27);
-  Ubuntu's archive and the mount half are still to check.
+  The name half holds for Debian 13 and Fedora (I459, 2026-11-27) and
+  Ubuntu 24.04, 26.04 and 27.04 (I466, 2026-11-28). On Ubuntu 24.04,
+  `mount -t fuse.hsfs` and fstab lines reach `mount.fuse.hsfs` as
+  `SOURCE TARGET -o OPTIONS`, `_netdev` and `nofail` included; a name
+  starting with `-` needs `--source` or fstab (I466). Still to check: an
+  actual mount through the helper (H2) and `mount` on Debian and Fedora.
 - **G66. What interception catches** (D369). With `libhsfs-preload.so`:
   Python (CPython's `open`, NumPy, PyTorch's `DataLoader` workers after
   `fork`), `dd`, `cp`, `tar`, a Go binary and a statically linked one.

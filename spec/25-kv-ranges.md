@@ -3,7 +3,8 @@
 How `hyperstor-kv` keeps a sorted keyspace in range objects, finds them,
 splits and merges them, and changes one row atomically: milestone HS11,
 the part of D35 the S3 gateway needs (D191). Transactions across ranges
-and the timestamp oracle are HS11b (08-engine.md §7.5). Part of the
+and the timestamp oracle are HS11b (08-engine.md §7.5; designed in
+32-kv-transactions.md §35). Part of the
 hyperstor design; sections keep their numbers across documents, so `§N`
 in one document is the same section everywhere (see
 [README.md](README.md)).

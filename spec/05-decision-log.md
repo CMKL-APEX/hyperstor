@@ -2081,3 +2081,15 @@ so two creates at once could both take one.
 | # | Point | Answer | Result |
 |---|---|---|---|
 | 384 | Where the index lives: a key-value table claimed by one-row batches, from any member (recommended); rows in Raft through the leader; a lock on the leader around today's scan | A key-value table | D424 |
+
+## Key–value transactions, HS11b (2026-11-28)
+
+What 08-engine.md §7.5 (D35) left open before 32-kv-transactions.md
+could be drafted. Asked with options; the recommendations were taken.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 385 | Isolation: snapshot isolation with locks on keys a transaction read (recommended); serializable everywhere; snapshot isolation only | Snapshot isolation + locks on reads | D425 |
+| 386 | Which tables: transactional or not per table, at creation (recommended); every table | Per table | D426 |
+| 387 | Commit across ranges: two phases now, async commit later if measured (recommended); async commit from the start | Two phases now | D427 |
+| 388 | Timestamps: the leader's oracle, as D35 (recommended); hybrid logical clocks | The leader's oracle | D428 |
