@@ -302,7 +302,7 @@ with id 4, then a demote of member 3's host to storage only.
 
 `hsctl` covers every operation of the cluster API (D55).
 
-- **Its name** (D422, I464): `hsctl`, `hyperstorctl` before v0.0.9.
+- **Its name** (D422, I468): `hsctl`, `hyperstorctl` before v0.0.9.
   `hyperstor-install` keeps `/usr/local/bin/hyperstorctl` as a link to
   it, and `hsctl` reads `hyperstorctl.conf` while `hsctl.conf` is
   missing. *Why:* scripts and glidex releases from before keep working

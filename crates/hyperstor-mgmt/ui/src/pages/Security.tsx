@@ -366,7 +366,7 @@ export default function Security() {
   const can = useCan();
   const realm = useRealm();
   const tabs = [
-    ...(can("secure") ? (realm ? (["People"] as const) : (["People", "Join tokens", "Certificates"] as const)) : []),
+    ...(can("secure") ? (realm || !can("secure", true) ? (["People"] as const) : (["People", "Join tokens", "Certificates"] as const)) : []),
     "Your API tokens",
   ] as const;
   const [tab, setTab] = useState<string>(tabs[0]);

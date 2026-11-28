@@ -1898,12 +1898,21 @@ async fn directory_callback(state: &State, l: &Login, req: Req, peer: SocketAddr
 
 /// `%XX` and `+` of a query value.
 fn percent_decode(v: &str) -> String {
+    decode(v, true)
+}
+
+/// `%XX` of a path's segment, where `+` is itself.
+fn path_decode(v: &str) -> String {
+    decode(v, false)
+}
+
+fn decode(v: &str, plus_is_space: bool) -> String {
     let b = v.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'+' => out.push(b' '),
+            b'+' if plus_is_space => out.push(b' '),
             // Two hex digits, and nothing else (`from_str_radix` would
             // take a sign: `%+1`).
             b'%' if i + 2 < b.len()
@@ -2195,7 +2204,6 @@ async fn with_login(
             let Some(name) = user_of_roles(p2) else {
                 return error(404, "not_found", "no such path");
             };
-            let name = name.to_string();
             let target = format!("user {name}");
             let reach = match authorize_in(l, &p, "People.SetRoles", &target, only) {
                 Ok(r) => r,
@@ -2280,7 +2288,9 @@ async fn with_login(
             }
         }
         (&http::Method::DELETE, p2) if p2.starts_with("/auth/users/") => {
-            let name = p2["/auth/users/".len()..].to_string();
+            let Some(name) = user_in_path(&p2["/auth/users/".len()..]) else {
+                return error(404, "not_found", "no such path");
+            };
             if let Err(r) = authorize(l, &p, "People.DeleteUser", &format!("user {name}")) {
                 return r;
             }
@@ -2366,9 +2376,16 @@ async fn with_login(
 /// The user named in `/auth/users/{name}/roles`, or `None` when `path`
 /// has no name there (`/auth/users/roles`, `/auth/users//roles`) or one
 /// with a `/`.
-fn user_of_roles(path: &str) -> Option<&str> {
-    let name = path.strip_prefix("/auth/users/")?.strip_suffix("/roles")?;
-    (!name.is_empty() && !name.contains('/')).then_some(name)
+fn user_of_roles(path: &str) -> Option<String> {
+    user_in_path(path.strip_prefix("/auth/users/")?.strip_suffix("/roles")?)
+}
+
+/// A user's name as one segment of a path, decoded: the web UI encodes
+/// it (`ann%40example.com`, a directory's `<id>%40<realm>`). `None` when
+/// empty or with a `/`, encoded or not.
+fn user_in_path(segment: &str) -> Option<String> {
+    let name = path_decode(segment);
+    (!name.is_empty() && !segment.contains('/') && !name.contains('/')).then_some(name)
 }
 
 /// The cluster API's path for a call under `/api/`.
@@ -2575,11 +2592,22 @@ mod tests {
 
     #[test]
     fn a_users_roles_path_names_one_user() {
-        assert_eq!(user_of_roles("/auth/users/ann/roles"), Some("ann"));
         assert_eq!(
-            user_of_roles("/auth/users/ann@example.com/roles"),
+            user_of_roles("/auth/users/ann/roles").as_deref(),
+            Some("ann")
+        );
+        assert_eq!(
+            user_of_roles("/auth/users/ann@example.com/roles").as_deref(),
             Some("ann@example.com")
         );
+        // As the web UI sends it (encodeURIComponent).
+        assert_eq!(
+            user_of_roles("/auth/users/ann%40example.com/roles").as_deref(),
+            Some("ann@example.com")
+        );
+        assert_eq!(user_in_path("a%2Bb+c").as_deref(), Some("a+b+c"));
+        assert_eq!(user_in_path("a%2Fb"), None);
+        assert_eq!(user_in_path(""), None);
         for odd in [
             "/auth/users/roles",
             "/auth/users//roles",

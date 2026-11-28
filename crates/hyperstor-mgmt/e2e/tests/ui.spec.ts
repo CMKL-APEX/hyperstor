@@ -528,6 +528,40 @@ test("the tenant and project pickers show theirs, and new volumes go there", asy
   await expect(page.getByTestId("volume-plain-ui")).toBeVisible();
 });
 
+test("someone with roles in a tenant and a project only sees theirs", async ({ page }) => {
+  // As a glidex directory's people have them (D321): no realm to act in.
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByLabel("Roles in realms").fill("storage-admin@tenant:lab, viewer@project:lab/web");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("storage-admin@tenant:lab");
+  await page.getByRole("button", { name: "Log out" }).click();
+  await logIn(page, "bob");
+  // No realm picked for them, and every call answers (it was refused
+  // with "a realm is 1-63 of a-z, 0-9 and -").
+  await expect(page.getByLabel("Realm")).toHaveCount(0);
+  for (const hidden of ["Overview", "Nodes", "Pools", "Members", "Audit"]) {
+    await expect(page.getByRole("link", { name: hidden })).toHaveCount(0);
+  }
+  await page.getByRole("link", { name: "Volumes" }).click();
+  await expect(page.getByTestId("volume-lab-default-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-lab-web-vol")).toBeVisible();
+  await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Create volume" })).toBeVisible();
+  await expect(page.getByText("invalid_argument")).toHaveCount(0);
+  await page.getByRole("link", { name: "Security" }).click();
+  await expect(page.getByRole("tab", { name: "Join tokens" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Log out" }).click();
+  // Back to none, for the tests after.
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  await page.getByTestId("person-bob").getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByLabel("Roles in realms").fill("");
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(page.getByTestId("person-bob")).toContainText("none");
+});
+
 test("a browser holds two accounts and switches between them", async ({ page }) => {
   // A password's account and the identity provider's: one each.
   await logIn(page, "ann");
@@ -550,6 +584,24 @@ test("a browser holds two accounts and switches between them", async ({ page }) 
   await page.getByRole("menuitem", { name: "Sign out of all accounts" }).click();
   await expect(page.getByLabel("Username")).toBeVisible();
   await expect(page.getByTestId("held-accounts")).toHaveCount(0);
+});
+
+test("someone whose name has an @ is given roles and deleted", async ({ page }) => {
+  // The identity provider's person is named by their email; a glidex
+  // directory's by <id>@<realm>. The UI puts the name in the path,
+  // encoded, which mgmt read undecoded ("not a user name").
+  const sso = process.env.HS_SSO!;
+  await logIn(page, "ann");
+  await page.getByRole("link", { name: "Security" }).click();
+  const row = page.getByTestId(`person-${sso}`);
+  await row.getByRole("button", { name: "Roles" }).click();
+  await page.getByRole("dialog").getByRole("checkbox", { name: "viewer" }).check();
+  await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
+  await expect(row).toContainText("viewer");
+  await row.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(row).toHaveCount(0);
 });
 
 /** The tenancy page's tab `name`. */
