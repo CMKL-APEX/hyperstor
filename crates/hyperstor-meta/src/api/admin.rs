@@ -1808,8 +1808,8 @@ impl OperationService for Api {
         let target = format!("operation {}", req.id);
         let who = self.authorize(&ctx, "CancelOperation", &target, true)?;
         let op = self.op(req.id).await?;
-        // Only a drain, a removal, a copy or a move stops part way: a
-        // flatten or a purge runs to its end (D121).
+        // Only a drain, a removal, a copy, a move or a scrub stops part
+        // way: a flatten or a purge runs to its end (D121).
         let devices = |map: &hyperstor_map::ClusterMap| -> Vec<u32> {
             match &op.work {
                 Work::Drain { node, .. } => map
@@ -1855,6 +1855,85 @@ impl OperationService for Api {
                 Ok(_) => Err(with_reason(
                     ConnectError::failed_precondition(format!("operation {} has finished", op.id)),
                     "finished",
+                )),
+                Err(e) => Err(self.token_error(e).await),
+            };
+        }
+        // A scrub started now (D229) stops asking, and its PGs not yet
+        // scrubbed are dropped by their primaries; the normal schedule
+        // goes on (I473).
+        if let Work::Scrub {
+            pool,
+            pgs,
+            deep,
+            since,
+        } = &op.work
+        {
+            if !op.running() {
+                return Err(with_reason(
+                    ConnectError::failed_precondition(format!("operation {} has finished", op.id)),
+                    "finished",
+                ));
+            }
+            let id = op.id.clone();
+            let r = self
+                .admin
+                .runner
+                .store(move |s| {
+                    s.update(&id, |o| {
+                        if o.running() {
+                            o.state = S::Cancelled;
+                            o.finished_unix = now_unix();
+                            o.message = "cancelled".into();
+                        }
+                    })
+                })
+                .await;
+            match r {
+                Ok(Some(o)) if o.state == S::Cancelled => {}
+                Ok(_) => {
+                    return Err(with_reason(
+                        ConnectError::failed_precondition(format!(
+                            "operation {} has finished",
+                            op.id
+                        )),
+                        "finished",
+                    ));
+                }
+                Err(e) => return Err(self.token_error(e).await),
+            }
+            // Dropped now, not at the follower's next look, which a change
+            // of leader would skip: a cancelled operation isn't resumed.
+            let (pool, pgs, deep, since) = (*pool, pgs.clone(), *deep, *since);
+            let message = match self
+                .ask(|reply| Admin::ScrubNow {
+                    pool,
+                    pgs,
+                    deep,
+                    since,
+                    cancel: true,
+                    reply,
+                })
+                .await?
+            {
+                Ok((done, total)) => {
+                    format!("cancelled; {done} of {total} PG(s) scrubbed, the rest dropped")
+                }
+                Err(e) => format!("cancelled; the rest not dropped: {e}"),
+            };
+            audit(&who, "CancelOperation", &target, &format!("ok, {message}"));
+            let id = op.id.clone();
+            let m = message.clone();
+            return match self
+                .admin
+                .runner
+                .store(move |s| s.update(&id, |o| o.message = m))
+                .await
+            {
+                Ok(Some(o)) => Ok(super::ops::op_pb(&o).into()),
+                Ok(None) => Err(with_reason(
+                    ConnectError::not_found("no such operation"),
+                    "not_found",
                 )),
                 Err(e) => Err(self.token_error(e).await),
             };

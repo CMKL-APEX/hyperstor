@@ -1,7 +1,7 @@
 //! Drains as operations (19-administration.md §23.6): a dry run that
 //! changes nothing, a drain followed to the end, a cancelled one that
-//! brings the devices back in; output as YAML, and the API's error
-//! reasons and exit codes.
+//! brings the devices back in, and a cancelled scrub; output as YAML, and
+//! the API's error reasons and exit codes.
 
 use hyperstor_pki::Role;
 use hyperstor_test::*;
@@ -319,4 +319,34 @@ fn copies_and_moves_run_as_operations() {
             "{op}: {audit:?}"
         );
     }
+}
+
+/// D229, I473: a scrub started now can be cancelled. Its PGs not yet
+/// scrubbed are dropped, it stays cancelled (its follower doesn't finish
+/// it after), and the cancel is audited.
+#[test]
+fn a_scrub_started_now_can_be_cancelled() {
+    let c = Cluster::all_in_one("scrubcancel", 3);
+    let r = c.ctl(&["scrub", "start", "--pool", "1", "--deep"]).ok();
+    let id = op_id(&r.out);
+    let cancelled = c.ctl(&["op", "cancel", "--id", &id]);
+    // It may have finished first on a fast host; then cancel says so.
+    if cancelled.code != 0 {
+        assert!(cancelled.has("(finished)"), "{}", cancelled.out);
+        return;
+    }
+    assert!(
+        cancelled.has("cancelled; ") && cancelled.has("PG(s) scrubbed, the rest dropped"),
+        "{}",
+        cancelled.out
+    );
+    // Past the follower's next look (every 2 s): still cancelled, which
+    // `op get` exits 1 for, as for any that didn't finish well.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let got = c.ctl(&["op", "get", "--id", &id]).expect(1);
+    assert!(got.has("cancelled"), "{}", got.out);
+    let again = c.ctl(&["op", "cancel", "--id", &id]);
+    assert!(again.code != 0 && again.has("(finished)"), "{}", again.out);
+    let audit = c.ctl(&["audit", "list", "--op", "CancelOperation"]).ok();
+    assert!(audit.has(&id), "{}", audit.out);
 }
