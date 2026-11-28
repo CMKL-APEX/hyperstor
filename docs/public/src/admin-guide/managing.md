@@ -651,18 +651,27 @@ hsfs get all acme/ml/train-disk     # each value and where it comes from
 hsfs inherit pool acme/ml           # back to the tenant's
 ```
 
-- **Names** are unique in a project: a volume, clone or copy may not
-  take a name another volume or bucket of its project has
-  (`dataset_exists`). A copy named by none is `NAME-copy`; a volume
+- **Names** are unique in a project: a volume, clone, copy or bucket may
+  not take a name another volume or bucket of its project has
+  (`dataset_exists`; S3 answers `BucketAlreadyExists`). A copy named by none is `NAME-copy`; a volume
   back from the trash whose name was taken, `NAME-restored`. Volumes in
   no project (glidex's image volumes) are not checked. Two datasets
   that shared a name before are listed as `name@<volume id>` and
   `name@bucket`, and addressed that way, until one is renamed.
 - **`pool`** acts now: a volume created without a pool goes to the pool
-  its project's or tenant's `pool` names, else the first data pool.
+  its project's or tenant's `pool` names, else the first data pool; a
+  new bucket's objects go there instead of its placement's data pool.
   Only a pool the tenant's realm may use can be set.
+- **`readonly=on`** acts on volumes: their storage nodes refuse writes
+  (an attached VM sees write errors), while they still attach and read,
+  and expanding, rolling back or flattening one is refused. `hsfs set`
+  returns once storage nodes refuse the writes; a volume made, cloned
+  or copied into a read-only project takes it within 30 seconds. Its
+  snapshots can still be taken and deleted. On a bucket, its gateways
+  refuse writes and deletes of objects (`AccessDenied`) and serve
+  reads; the bucket itself can still be deleted.
 - **The others** (`quota`, `refquota`, `reservation`, `chunk`,
-  `stripe`, `compression`, `encryption`, `readonly`, `reads`, `weight`,
+  `stripe`, `compression`, `encryption`, `reads`, `weight`,
   `class`, `snapdir`, `nfs`, `s3`, `sync`) are kept and shown, marked
   *not enforced yet*: set a tenant's plan now, and each is applied as
   it is built.

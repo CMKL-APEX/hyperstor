@@ -2048,3 +2048,14 @@ The questions 08-engine.md §7.6 left open, measured (02-benchmarks.md,
 
 D408's sizes against real block traces still wait for the owner to
 accept the SNIA trace license (MSR Cambridge, Tencent).
+
+## Datasets, stage H1: `readonly` and buckets (2026-11-27)
+
+`readonly` can't be enforced at the lease, because only read-write
+leases exist, and the S3 gateway makes buckets without asking the map
+service.
+
+| # | Point | Answer | Result |
+|---|---|---|---|
+| 379 | How a read-only volume behaves: primaries refuse writes and it still attaches and reads (recommended); rw leases refused, so it can't be attached until read-only leases exist; or build read-only leases first | Primaries refuse writes | D420 |
+| 380 | How the gateway learns names and properties: it asks the API at `CreateBucket`, and read-only buckets travel with the keys (recommended); or everything travels with the keys | Ask the API at `CreateBucket` | D421 |

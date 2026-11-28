@@ -61,6 +61,24 @@ service S3Service {
   // serves with, fetched every few seconds. S3 gateways ("s3"
   // certificates, D233) only.
   rpc GetS3Gateway(GetS3GatewayRequest) returns (GetS3GatewayResponse);
+
+  // Asked by a gateway at CreateBucket (D421): whether the name is free
+  // in the project its bucket goes to, among the project's datasets
+  // (D387), and the pool its `pool` property names. S3 gateways only.
+  rpc PrepareBucket(PrepareBucketRequest) returns (PrepareBucketResponse);
+}
+
+message PrepareBucketRequest {
+  uint32 tenant = 1;
+  // As the key names it; 0: the tenant's default project.
+  uint32 project = 2;
+  string name = 3;
+}
+
+message PrepareBucketResponse {
+  // The pool for its objects; 0: the placement's. `already_exists`
+  // (`dataset_exists`) when another dataset of the project has the name.
+  uint32 data_pool = 1 [json_name = "data_pool"];
 }
 
 // Realms (20-tenants.md §24.8, 04-decisions.md D248–D253): groups of
@@ -779,6 +797,14 @@ message S3GatewayKey {
 message GetS3GatewayResponse {
   repeated S3GatewayKey keys = 1;
   repeated S3Placement placements = 2;
+  // The realm's buckets whose `readonly` is on (D420, D421): the gateway
+  // refuses writes to their objects.
+  repeated S3ReadonlyBucket readonly_buckets = 3 [json_name = "readonly_buckets"];
+}
+
+message S3ReadonlyBucket {
+  uint32 tenant = 1;
+  string name = 2;
 }
 
 message Realm {

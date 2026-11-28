@@ -399,13 +399,14 @@ fn a_project_moves_to_another_tenant() {
             .ok(),
     );
     let web_s = web.to_string();
+    // Not "site": the bucket below shares the project's names (D421).
     let v = c
         .ctl(&[
             "create-volume",
             "--size",
             "1M",
             "--name",
-            "site",
+            "disk",
             "--project",
             &web_s,
         ])
