@@ -540,7 +540,12 @@ mod tests {
             t.contains("hyperstor_encrypted_connections_total{node=\"4\",device=\"4000\"} 0\n")
         );
         assert!(t.contains("hyperstor_refused_connections_total{node=\"4\",device=\"4000\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 30);
+        assert!(t.contains(
+            "hyperstor_index_leaf_bytes{node=\"4\",device=\"4001\",kind=\"packed\"} 0\n"
+        ));
+        assert!(t.contains("hyperstor_index_mapped{node=\"4\",device=\"4000\",kind=\"runs\"} 0\n"));
+        assert!(t.contains("hyperstor_index_passes_total{node=\"4\",device=\"4000\"} 0\n"));
+        assert_eq!(t.matches("# TYPE ").count(), 33);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {
