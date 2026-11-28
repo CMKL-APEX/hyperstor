@@ -31,23 +31,13 @@ const CRCS_PER_PAGE: u64 = 1024;
 
 /// One object's mappings, as maximal runs contiguous both logically and
 /// physically: (first logical block, physical block, blocks).
-pub(crate) type Runs = Vec<(u64, u64, u64)>;
+pub(crate) type Runs = hyperstor_engine::leaf::Runs;
 
 pub(crate) fn mappings(sh: &Shard) -> Vec<(ObjKey, Runs)> {
     sh.index()
         .objects
         .iter()
-        .map(|(k, o)| {
-            let mut out: Runs = Vec::new();
-            for (lb, pb, crcs) in o.blocks.runs() {
-                let n = crcs.len() as u64;
-                match out.last_mut() {
-                    Some((l, p, c)) if *l + *c == lb && *p + *c == pb => *c += n,
-                    _ => out.push((lb, pb, n)),
-                }
-            }
-            (k.clone(), out)
-        })
+        .map(|(k, o)| (k.clone(), hyperstor_engine::leaf::runs_of(&o.blocks)))
         .collect()
 }
 
@@ -66,26 +56,13 @@ struct Sizes {
 }
 
 fn object_sizes(runs: &Runs) -> Sizes {
-    let blocks: u64 = runs.iter().map(|r| r.2).sum();
-    let mut packed = 0.0;
-    // Stretches of logically adjacent runs: each is coded as ranges or as
-    // one packed entry, whichever is smaller.
-    let mut i = 0;
-    while i < runs.len() {
-        let mut j = i + 1;
-        while j < runs.len() && runs[j - 1].0 + runs[j - 1].2 == runs[j].0 {
-            j += 1;
-        }
-        let k = (j - i) as f64;
-        let b: u64 = runs[i..j].iter().map(|r| r.2).sum();
-        packed += (16.0 * k).min(16.0 + 4.0 * b as f64);
-        i = j;
-    }
+    // The engine's sizing, which running nodes report too (D408).
+    let b = hyperstor_engine::leaf::LeafBytes::of(runs);
     Sizes {
-        per_block: 12.0 * blocks as f64,
-        per_block64: 16.0 * blocks as f64,
-        ranges: 16.0 * runs.len() as f64,
-        packed,
+        per_block: b.per_block as f64,
+        per_block64: b.per_block64 as f64,
+        ranges: b.ranges as f64,
+        packed: b.packed as f64,
     }
 }
 
@@ -148,6 +125,16 @@ const FORMATS: [&str; 4] = [
 fn report_sizes(sh: &Shard, label: &str, data_gib: f64) {
     let maps = mappings(sh);
     let l = layout(&maps);
+    // What a running node's walk costs (D408 gauges): per 1,000 objects.
+    let t = std::time::Instant::now();
+    let mut tally = hyperstor_engine::leaf::LeafTally::default();
+    sh.size_leaves(None, usize::MAX, &mut tally);
+    let us = t.elapsed().as_secs_f64() * 1e6 / tally.objects.max(1) as f64 * 1000.0;
+    assert_eq!(
+        tally.bytes.packed as f64, l.total[3],
+        "the node's sizing and the bench's agree"
+    );
+    eprintln!("{label}: sizing leaves takes {us:.0} µs per 1,000 objects");
     let ix = sh.index_stats();
     let st = sh.stats();
     let per_tib = |b: f64| b / data_gib * 1024.0 / (1u64 << 30) as f64;

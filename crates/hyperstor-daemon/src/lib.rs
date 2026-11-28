@@ -314,6 +314,13 @@ const BACKFILL_WINDOW: usize = 16;
 /// a node reported silent is always in the log.
 pub const STALL: Duration = Duration::from_millis(100);
 
+/// Objects a reactor sizes for the index's leaf gauges each second
+/// (D408); 1,000 fragmented 4 MiB maps take up to 8 ms
+/// (02-benchmarks.md, 2026-11-28), under [`STALL`].
+const LEAF_SLICE: usize = 1000;
+/// How often a reactor sizes its index's leaves again.
+const LEAF_EVERY: Duration = Duration::from_secs(3600);
+
 /// How long a ping waits for its answer, over TCP or UDP.
 const PING_WAIT: Duration = Duration::from_millis(200);
 /// A UDP ping and its answer (D185): four bytes saying which, then the
@@ -673,6 +680,7 @@ pub fn start(cfg: NodeConfig) -> NodeHandle {
                             spawn(st.clone().accept(TcpListener::from_std(l)));
                         }
                         spawn(st.clone().gauges());
+                        spawn(st.clone().size_leaves());
                         spawn(st.clone().usage(usage_every));
                         *st.drive.borrow_mut() =
                             Some(drive::watch(sh.device_id, drive_path, cpu));
@@ -2439,6 +2447,40 @@ impl ShardState {
                 m.map_epoch.store(self.map().epoch, Relaxed);
             }
             sleep(Duration::from_secs(1)).await;
+        }
+    }
+
+    /// Sizes the on-device index's leaves for the device's block maps
+    /// (D408), for the admin port's gauges: [`LEAF_SLICE`] objects a
+    /// second, a pass every [`LEAF_EVERY`], so the reactor is held for a
+    /// slice at a time. Only totals leave the node, never a map.
+    async fn size_leaves(self: Rc<Self>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        loop {
+            let mut tally = hyperstor_engine::leaf::LeafTally::default();
+            let mut at = None;
+            loop {
+                let next = self
+                    .shard
+                    .get()
+                    .await
+                    .size_leaves(at.as_ref(), LEAF_SLICE, &mut tally);
+                match next {
+                    Some(k) => at = Some(k),
+                    None => break,
+                }
+                sleep(Duration::from_secs(1)).await;
+            }
+            let m = &self.metrics;
+            m.leaf_objects.store(tally.objects, Relaxed);
+            m.leaf_blocks.store(tally.blocks, Relaxed);
+            m.leaf_runs.store(tally.runs, Relaxed);
+            m.leaf_per_block.store(tally.bytes.per_block, Relaxed);
+            m.leaf_per_block64.store(tally.bytes.per_block64, Relaxed);
+            m.leaf_ranges.store(tally.bytes.ranges, Relaxed);
+            m.leaf_packed.store(tally.bytes.packed, Relaxed);
+            m.leaf_passes.fetch_add(1, Relaxed);
+            sleep(LEAF_EVERY).await;
         }
     }
 
