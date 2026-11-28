@@ -138,6 +138,7 @@ them; `detail` is for people and may change.
 | `clock` | NTP synchronization |
 | `disk` | free space for the device files |
 | `ports` | the cluster's ports are free, or hyperstor's own |
+| `ktls` | the kernel's TLS module is loaded; info when it isn't yet (install loads it), warn when the kernel has none, as sessions with the host can't be encrypted |
 | `rootkey` | the root CA's key is backed up, or not on this host |
 | `systemd` | systemd is running |
 | `vhost` | with `--vhost`: the `--vhost-user` users exist |

@@ -117,6 +117,9 @@ the reason and the fix:
   storage NIC's NUMA node against the devices' (H7);
 - free cores for reactors after the host's reservations;
 - clock sync (leases depend on bounded drift, D48);
+- the kernel's TLS module, for sessions encrypted off trusted networks
+  (D405, D414): the install loads it and lists it in
+  `/etc/modules-load.d/hyperstor-tls.conf`;
 - that no device given is mounted, in use by LVM or another datastore;
 - whether libblkid knows Hyperstor's superblock (D332–D334, D344): info
   when it doesn't, warn when it once did on this host and an update
@@ -129,8 +132,8 @@ A check that rests on a host claim cites its host check (G…).
 tools (#416, I433): `worst`, then `checks`, each with `name`, `level`
 (`ok`, `info`, `warn`, `fail`) and `detail`; the exit status is the same.
 The names are stable: `kernel`, `io_uring`, `memlock`, `cpus`, `nvme`,
-`clock`, `disk`, `ports`, `rootkey`, `systemd`, `vhost`, `routing`,
-`libblkid`. A new check gets a new name; a name is never reused for
+`clock`, `disk`, `ports`, `ktls`, `rootkey`, `systemd`, `vhost`,
+`routing`, `libblkid`. A new check gets a new name; a name is never reused for
 another check. *Why:* a tool decides on which check failed without
 parsing text written for people.
 
