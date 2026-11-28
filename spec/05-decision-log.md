@@ -2035,8 +2035,8 @@ by the owner on 2026-11-28 as recommended: D408–D413, one a point.
 ## The on-device index's open questions: measured (2026-11-28)
 
 The questions 08-engine.md §7.6 left open, measured (02-benchmarks.md,
-2026-11-28, `hyperstor-bench open`, `snapshots`, `metadata`). Open for
-the owner:
+2026-11-28, `hyperstor-bench open`, `snapshots`, `metadata`, `kvcount`,
+`slotted`). Open for the owner:
 
 | # | Point | Data | Recommendation |
 |---|---|---|---|
@@ -2044,6 +2044,7 @@ the owner:
 | 375 | Metadata: (a) the Bε-tree flavour from the start (D44); (b) one copy-on-write B+tree for both, a Bε-tree later where measured; (c) (b) with a larger log for metadata-heavy shards | The log costs 192 bytes per put. With 39 puts per leaf between checkpoints (1M keys, largest log), the B+tree adds 106 bytes per put. With fewer puts than leaves (100M keys), 3,477, and a Bε-tree 4–16× less, at one or two more levels per read. The pilot's metadata objects hold tens to thousands of entries, 660,000 at most once; 10M keys per PG means a key–value table of about 256 GB in a 256-PG pool | (b), with G15 on a real agent-memory load before the Bε-tree, and when a key–value table nears that size; (c) as the first lever |
 | 376 | Open time in today's engine | Rebuilding the allocator takes 0.65 s at 4 GiB, 4 s at 16 and 21 s at 64 GiB of fragmented data, superlinear; tens of minutes for a 3.84 TB drive. Scanning a quarter of the log takes 8–13 s on an NVMe file, one synchronous read per header and record | Confirms D412. Before the on-device index: build the allocator in one pass from the used extents, sorted; read the log ahead in large reads |
 | 377 | Protection information (G40, D409's c) | PM1733: 4096+8 and 4096+64, types 1–3, a 16-bit guard only (NVMe 1.3); PM983: none. Measured on a PM1733: the drive's own PI (PRACT) costs nothing; the kernel's costs 13% of saturated reads; 64 bytes of metadata per block cost 26% of saturated reads even without PI; 8 bytes cost nothing | Keep our CRC32C in the index (D409's a and b) everywhere; where a drive has a PI format, use 4096+8 with PRACT as a free extra check inside the drive, not in place of our checksums; don't keep CRC32C in 64-byte metadata |
+| 378 | A node format ready for the Bε-tree (D44, point 375): (a) none, a later incompatible format step; (b) every node with a header (kind, level, version, flags), inner nodes slotted with room for a message buffer, messages coded as log records, a flavour per tree, a device feature bit set by the first buffered node; (c) (b), with fixed-size keys kept for block-map trees (a header flag) and slotted nodes only for metadata trees | Slotted inner nodes cost 12% per lookup (0.12–0.19 µs, about 0.1% of a read's CPU) and 0.1% of the index's space; leaves and writes unchanged. Metadata trees need variable-length keys even as plain B+trees | (c): block maps pay only a 16-byte header; reading buffered nodes is built only with the Bε-tree, behind the feature bit |
 
 D408's sizes against real block traces still wait for the owner to
 accept the SNIA trace license (MSR Cambridge, Tencent).

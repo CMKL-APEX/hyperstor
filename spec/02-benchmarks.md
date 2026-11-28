@@ -3163,6 +3163,30 @@ The key–value store is what can grow past that: a range splits at
 a PG holds many ranges. Ten million keys in one PG, where the Bε-tree
 starts to pay (above), is a table of about 256 GB in a pool of 256 PGs.
 
+### Inner nodes ready for the Bε-tree (point 378)
+
+`hyperstor-bench slotted` (`HS_LEAVES=262144`, then `4194304`), pinned
+to one idle CPU: two million random lookups, each through the page
+table (D411), in a tree whose leaves hold 16-byte keys. "Fixed": inner
+nodes with fixed 16-byte keys (object, block) and 8-byte children.
+"Slotted": a 2-byte slot per entry from the front of the page and
+records (key length, key, child) from the back, leaving room for a
+message buffer that stays empty; what a metadata tree needs for its
+variable-length keys anyway. Best of three.
+
+| Leaves | Inner nodes | Children per node | Depth | Inner pages | ns per lookup |
+|---|---|---|---|---|---|
+| 262,144 (1 GiB) | fixed | 119 | 4 | 2,223 | 978 |
+| 262,144 (1 GiB) | slotted | 106 | 4 | 2,499 | 1,095 |
+| 4,194,304 (16 GiB) | fixed | 119 | 5 | 35,548 | 1,621 |
+| 4,194,304 (16 GiB) | slotted | 106 | 5 | 39,948 | 1,807 |
+
+Slotted inner nodes cost 12% more per lookup (0.12–0.19 µs, about 0.1%
+of a 4 KiB read's CPU, 190 µs) and 12% more inner pages (inner pages
+are under 1% of the index, so 0.1% of its space). The depth is the
+same. Leaves and writes don't change: a checkpoint writes the same
+pages, and an empty buffer is a 2-byte length.
+
 ### Protection information on the drives at hand (M7, G40)
 
 `nvme id-ns` and `nvme id-ctrl` (nvme-cli). All drives are formatted

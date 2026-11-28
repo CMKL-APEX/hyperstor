@@ -2410,6 +2410,11 @@ fn main() {
             // Bε-tree write per update, checkpointed over the log (D44, G15)
             versions::meta_suite();
         }
+        Some("slotted") => {
+            // hyperstor-bench slotted: what inner nodes ready for the
+            // Bε-tree cost a lookup (point 378)
+            versions::slotted_suite();
+        }
         Some("kvcount") => {
             // hyperstor-bench kvcount PATH: key-value entries per PG on a
             // copy of a device (point 375); never a live device

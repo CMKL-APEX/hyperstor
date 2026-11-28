@@ -426,9 +426,10 @@ each choice are in 02-benchmarks.md (2026-11-27 and 2026-11-28) and
   64-bit physical blocks ending D270's 16 TiB per shard (D413), and a
   conversion an operator asks for, as D274's.
 - **Not yet settled:** measured 2026-11-28 and open for the owner
-  (02-benchmarks.md; 05-decision-log.md points 374–377): snapshots as
+  (02-benchmarks.md; 05-decision-log.md points 374–378): snapshots as
   version objects with a derived head map instead of ranges shared
   with reference counts (D44); one copy-on-write B+tree before the
-  Bε-tree flavour (D44, G15); today's open time; protection
+  Bε-tree flavour (D44, G15), in a node format ready for it (variable
+  keys for metadata trees; point 378); today's open time; protection
   information on the drives at hand (G40). A check of D408's sizes
   against real block traces waits for the trace license.

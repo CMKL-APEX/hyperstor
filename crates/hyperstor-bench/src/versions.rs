@@ -362,3 +362,198 @@ pub fn meta_suite() {
         }
     }
 }
+
+/// What preparing the node format for the Bε-tree costs a lookup (point
+/// 378): inner nodes with fixed 16-byte keys (object, block) against
+/// slotted nodes with variable-length keys, a slot array from the front
+/// and records (length, key, child) from the back, leaving room for a
+/// message buffer that stays empty. Both behind the same page table
+/// (D411); leaves are the same in both.
+pub fn slotted_suite() {
+    use std::collections::HashMap;
+    use std::hash::{BuildHasherDefault, Hasher};
+    #[derive(Default)]
+    struct Mul(u64);
+    impl Hasher for Mul {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, _: &[u8]) {
+            unreachable!("u64 keys only")
+        }
+        fn write_u64(&mut self, x: u64) {
+            self.0 = x.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+    type Table = HashMap<u64, usize, BuildHasherDefault<Mul>>;
+    const PAGE: usize = 4096;
+    let leaves: usize = std::env::var("HS_LEAVES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(262_144);
+    let key = |k: u64| -> [u8; 16] {
+        let mut b = [0u8; 16];
+        b[..8].copy_from_slice(&(k >> 10).to_be_bytes());
+        b[8..].copy_from_slice(&(k & 1023).to_be_bytes());
+        b
+    };
+    let page_of = |frame: usize| (frame as u64).wrapping_mul(2_654_435_761) ^ 0x5555;
+    // Leaves: count (u16), then 16-byte keys; the same for both variants.
+    let leaf_fan = (model::NODE * model::FILL / 16.0) as usize;
+    let fixed_fan = (model::NODE * model::FILL / 24.0) as usize;
+    let slot_fan = (model::NODE * model::FILL / (2.0 + 1.0 + 16.0 + 8.0)) as usize;
+    let probes: Vec<u64> = {
+        let mut rng = SmallRng::seed_from_u64(9);
+        let n = (leaves * leaf_fan) as u64;
+        (0..2_000_000).map(|_| rng.random_range(0..n)).collect()
+    };
+
+    struct Tree {
+        mem: Vec<u8>,
+        root: usize,
+        depth: u32,
+        table: Table,
+    }
+    let build = |slotted: bool| -> Tree {
+        let fan = if slotted { slot_fan } else { fixed_fan };
+        let mut mem: Vec<u8> = Vec::new();
+        let mut level: Vec<([u8; 16], usize)> = Vec::new();
+        for l in 0..leaves {
+            let f = mem.len() / PAGE;
+            mem.resize(mem.len() + PAGE, 0);
+            let p = &mut mem[f * PAGE..(f + 1) * PAGE];
+            p[..2].copy_from_slice(&(leaf_fan as u16).to_le_bytes());
+            for i in 0..leaf_fan {
+                let k = key((l * leaf_fan + i) as u64);
+                p[2 + i * 16..2 + (i + 1) * 16].copy_from_slice(&k);
+            }
+            level.push((key((l * leaf_fan) as u64), f));
+        }
+        let mut depth = 1;
+        while level.len() > 1 {
+            let mut up = Vec::new();
+            for group in level.chunks(fan) {
+                let f = mem.len() / PAGE;
+                mem.resize(mem.len() + PAGE, 0);
+                let p = &mut mem[f * PAGE..(f + 1) * PAGE];
+                p[..2].copy_from_slice(&(group.len() as u16).to_le_bytes());
+                if slotted {
+                    // Header: count u16, flags u16 (no buffer), buffer
+                    // length u16; slots from byte 8; records from the end.
+                    let mut end = PAGE;
+                    for (i, (k, child)) in group.iter().enumerate() {
+                        let rec = 1 + k.len() + 8;
+                        end -= rec;
+                        p[end] = k.len() as u8;
+                        p[end + 1..end + 1 + k.len()].copy_from_slice(k);
+                        p[end + 1 + k.len()..end + rec]
+                            .copy_from_slice(&page_of(*child).to_le_bytes());
+                        p[8 + i * 2..10 + i * 2].copy_from_slice(&(end as u16).to_le_bytes());
+                    }
+                } else {
+                    for (i, (k, child)) in group.iter().enumerate() {
+                        p[8 + i * 16..8 + (i + 1) * 16].copy_from_slice(k);
+                        let c = 8 + fan * 16 + i * 8;
+                        p[c..c + 8].copy_from_slice(&page_of(*child).to_le_bytes());
+                    }
+                }
+                up.push((group[0].0, f));
+            }
+            level = up;
+            depth += 1;
+        }
+        let frames = mem.len() / PAGE;
+        let mut table = Table::default();
+        for f in 0..frames {
+            table.insert(page_of(f), f);
+        }
+        Tree {
+            mem,
+            root: level[0].1,
+            depth,
+            table,
+        }
+    };
+    let lookup = |t: &Tree, slotted: bool, k: u64| -> u64 {
+        let fan = if slotted { slot_fan } else { fixed_fan };
+        let probe = key(k);
+        let mut f = t.root;
+        for _ in 1..t.depth {
+            let p = &t.mem[f * PAGE..(f + 1) * PAGE];
+            let n = u16::from_le_bytes([p[0], p[1]]) as usize;
+            let child = if slotted {
+                let rec = |i: usize| u16::from_le_bytes([p[8 + i * 2], p[9 + i * 2]]) as usize;
+                let kat = |i: usize| {
+                    let o = rec(i);
+                    &p[o + 1..o + 1 + p[o] as usize]
+                };
+                let (mut lo, mut hi) = (0, n);
+                while lo < hi {
+                    let m = (lo + hi) / 2;
+                    if kat(m) <= &probe[..] {
+                        lo = m + 1;
+                    } else {
+                        hi = m;
+                    }
+                }
+                let i = lo.saturating_sub(1);
+                let o = rec(i);
+                let c = o + 1 + p[o] as usize;
+                u64::from_le_bytes(p[c..c + 8].try_into().unwrap())
+            } else {
+                let ks = |i: usize| &p[8 + i * 16..8 + (i + 1) * 16];
+                let (mut lo, mut hi) = (0, n);
+                while lo < hi {
+                    let m = (lo + hi) / 2;
+                    if ks(m) <= &probe[..] {
+                        lo = m + 1;
+                    } else {
+                        hi = m;
+                    }
+                }
+                let i = lo.saturating_sub(1);
+                let c = 8 + fan * 16 + i * 8;
+                u64::from_le_bytes(p[c..c + 8].try_into().unwrap())
+            };
+            f = t.table[&child];
+        }
+        let p = &t.mem[f * PAGE..(f + 1) * PAGE];
+        let n = u16::from_le_bytes([p[0], p[1]]) as usize;
+        let (mut lo, mut hi) = (0, n);
+        while lo < hi {
+            let m = (lo + hi) / 2;
+            if p[2 + m * 16..2 + (m + 1) * 16] < probe[..] {
+                lo = m + 1;
+            } else {
+                hi = m;
+            }
+        }
+        lo as u64
+    };
+    println!("| Inner nodes | Children per node | Depth | Inner pages | ns per lookup |");
+    println!("|---|---|---|---|---|");
+    for slotted in [false, true] {
+        let t = build(slotted);
+        let inner = t.mem.len() / PAGE - leaves;
+        let mut best = f64::MAX;
+        for _ in 0..3 {
+            let s = Instant::now();
+            let mut sum = 0u64;
+            for &k in &probes {
+                sum = sum.wrapping_add(lookup(&t, slotted, k));
+            }
+            std::hint::black_box(sum);
+            best = best.min(s.elapsed().as_nanos() as f64 / probes.len() as f64);
+        }
+        println!(
+            "| {} | {} | {} | {inner} | {best:.0} |",
+            if slotted {
+                "slotted, variable keys, empty buffer"
+            } else {
+                "fixed 16-byte keys"
+            },
+            if slotted { slot_fan } else { fixed_fan },
+            t.depth,
+        );
+    }
+}
