@@ -32,12 +32,12 @@ Milestones HS0–HS14 and the host checks (`G…`) to run before sections are fi
 | HS19 | Networks (26-networks.md §29, D203–D213), in stages: networks, endpoints ranked by closeness and control apart from data, on glidex's topology crate (stage 1); path choice per I/O and health per network (2); the fabric reconciler in the leader (3); claims and the `orchestrator` role (4); RDMA endpoints and GPU-direct pairing (5). G47–G53. | HS2; stage 5: HS6, HS8 |
 | HS20 | Data-path mutual TLS (30-data-path-tls.md §33, D25, D372–D380), in stages T0–T3: certificates on every host, the handshake after `Hello` with modes `off` and `allow`, `require` with authorization by role, then encryption on networks not marked trusted. | AD1 |
 | HS21 | Kubernetes CSI driver (31-csi.md §34, D390–D401), in stages C1–C6: volumes on storage-network nodes through ublk (C1), snapshots and clones (C2), restarts with ublk user recovery (C3), ReadOnlyMany from read-only snapshot attachments (C4), image, Helm chart and the Kubernetes suite (C5), then Kubernetes on glidex VMs through hot-plugged disks (C6). G70–G72. | HS4, AD1; C1: HS20 T2; C6: glidex hot-plug |
-| AD0 | Administration foundation (19-administration.md §23.11): `hyperstor.v1` on connectrpc with `buf` checks (D51), leaf identities and the two-level CA (D53, D56), `hyperstorctl` generated from the protos with the local socket (D55). | HS1 |
+| AD0 | Administration foundation (19-administration.md §23.11): `hyperstor.v1` on connectrpc with `buf` checks (D51), leaf identities and the two-level CA (D53, D56), `hsctl` generated from the protos with the local socket (D55). | HS1 |
 | AD1 | `hyperstor-install` with `check`, join tokens (D57) and `--all-in-one`. | AD0 |
 | AD2 | `hyperstor-mgmt` read-only (D50): health, map, metrics, watch fan-out, UI pages without actions; G17. Needs `glidex-auth` extracted (D52, a glidex change). | AD0 |
 | AD3 | UI and CLI writes, Cedar roles, step-up, trash (D54), audit, operations. | AD2 |
 | AD4 | glidex: a tenant's volumes, buckets, keys and usage per project inline in glidex's UI through mgmt's API, and links from each hyperstor datastore to its mgmt (19-administration.md §23.12, D310; a glidex change). | AD5 |
-| AD5 | People from glidex directories (19-administration.md §23.12, D305–D311): `glidex-trust` extracted (a glidex change), offers, redeem and the feed, logins through a directory with its passkeys and IdPs, grants from the feed, `hyperstorctl` logins, the account picker, reports. | AD3, HS15's records |
+| AD5 | People from glidex directories (19-administration.md §23.12, D305–D311): `glidex-trust` extracted (a glidex change), offers, redeem and the feed, logins through a directory with its passkeys and IdPs, grants from the feed, `hsctl` logins, the account picker, reports. | AD3, HS15's records |
 | — | A libfabric transport, when a site has UET, EFA or Slingshot NICs with production drivers (D30). Queued, no milestone yet. | HS6 |
 
 ## 22. Questions

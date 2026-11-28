@@ -24,7 +24,7 @@ management service and UI (§23.7), and people's access (§23.9).
 
   Tenants never reach the management API. In glidex, everything goes
   through glidex's own API and Cedar policies (16-glidex.md §17).
-- **CLI:** `hyperstorctl` for standalone use and for operators (`cluster
+- **CLI:** `hsctl` for standalone use and for operators (`cluster
   init`, `node add`, `device add`, `pool create`, `volume …`,
   `status`). In glidex, the usual path is `gxctl datastore` (16-glidex.md §17).
 - **Health** is `ok`, `warn` (degraded PGs recovering, nearfull, a
@@ -52,7 +52,7 @@ management service and UI (§23.7), and people's access (§23.9).
 | `hyperstor-vhost` | the vhost-user-blk service |
 | `hyperstor-gw` | the NVMe-oF gateway |
 | `hyperstor-gpu` | `libhyperstor-gpu` and the two interposers (`cdylib`) |
-| `hyperstor-ctl` | `hyperstorctl` |
+| `hyperstor-ctl` | `hsctl` |
 | `hyperstor-ublk` | `hyperstor-ublk`: a volume as a ublk block device (D95) |
 | `hyperstor-smart` | `hyperstor-smart`: the root helper that reads NVMe drives' health logs for `hyperstord` (27-performance.md §30.3, D221) |
 | `hyperstor-kv` | the key–value store: ranges (25-kv-ranges.md §28), then transactions (08-engine.md §7.5) |
@@ -107,7 +107,7 @@ management service and UI (§23.7), and people's access (§23.9).
 ## 19. Security
 
 - mTLS everywhere on TCP, against hyperstor's own two-level CA, created
-  by `hyperstorctl cluster init` in both modes (D53, D60;
+  by `hsctl cluster init` in both modes (D53, D60;
   19-administration.md §23.8). Encryption on
   untrusted networks per D25.
 - RDMA queue pairs are reliable-connected and are set up only over an

@@ -32,7 +32,7 @@ usage: hyperstor-vhost serve --meta ADDR[,ADDR...] [--dir DIR] [--allow-uid UID]
 | `--hold-full SECS` | 300 | `serve`: how long a write refused because a device is full is held, tried again every second, before the guest sees an I/O error (0–3600; 0: at once). See [Full devices](../admin-guide/pools-and-devices.md#full-devices) |
 | `--hold-outage SECS` | 3600 | `serve`: how long a read or write is held while the cluster can't serve it (no primary for its data, the map service without a leader, storage nodes unreachable), tried again every second, before the guest sees an I/O error (0–86400; 0: after the client's own tries, about 30 s). See [Outages](#outages) |
 | `--hold-standby SECS` | 30 | `serve`: how long a live migration's target holds a guest's writes before it is promoted, then fails them (0–3600; 0: at once). See [Live migration](#live-migration) |
-| `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hyperstorctl realm host`) |
+| `--host NAME` | its hostname | `serve`: the name it gives storage nodes, by which a host is bound to realms (`hsctl realm host`) |
 | `--identity DIR` | none | `serve`: The host's identity on the storage network: `host.crt` and `host.key` in `DIR` (a host joined with `hyperstor-install --role vhost --join`), else `node.crt` or `api.crt` (a storage or map service host), with `root.crt`. With it, each connection to a storage node or the map service starts TLS where the cluster's mode allows. `hyperstor-install` sets it where the host has an identity |
 | `--networks NAME[,NAME...]` | none | `serve`: the data networks this host reaches storage nodes on, in order: a device's endpoint on the first network it has one on (see the [cluster file](cluster-file.md#endpoint)), else its address |
 | `--cpus LIST` | the first CPU of each NUMA node | `serve`: the CPUs its reactors run on, one reactor pinned to each (`0,64` or `0-1`). See [NUMA nodes](#numa-nodes) |
@@ -63,7 +63,7 @@ detaches without `--force`. `hyperstor-install
 
 ```sh
 sudo hyperstor-vhost serve --meta 192.0.2.10:8849 --allow-uid "$(id -u)" &
-id=$(hyperstorctl create-volume --size 20G --name vm-disk | awk '{print $2}')
+id=$(hsctl create-volume --size 20G --name vm-disk | awk '{print $2}')
 sudo hyperstor-vhost ctl attach "$id" --serial vm-disk --for "$USER"
 cloud-hypervisor --memory size=2G,shared=on \
   --disk vhost_user=true,socket=/run/hyperstor/vhost/$id.sock ...
@@ -108,7 +108,7 @@ or `null` when it runs without `--identity`. An `attach` may name who asks, `"ho
 to 58 printable characters; glidex gives its node's name): the lease is
 labelled `vhost:<name>` (`vhost` without one). A `held` error names the
 label of whoever holds the volume, `"holder"`: `vhost:<name>` for
-another node's service, `hyperstorctl` for a tool. `"poll": true`
+another node's service, `hsctl` for a tool. `"poll": true`
 polls the disk (see [Polling](#polling)); it is kept across restarts.
 
 ## NUMA nodes

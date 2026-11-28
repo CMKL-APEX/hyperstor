@@ -60,7 +60,7 @@ test("the pages show the cluster", async ({ page }) => {
   // Out and back in, with the command shown.
   const dev = page.getByTestId("device-2000");
   await dev.getByRole("button", { name: "Take out" }).click();
-  await expect(page.getByRole("dialog")).toContainText("hyperstorctl out --device 2000");
+  await expect(page.getByRole("dialog")).toContainText("hsctl out --device 2000");
   await page.getByRole("dialog").getByRole("button", { name: "Take out" }).click();
   await expect(dev).toContainText("out");
   await dev.getByRole("button", { name: "Bring in" }).click();
@@ -78,7 +78,7 @@ test("the pages show the cluster", async ({ page }) => {
   await page.getByRole("img", { name: /Pool 1's \d+ PGs/ }).click({ position: { x: 1, y: 1 } });
   await expect(page.getByText("1.0", { exact: true })).toBeVisible();
   await expect(page.getByText("1.1", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("hyperstorctl pgs --pool 1 --pg 0")).toBeVisible();
+  await expect(page.getByText("hsctl pgs --pool 1 --pg 0")).toBeVisible();
   await page.getByRole("button", { name: "List all" }).click();
   await expect(page.getByText("1.1", { exact: true })).toBeVisible();
   // The one member leads, in step in its own view (D281), on the host of
@@ -98,7 +98,7 @@ test("volumes and snapshots", async ({ page }) => {
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Name").fill("web-vol");
   await dialog.getByLabel(/Size/).fill("64M");
-  await expect(dialog.getByText("hyperstorctl create-volume --pool 1 --size 64M --name web-vol")).toBeVisible();
+  await expect(dialog.getByText("hsctl create-volume --pool 1 --size 64M --name web-vol")).toBeVisible();
   await dialog.getByRole("button", { name: "Create" }).click();
   const row = page.getByTestId("volume-web-vol");
   await expect(row).toContainText("64.0 MiB");
@@ -142,7 +142,7 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   const vol = page.getByTestId("volume-web-vol");
   await vol.getByRole("button", { name: "Expand" }).click();
   await expect(dialog.getByLabel(/New size/)).toHaveValue("128M");
-  await expect(dialog.getByText(/hyperstorctl expand-volume --id [0-9a-f]+ --size 128M/)).toBeVisible();
+  await expect(dialog.getByText(/hsctl expand-volume --id [0-9a-f]+ --size 128M/)).toBeVisible();
   await dialog.getByRole("button", { name: "Expand" }).click();
   await expect(vol).toContainText("128.0 MiB");
   // A cache pool: made, changed, its devices chosen, deleted.
@@ -153,7 +153,7 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   await dialog.getByLabel(/^PGs/).fill("16");
   await dialog.getByLabel(/autoscale/).uncheck();
   await expect(
-    dialog.getByText("hyperstorctl pool create --name web-pool --classes file --kind cache --pgs 16 --autoscale off"),
+    dialog.getByText("hsctl pool create --name web-pool --classes file --kind cache --pgs 16 --autoscale off"),
   ).toBeVisible();
   await dialog.getByRole("button", { name: "Create" }).click();
   await expect(page.getByText("Pool 3 web-pool made, 16 PGs.")).toBeVisible();
@@ -161,7 +161,7 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   await expect(pool).toContainText("web-pool");
   await pool.getByRole("button", { name: "Edit" }).click();
   await dialog.getByLabel(/Seconds a PG waits/).fill("300");
-  await expect(dialog.getByText("hyperstorctl pool set --pool 3 --cache-grace 300")).toBeVisible();
+  await expect(dialog.getByText("hsctl pool set --pool 3 --cache-grace 300")).toBeVisible();
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Pool 3 changed.")).toBeVisible();
   await pool.getByRole("button", { name: "Devices" }).click();
@@ -173,7 +173,7 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   await expect(member).toContainText("yes");
   await dialog.getByRole("button", { name: "Done" }).click();
   await pool.getByRole("button", { name: "Delete" }).click();
-  await expect(dialog.getByText("hyperstorctl pool delete --pool 3")).toBeVisible();
+  await expect(dialog.getByText("hsctl pool delete --pool 3")).toBeVisible();
   await dialog.getByRole("button", { name: "Delete" }).click();
   await expect(page.getByText("Pool 3 deleted.")).toBeVisible();
   await expect(pool).toHaveCount(0);
@@ -182,7 +182,7 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   const dev = page.getByTestId("device-2000");
   await dev.getByRole("button", { name: "Weight" }).click();
   await dialog.getByLabel(/Weight/).fill("0.5");
-  await expect(dialog.getByText("hyperstorctl weight --device 2000 --weight 0.5")).toBeVisible();
+  await expect(dialog.getByText("hsctl weight --device 2000 --weight 0.5")).toBeVisible();
   await dialog.getByRole("button", { name: "Set weight" }).click();
   await expect(dev).toContainText("0.50");
   await dev.getByRole("button", { name: "Weight" }).click();
@@ -193,14 +193,14 @@ test("pools, devices and volumes are managed", async ({ page }) => {
   await page.getByRole("button", { name: "Add device" }).click();
   await dialog.getByRole("combobox", { name: /Node/ }).selectOption("2");
   await dialog.getByLabel(/Address/).fill("127.0.0.1:1");
-  await expect(dialog.getByText("hyperstorctl device add --node 2 --address 127.0.0.1:1")).toBeVisible();
+  await expect(dialog.getByText("hsctl device add --node 2 --address 127.0.0.1:1")).toBeVisible();
   await dialog.getByRole("button", { name: "Add" }).click();
   await expect(page.getByText(/Device 2001 added to node 2/)).toBeVisible();
   const added = page.getByTestId("device-2001");
   await expect(added).toContainText("0.00");
   await added.getByRole("button", { name: "Remove" }).click();
   await expect(dialog).toContainText("0 PG(s) move");
-  await expect(dialog.getByText("hyperstorctl device remove --device 2001")).toBeVisible();
+  await expect(dialog.getByText("hsctl device remove --device 2001")).toBeVisible();
   await dialog.getByRole("button", { name: "Remove" }).click();
   await expect(page.getByText(/Removing device 2001: operation [0-9a-f]{16}/)).toBeVisible();
   await expect(added).toHaveCount(0, { timeout: 30_000 });
@@ -215,27 +215,27 @@ test("the load and the drives are shown", async ({ page }) => {
   const panel = page.getByTestId("device-panel-1000");
   await expect(panel).toContainText("a file: no drive to read");
   await expect(panel.getByRole("img", { name: "Requests per second (as primary)" })).toBeVisible();
-  await expect(panel.getByText("hyperstorctl perf --device 1000")).toBeVisible();
+  await expect(panel.getByText("hsctl perf --device 1000")).toBeVisible();
   // The grid's load views (D219), with their command.
   await page.getByRole("link", { name: "Pools" }).click();
   await page.getByTestId("pool-1").getByRole("button", { name: "PGs" }).click();
   await page.getByTestId("grid-view-reads").click();
   await expect(page.getByTestId("pg-grid-1-heat")).toContainText("reads");
-  await expect(page.getByText("hyperstorctl pg-grid --pool 1 --heat read")).toBeVisible();
+  await expect(page.getByText("hsctl pg-grid --pool 1 --heat read")).toBeVisible();
   await page.getByTestId("grid-view-writes").click();
   await expect(page.getByTestId("pg-grid-1-heat")).toContainText("writes");
   // Busiest volumes, and moving one, with its command (D214).
   await page.getByRole("link", { name: "Volumes" }).click();
   await expect(page.getByText("Busiest volumes now")).toBeVisible();
   await page.getByRole("button", { name: "Move to pool" }).first().click();
-  await expect(page.getByRole("dialog")).toContainText(/hyperstorctl move-volume --id [0-9a-f]+ --pool \d+ --wait 3600/);
+  await expect(page.getByRole("dialog")).toContainText(/hsctl move-volume --id [0-9a-f]+ --pool \d+ --wait 3600/);
   await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
   // The Overview's load, and the Advisor (D222).
   await page.getByRole("link", { name: "Overview" }).click();
   await expect(page.getByTestId("load")).toContainText("requests / s");
   await page.getByRole("link", { name: "Advisor" }).first().click();
   await expect(page.getByTestId("findings")).toBeVisible();
-  await expect(page.getByText("hyperstorctl advise")).toBeVisible();
+  await expect(page.getByText("hsctl advise")).toBeVisible();
 });
 
 test("networks are set, a device's endpoints too, and ports are shown", async ({ page }) => {
@@ -243,11 +243,11 @@ test("networks are set, a device's endpoints too, and ports are shown", async ({
   const dialog = page.getByRole("dialog");
   await page.getByRole("link", { name: "Networks" }).click();
   await expect(page.getByText("No networks: storage uses devices' addresses.")).toBeVisible();
-  // A data network, as hyperstorctl network set makes it.
+  // A data network, as hsctl network set makes it.
   await page.getByRole("button", { name: "Add network" }).click();
   await dialog.getByLabel(/^Name/).fill("fast");
   await dialog.getByLabel(/^Match/).fill("subnet 127.0.0.2/32");
-  await expect(dialog.getByText('hyperstorctl network set --name fast --kind data --match "subnet 127.0.0.2/32"')).toBeVisible();
+  await expect(dialog.getByText('hsctl network set --name fast --kind data --match "subnet 127.0.0.2/32"')).toBeVisible();
   await dialog.getByRole("button", { name: "Add" }).click();
   const net = page.getByTestId("network-fast");
   await expect(net).toContainText("subnet 127.0.0.2/32");
@@ -255,7 +255,7 @@ test("networks are set, a device's endpoints too, and ports are shown", async ({
   const dev = page.getByTestId("endpoints-2000");
   await dev.getByRole("button", { name: "Endpoints" }).click();
   await dialog.getByLabel(/NETWORK=IP:PORT/).fill("fast=127.0.0.2:1");
-  await expect(dialog.getByText("hyperstorctl device endpoints --device 2000 --endpoints fast=127.0.0.2:1")).toBeVisible();
+  await expect(dialog.getByText("hsctl device endpoints --device 2000 --endpoints fast=127.0.0.2:1")).toBeVisible();
   await dialog.getByRole("button", { name: "Set" }).click();
   await expect(dev).toContainText("fast 127.0.0.2:1");
   await expect(net.getByRole("button", { name: "Remove" })).toBeDisabled();
@@ -271,7 +271,7 @@ test("networks are set, a device's endpoints too, and ports are shown", async ({
   await dialog.getByRole("button", { name: "Set" }).click();
   await expect(dev).toContainText("none");
   await net.getByRole("button", { name: "Remove" }).click();
-  await expect(dialog.getByText("hyperstorctl network remove --name fast")).toBeVisible();
+  await expect(dialog.getByText("hsctl network remove --name fast")).toBeVisible();
   await dialog.getByRole("button", { name: "Remove" }).click();
   await expect(net).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Ports" })).toBeVisible();
@@ -286,11 +286,11 @@ test("a pool's scrub is shown, changed and started", async ({ page }) => {
   const card = page.getByTestId("scrub-1");
   await expect(card).toContainText("light-scrubbed every 24 h, and deep every 7 scrubs");
   await expect(page.getByTestId("scrub-1-deep")).toContainText("Oldest deep scrub");
-  await expect(page.getByText("hyperstorctl scrub status --pool 1")).toBeVisible();
+  await expect(page.getByText("hsctl scrub status --pool 1")).toBeVisible();
   // Weakening takes a reason (D226); restoring it doesn't.
   await page.getByRole("button", { name: "Change" }).click();
   await dialog.getByLabel(/Deep every/).fill("14");
-  await expect(dialog.getByText("hyperstorctl scrub set --pool 1 --deep-every 14")).toBeVisible();
+  await expect(dialog.getByText("hsctl scrub set --pool 1 --deep-every 14")).toBeVisible();
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(dialog).toContainText("Give a reason");
   await dialog.getByLabel(/Reason/).fill("browser test");
@@ -306,7 +306,7 @@ test("a pool's scrub is shown, changed and started", async ({ page }) => {
   // The grid's Scrub view, and a PG's last scrubs, as health links to it.
   await page.getByTestId("grid-view-scrub").click();
   await expect(page.getByTestId("pg-grid-1-scrub")).toContainText("last deep scrub");
-  await expect(page.getByText("hyperstorctl scrub pgs --pool 1")).toBeVisible();
+  await expect(page.getByText("hsctl scrub pgs --pool 1")).toBeVisible();
   await page.goto(`${url()}/pools?pool=1&view=scrub&pg=0`);
   await expect(page.getByTestId("pg-scrub")).toContainText("PG 1.0");
   await expect(page.getByTestId("pg-scrub")).toContainText("deep");
@@ -320,7 +320,7 @@ test("the trash restores and purges", async ({ page }) => {
   await expect(page.getByTestId("trash-settings-1")).toContainText("kept 24 h");
   // Restored: back among the volumes.
   await row.getByRole("button", { name: "Restore" }).click();
-  await expect(page.getByRole("dialog")).toContainText("hyperstorctl trash restore --id");
+  await expect(page.getByRole("dialog")).toContainText("hsctl trash restore --id");
   await page.getByRole("dialog").getByRole("button", { name: "Restore" }).click();
   await expect(row).toHaveCount(0);
   await page.getByRole("link", { name: "Volumes" }).click();
@@ -346,7 +346,7 @@ test("the audit log shows who did what", async ({ page }) => {
     await expect(page.getByTestId("audit-record").first()).toContainText("CreateVolume", { timeout: 1000 });
   }).toPass({ timeout: 20_000 });
   await expect(page.getByTestId("audit-record").first()).toContainText("user:ann");
-  await expect(page.getByText("hyperstorctl audit list --op CreateVolume")).toBeVisible();
+  await expect(page.getByText("hsctl audit list --op CreateVolume")).toBeVisible();
   await expect(page.getByTestId("audit-retention")).toContainText("kept 365 days");
   const download = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export" }).click();
@@ -372,12 +372,12 @@ test("object storage: keys shown once, placements, buckets and realms", async ({
   await page.getByRole("link", { name: "Object storage" }).click();
   // Buckets are read from the store by the map service; none made yet.
   await expect(page.getByText("No buckets.")).toBeVisible();
-  await expect(page.getByText("hyperstorctl s3 bucket list")).toBeVisible();
+  await expect(page.getByText("hsctl s3 bucket list")).toBeVisible();
   // An access key: its secret shown once, then only its id.
   await page.getByRole("button", { name: "Make a key" }).click();
   await page.getByRole("dialog").getByLabel("Tenant").fill("3");
   await page.getByRole("dialog").getByLabel("Description").fill("ui key");
-  await expect(page.getByRole("dialog")).toContainText("hyperstorctl s3 key create --tenant 3 --description 'ui key'");
+  await expect(page.getByRole("dialog")).toContainText("hsctl s3 key create --tenant 3 --description 'ui key'");
   await page.getByRole("dialog").getByRole("button", { name: "Make" }).click();
   const secret = page.getByRole("dialog").locator("input[readonly]");
   await expect(secret).toHaveAttribute("type", "password");
@@ -394,7 +394,7 @@ test("object storage: keys shown once, placements, buckets and realms", async ({
   await page.getByRole("dialog").getByLabel("Name").fill("ui");
   await page.getByRole("dialog").getByLabel("Data pool").selectOption("vol");
   await page.getByRole("dialog").getByLabel(/Index pool/).selectOption("vol");
-  await expect(page.getByRole("dialog")).toContainText("hyperstorctl s3 placement set --name ui --data-pool vol --index-pool vol");
+  await expect(page.getByRole("dialog")).toContainText("hsctl s3 placement set --name ui --data-pool vol --index-pool vol");
   await page.getByRole("dialog").getByRole("button", { name: "Set" }).click();
   const placement = page.getByTestId("placement-default-ui");
   await expect(placement).toContainText("vol");
@@ -441,7 +441,7 @@ test("someone with roles in a realm acts only there", async ({ page }) => {
   }
   // Its operations (D283).
   await page.getByRole("link", { name: "Operations" }).click();
-  await expect(page.getByText("hyperstorctl --in-realm acme op list")).toBeVisible();
+  await expect(page.getByText("hsctl --in-realm acme op list")).toBeVisible();
   await page.getByRole("link", { name: "Volumes" }).click();
   await expect(page.getByTestId("volume-acme-ui")).toBeVisible();
   await expect(page.getByTestId("volume-plain-ui")).toHaveCount(0);
@@ -452,7 +452,7 @@ test("someone with roles in a realm acts only there", async ({ page }) => {
   await dialog.getByLabel("Name").fill("cy-vol");
   await dialog.getByLabel(/Size/).fill("4M");
   await dialog.getByLabel(/Tenant/).fill("8");
-  await expect(dialog.getByText("hyperstorctl --in-realm acme create-volume")).toBeVisible();
+  await expect(dialog.getByText("hsctl --in-realm acme create-volume")).toBeVisible();
   await dialog.getByRole("button", { name: "Create" }).click();
   await expect(dialog.getByRole("alert")).toContainText("outside_realm");
   await dialog.getByLabel(/Tenant/).fill("7");
@@ -576,7 +576,7 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
   let dialog = page.getByRole("dialog");
   await dialog.getByLabel(/^Name/).fill("ui-realm");
   await dialog.getByLabel(/Description/).fill("made in the browser");
-  await expect(dialog).toContainText("hyperstorctl realm create --name ui-realm --description 'made in the browser'");
+  await expect(dialog).toContainText("hsctl realm create --name ui-realm --description 'made in the browser'");
   await dialog.getByRole("button", { name: "Create" }).click();
   const realm = page.getByTestId("tenancy-realm-ui-realm");
   await expect(realm).toContainText("made in the browser");
@@ -584,7 +584,7 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
   await page.getByTestId("tenancy-pool-1").getByRole("button", { name: "Change" }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("checkbox", { name: "realm ui-realm" }).check();
-  await expect(dialog).toContainText("hyperstorctl realm pool --pool 1 --realm ui-realm");
+  await expect(dialog).toContainText("hsctl realm pool --pool 1 --realm ui-realm");
   await dialog.getByRole("button", { name: "Save" }).click();
   // Its volumes of other realms keep it from being ui-realm's alone: the
   // server's reason shows.
@@ -604,7 +604,7 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
   await page.getByTestId("tenancy-pool-1").getByRole("button", { name: "Change" }).click();
   dialog = page.getByRole("dialog");
   for (const r of ["ui-realm", "default", "acme"]) await dialog.getByRole("checkbox", { name: `realm ${r}` }).uncheck();
-  await expect(dialog).toContainText("hyperstorctl realm pool --pool 1 --realm any");
+  await expect(dialog).toContainText("hsctl realm pool --pool 1 --realm any");
   await dialog.getByRole("button", { name: "Save" }).click();
   await expect(page.getByTestId("tenancy-pool-1")).toContainText("every realm");
   // A host and a management client bound, then unbound (any, D327).
@@ -616,7 +616,7 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
     dialog = page.getByRole("dialog");
     await dialog.getByLabel(what === "host" ? /^Host/ : /^Client/).fill(name);
     await dialog.getByRole("checkbox", { name: "realm ui-realm" }).check();
-    await expect(dialog).toContainText(`hyperstorctl realm ${what} --${what} ${name} --realm ui-realm`);
+    await expect(dialog).toContainText(`hsctl realm ${what} --${what} ${name} --realm ui-realm`);
     await dialog.getByRole("button", { name: "Save" }).click();
     const row = page.getByTestId(`tenancy-${what}-${name}`);
     await expect(row).toContainText("ui-realm");
@@ -626,7 +626,7 @@ test("tenancy: realms are made, bound and deleted", async ({ page }) => {
       const tokens = page.getByTestId(`tenancy-client-tokens-${name}`);
       await expect(tokens).toHaveText("–");
       await row.getByRole("button", { name: "Allow host tokens" }).click();
-      await expect(page.getByRole("dialog")).toContainText(`hyperstorctl realm client-tokens --client ${name} --role host`);
+      await expect(page.getByRole("dialog")).toContainText(`hsctl realm client-tokens --client ${name} --role host`);
       await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
       await expect(tokens).toHaveText("host");
       await row.getByRole("button", { name: "No host tokens" }).click();
@@ -656,7 +656,7 @@ test("tenancy: tenants and projects are made, renamed, moved and deleted", async
   await page.getByRole("button", { name: "Create tenant" }).click();
   let dialog = page.getByRole("dialog");
   await dialog.getByLabel(/^Name/).fill("ui-t");
-  await expect(dialog).toContainText("hyperstorctl tenant create --name ui-t");
+  await expect(dialog).toContainText("hsctl tenant create --name ui-t");
   await dialog.getByRole("button", { name: "Create" }).click();
   await expect(page.getByTestId("tree-project-ui-t-default")).toBeVisible();
   await page.getByTestId("tree-tenant-ui-t").getByRole("button", { name: "Rename" }).click();
@@ -676,7 +676,7 @@ test("tenancy: tenants and projects are made, renamed, moved and deleted", async
   await page.getByTestId("tree-project-ui-t2-ui-p2").getByRole("button", { name: "Move" }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByLabel("To tenant").selectOption({ label: "lab (realm default)" });
-  await expect(dialog).toContainText(/hyperstorctl project move --project \d+ --to \d+/);
+  await expect(dialog).toContainText(/hsctl project move --project \d+ --to \d+/);
   await dialog.getByRole("button", { name: "Move" }).click();
   await expect(page.getByTestId(/^tenancy-op-/)).toContainText("done", { timeout: 30_000 });
   await expect(page.getByTestId("tree-project-lab-ui-p2")).toBeVisible();
@@ -688,7 +688,7 @@ test("tenancy: tenants and projects are made, renamed, moved and deleted", async
   await tenant.getByRole("button", { name: "Realm", exact: true }).click();
   dialog = page.getByRole("dialog");
   await dialog.getByRole("combobox").selectOption("acme");
-  await expect(dialog).toContainText(/hyperstorctl realm tenant --tenant \d+ --realm acme/);
+  await expect(dialog).toContainText(/hsctl realm tenant --tenant \d+ --realm acme/);
   await dialog.getByRole("button", { name: "Move" }).click();
   await expect(dialog).toHaveCount(0);
   await tenant.getByRole("button", { name: "Delete" }).click();
@@ -743,7 +743,7 @@ test("tenancy: a directory's records are read-only, offers are shown once and re
   // The pin is mgmt's own certificate's, from mgmt (D343).
   await expect(dialog.getByLabel("Pin")).toHaveValue(/^[0-9a-f]{64}$/);
   const pin = await dialog.getByLabel("Pin").inputValue();
-  await expect(dialog).toContainText(`hyperstorctl admission offer --tenant chem --directory ${issuer} --url https://`);
+  await expect(dialog).toContainText(`hsctl admission offer --tenant chem --directory ${issuer} --url https://`);
   await dialog.getByRole("button", { name: "Make" }).click();
   await expect(page.getByTestId("offer-made")).toContainText(pin);
   const secret = page.getByRole("dialog").getByLabel("offer token");
@@ -758,7 +758,7 @@ test("tenancy: a directory's records are read-only, offers are shown once and re
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage }) + JSON.stringify({ ...sessionStorage }));
   expect(stored).not.toContain(token);
   await offer.getByRole("button", { name: "Revoke" }).click();
-  await expect(page.getByRole("dialog")).toContainText("hyperstorctl admission revoke --id");
+  await expect(page.getByRole("dialog")).toContainText("hsctl admission revoke --id");
   await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
   await expect(offer).toContainText("revoked");
   await expect(offer.getByRole("button", { name: "Revoke" })).toHaveCount(0);
@@ -829,7 +829,7 @@ test("tenancy: ending a directory's trust unlinks its records", async ({ page })
   await logIn(page, "ann");
   await tenancy(page, "Directories");
   await page.getByTestId("trusted-physics").getByRole("button", { name: "End trust" }).click();
-  await expect(page.getByRole("dialog")).toContainText(/hyperstorctl admission end --directory \S+ --tenant physics/);
+  await expect(page.getByRole("dialog")).toContainText(/hsctl admission end --directory \S+ --tenant physics/);
   await page.getByRole("dialog").getByRole("button", { name: "End trust" }).click();
   // Its last tenant: the directory is no longer trusted.
   await expect(page.getByTestId("directory-uni")).toHaveCount(0);

@@ -123,7 +123,7 @@ D7`) refer to those documents.
  │   management API (every member; volume ops as a client)       │
  └───────────────────────────────────────────────────────────────┘
                  ▲ management API (gRPC, mTLS)
-          glidex control plane (datastore driver, 16-glidex.md §17) · hyperstorctl
+          glidex control plane (datastore driver, 16-glidex.md §17) · hsctl
           · hyperstor-mgmt (standalone UI and people, 19-administration.md §23)
 ```
 
@@ -148,8 +148,8 @@ the request splitting and retry logic (10-volumes.md §10.1).
 | Port | Protocol | Between |
 |---|---|---|
 | 8849/tcp | D5 protocol | map service: storage nodes and clients → `hyperstor-meta` (D69) |
-| 8850/tcp | gRPC over mTLS (connectrpc, D51), management network | cluster API: `hyperstorctl`, glidex, `hyperstor-mgmt` → any `hyperstor-meta` member (D69) |
-| 8852/tcp | HTTPS | browsers and `hyperstorctl` → `hyperstor-mgmt` (D59) |
+| 8850/tcp | gRPC over mTLS (connectrpc, D51), management network | cluster API: `hsctl`, glidex, `hyperstor-mgmt` → any `hyperstor-meta` member (D69) |
+| 8852/tcp | HTTPS | browsers and `hsctl` → `hyperstor-mgmt` (D59) |
 | 8853/tcp | HTTPS, mTLS, management network | metrics and health, on each daemon (D58, D59) |
 | 8851/tcp | Raft over mTLS | `hyperstor-meta` members |
 | one port per reactor, recorded per device in the map (D39) | D5 protocol (TCP, and RDMA connection setup) | clients ↔ storage nodes, storage ↔ storage |

@@ -3,15 +3,15 @@
 How to change a running cluster's devices and pools: take devices out
 for service and back in, add and remove them, set their weights and
 classes, handle devices that fill, and make, split and delete pools.
-Every change is made with `hyperstorctl` or in the web UI, while the
+Every change is made with `hsctl` or in the web UI, while the
 cluster serves; how to plan them is in [Planning a cluster](planning.md).
 
 ## Taking a device out for service
 
 ```sh
-hyperstorctl out --node 2 --wait 600   # or --device D; waits for the PGs to move
+hsctl out --node 2 --wait 600   # or --device D; waits for the PGs to move
 ...                                    # service the node
-hyperstorctl in --node 2 --wait 600    # and for them to come back
+hsctl in --node 2 --wait 600    # and for them to come back
 ```
 
 A device that is **out** gets no placement: its PGs go to other devices,
@@ -38,22 +38,22 @@ weight is the device's capacity in TiB, which the map service takes
 from the device's own reports: a device twice the size gets twice the
 data, and devices of one size get the same. A newly joined host gets
 no PGs until its devices have reported, within a second of starting.
-`hyperstorctl nodes` shows each weight.
+`hsctl nodes` shows each weight.
 
 To place less, or more, on a device than its size says, set its weight;
 to go back, set it to `auto`:
 
 ```sh
-hyperstorctl weight --device 2001 --weight 0.5    # kept until set back
-hyperstorctl weight --device 2001 --weight auto   # follows its capacity
+hsctl weight --device 2001 --weight 0.5    # kept until set back
+hsctl weight --device 2001 --weight auto   # follows its capacity
 ```
 
-A weight you set is marked `*` in `hyperstorctl nodes`. The device's
+A weight you set is marked `*` in `hsctl nodes`. The device's
 PGs move as soon as the weight changes, as for `out` and `in`. Setting
 a weight changes the map's format: do it only once every storage node
-and map service member runs a build that has `hyperstorctl weight`.
+and map service member runs a build that has `hsctl weight`.
 
-A pool's usable space (`hyperstorctl pools`) counts what it can hold
+A pool's usable space (`hsctl pools`) counts what it can hold
 with each copy on a different host (or rack): with as many hosts as
 copies, the smallest host bounds it.
 
@@ -70,7 +70,7 @@ device:
 | `full` | 95 % | Health is an error. The device refuses what would grow its used space: new objects and writes to blocks not yet written |
 
 A pool is `nearfull` or `full` while any device it uses is:
-`hyperstorctl pools` shows it with the device, `hyperstorctl nodes`
+`hsctl pools` shows it with the device, `hsctl nodes`
 each device's state, and the web UI's **Pools** page the pool's. While a
 pool is `full`, new volumes, clones and snapshots in it are refused
 (`pool_full`). Each device's change is in the audit log, as operation
@@ -91,14 +91,14 @@ whose trash is set to `--on-full purge` ([The trash](managing.md#the-trash))
 purges its oldest trash by itself.
 
 ```sh
-hyperstorctl full-ratios                       # the thresholds now
-hyperstorctl full-ratios --full 97             # one or more of them
+hsctl full-ratios                       # the thresholds now
+hsctl full-ratios --full 97             # one or more of them
 ```
 
 Each is between 50 and 99, with `nearfull` below `backfillfull` below
 `full`. Setting them to anything but the defaults changes the map's
 format: do it only once every storage node and map service member runs
-a build that has `hyperstorctl full-ratios`.
+a build that has `hsctl full-ratios`.
 
 ## Adding a device to a node
 
@@ -134,7 +134,7 @@ A map service host registers the device with the administrator's
 certificate. A storage host uses its node's own certificate, through
 the API it joined with; that certificate may add devices only to its
 own node, at an address the node already serves on, and without a
-class (set one afterwards with `hyperstorctl device class`).
+class (set one afterwards with `hsctl device class`).
 
 Installers before this release wrote the rules to
 `60-hyperstor.rules`, which udev reads before it makes the by-id links
@@ -146,7 +146,7 @@ weight 0: nothing moves until the node runs it. Once it has reported
 its capacity, within a second of starting, it gets its weight and PGs
 move onto it, as after a weight change.
 
-By hand: `hyperstorctl device
+By hand: `hsctl device
 add --node 1 --address 192.0.2.21:9102` (from a host that has the
 administrator's certificate), `hyperstor-install format-device --path
 PATH --id D` on the node's host, then one more `--shard
@@ -158,15 +158,15 @@ run rewrites).
 A device leaves once its data has moved:
 
 ```sh
-hyperstorctl device remove --device 1001 --dry-run   # what would move; nothing changes
-hyperstorctl device remove --device 1001 --wait 3600
+hsctl device remove --device 1001 --dry-run   # what would move; nothing changes
+hsctl device remove --device 1001 --wait 3600
 ```
 
 The device is taken out at once, and its PGs move to the other devices
 of their pools, under the backfill budget. An operation follows them;
 once no PG lists the device, the map service removes it from the map,
 and the node with it if it was the node's last device. Neither id is
-given again. `hyperstorctl op cancel --id ID` before then brings the
+given again. `hsctl op cancel --id ID` before then brings the
 device back in.
 
 It is refused when a pool using the device would be left with fewer
@@ -195,11 +195,11 @@ uninstall the storage role there instead.
 
 Each node reports what its devices are: `nvme`, `ssd`, `hdd`, or `file`
 for a device file. A device takes its kind as its class, which
-`hyperstorctl nodes` shows in the CLASS column, unless you set one:
+`hsctl nodes` shows in the CLASS column, unless you set one:
 
 ```sh
-hyperstorctl device class --device 2001 --class archive   # kept, marked +
-hyperstorctl device class --device 2001 --class auto      # its kind again
+hsctl device class --device 2001 --class archive   # kept, marked +
+hsctl device class --device 2001 --class auto      # its kind again
 ```
 
 A class holds devices of one kind, and a class named after a kind
@@ -209,15 +209,15 @@ classes change nothing for them. To limit a pool to some classes, or
 let it use every device again:
 
 ```sh
-hyperstorctl pool set --pool 1 --classes nvme,ssd
-hyperstorctl pool set --pool 1 --classes any
+hsctl pool set --pool 1 --classes nvme,ssd
+hsctl pool set --pool 1 --classes any
 ```
 
 The same command renames a pool or changes its failure domain, a copy
 per device, host or rack; what isn't given stays:
 
 ```sh
-hyperstorctl pool set --pool 1 --name blocks --domain rack
+hsctl pool set --pool 1 --name blocks --domain rack
 ```
 
 The classes' devices must span at least as many failure domains (hosts,
@@ -230,19 +230,19 @@ them, without changing any device's class: other pools keep using it
 as before.
 
 ```sh
-hyperstorctl pool add-device --pool 1 --device 3001
-hyperstorctl pool remove-device --pool 1 --device 2000
+hsctl pool add-device --pool 1 --device 3001
+hsctl pool remove-device --pool 1 --device 2000
 ```
 
 Each is checked as `pool set` is, and its PGs move the same way;
-`hyperstorctl pools` shows the classes, then `+3001-2000`. A device's
+`hsctl pools` shows the classes, then `+3001-2000`. A device's
 space is shared by every pool that uses it, so a pool has no size of
 its own: its free space is that of its devices.
 
 A pool is made on the classes it names:
 
 ```sh
-hyperstorctl pool create --name fast --classes nvme --copies 3
+hsctl pool create --name fast --classes nvme --copies 3
 ```
 
 It gets about 100 PGs per device of its classes per copy, as a power
@@ -261,8 +261,8 @@ keep the first format and work as before. Convert them once every node
 runs v0.0.8:
 
 ```sh
-hyperstorctl nodes                       # FORMAT: 1 or 2 for each device
-hyperstorctl device upgrade --all        # or --device 2001
+hsctl nodes                       # FORMAT: 1 or 2 for each device
+hsctl device upgrade --all        # or --device 2001
 ```
 
 Each node converts its devices the next time it starts, so restart the
@@ -284,14 +284,14 @@ A pool's PG count doubles in place: each PG splits into itself and
 a new one, with no data copied.
 
 ```sh
-hyperstorctl pool set --pool 1 --pgs 128 --wait 600
+hsctl pool set --pool 1 --pgs 128 --wait 600
 ```
 
 The map service splits a few PGs at a time, the clean ones. Each PG's
 devices pause its I/O for a moment, move the objects that now belong to
 the new PG to its keys, and report; once all have, clients use the new
 PG. Volumes stay attached and writes go on, retried over each
-pause. `hyperstorctl pools` shows how far it has got. The new PGs start
+pause. `hsctl pools` shows how far it has got. The new PGs start
 on their parents' devices; then, whenever every PG of the pool is clean,
 the map service places a few more on their own devices, and they move
 under the backfill budget, until all are placed. A cache pool keeps its data
@@ -303,7 +303,7 @@ split catches up when it returns.
 
 A cache pool also waits for a node that goes down: a PG whose
 copies are all on down nodes stays there for the pool's grace, 60
-seconds unless set with `hyperstorctl pool set --pool P --cache-grace
+seconds unless set with `hsctl pool set --pool P --cache-grace
 SECS` (0 to 3600; 0 doesn't wait), so a host that restarts, or comes back
 from a short crash, keeps its share of the cache. Meanwhile reads of
 those PGs miss (a volume reads zeros there), health warns that they are
@@ -318,10 +318,10 @@ time and only while every PG is clean. Its log names each split. To keep
 a pool's count as set:
 
 ```sh
-hyperstorctl pool set --pool 1 --autoscale off
+hsctl pool set --pool 1 --autoscale off
 ```
 
-`hyperstorctl pools` lists the pools with it off; `pool create` takes
+`hsctl pools` lists the pools with it off; `pool create` takes
 `--autoscale off` too.
 
 ## Changing a pool's copies
@@ -330,8 +330,8 @@ A replicated pool's copies, and the copies a write needs, can change
 while the cluster runs. Look first, then change:
 
 ```sh
-hyperstorctl pool copies --pool 3 --copies 3 --min 2 --dry-run
-hyperstorctl pool copies --pool 3 --copies 3 --min 2
+hsctl pool copies --pool 3 --copies 3 --min 2 --dry-run
+hsctl pool copies --pool 3 --copies 3 --min 2
 ```
 
 More copies add a member to each placement group. Its other members
@@ -363,8 +363,8 @@ nothing in the trash. List what it holds, delete and purge
 that, then delete it:
 
 ```sh
-hyperstorctl pool delete --pool 3 --dry-run
-hyperstorctl pool delete --pool 3
+hsctl pool delete --pool 3 --dry-run
+hsctl pool delete --pool 3
 ```
 
 It leaves the map at once, and clients using it get `not_found`. Its
@@ -375,8 +375,8 @@ Through `hyperstor-mgmt` it needs a fresh login (step-up).
 To delete a pool with what it holds, list it first, then force:
 
 ```sh
-hyperstorctl pool delete --pool 3 --dry-run
-hyperstorctl pool delete --pool 3 --force --wait 600
+hsctl pool delete --pool 3 --dry-run
+hsctl pool delete --pool 3 --force --wait 600
 ```
 
 An operation moves each volume to the trash, preempting a client that

@@ -226,7 +226,7 @@ strict multi-tenancy without a cluster per customer.
   them (D283). Lists across several realms name each row's realm, and a
   creation in realms names its tenant or realm (D286).
   Cluster administrators see everything, and may act in one realm to
-  see what its administrators see: `hyperstorctl --in-realm R` and the
+  see what its administrators see: `hsctl --in-realm R` and the
   UI's realm picker. People's grants live in mgmt, which names the
   realms a call reaches; the map service, which knows each container's
   realm, applies them (D260, D262); cluster API certificates stay
@@ -379,7 +379,7 @@ is the authority for the records above:
 - what the feed makes is the directory's here (D342): renaming, moving
   or deleting a linked project, and renaming, deleting or changing the
   realm of a trusted directory's tenant, are refused to every caller,
-  `hyperstorctl` and the web UI alike (`from_directory`), naming the
+  `hsctl` and the web UI alike (`from_directory`), naming the
   directory; the feed's own steps take another path. A record the feed
   unlinks (D316), or of a directory whose trust ended, is local and
   changed here. A project made here in a directory's tenant has no

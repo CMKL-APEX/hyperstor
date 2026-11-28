@@ -41,7 +41,7 @@ fn start(bin: &Path, mut args: Vec<String>, log: PathBuf) -> Child {
         .unwrap()
 }
 
-/// `hyperstorctl` against `api` with the administrator certificate in
+/// `hsctl` against `api` with the administrator certificate in
 /// `pki`.
 fn ctl(bin: &Path, api: &str, pki: &Path, args: &[&str]) -> Run {
     ctl_at(bin, api, pki, args)
@@ -54,7 +54,7 @@ fn token(bin: &Path, api: &str, pki: &Path, s: &Scratch, role: &str, extra: &[&s
     // A map service that has just started has no map yet, and refuses
     // with `not_formed` until it has: retried, as an operator would.
     let o = wait_for("the map service to make a token", 20, || {
-        let o = Command::new(bin.join("hyperstorctl"))
+        let o = Command::new(bin.join("hsctl"))
             .args(["--api", api, "--tls", pki.to_str().unwrap()])
             .args(&args)
             .output()

@@ -1,5 +1,5 @@
 // The pieces every page uses: cards, tables, buttons, errors, polling, the
-// CLI hint (every action shows its hyperstorctl command, §23.7), and who
+// CLI hint (every action shows its hsctl command, §23.7), and who
 // may do what (the server decides; the UI only hides what would be
 // refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -110,11 +110,11 @@ export function ErrorText({ error }: { error: unknown }) {
   );
 }
 
-/** The hyperstorctl command that does the same, for scripts. */
+/** The hsctl command that does the same, for scripts. */
 export function Cli({ cmd }: { cmd: string }) {
   return (
     <p className="mt-2 text-xs text-slate-500">
-      CLI: <code className="px-1 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800">hyperstorctl {cmd}</code>
+      CLI: <code className="px-1 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800">hsctl {cmd}</code>
     </p>
   );
 }

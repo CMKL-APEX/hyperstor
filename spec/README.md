@@ -40,7 +40,7 @@ documents cite them by number.
 | [27-performance.md](27-performance.md) | §30 | Load and drives: per-PG heat and top volumes, device service time, drives' sysfs and SMART (through `hyperstor-smart`), the leader's 15 minutes, the views and the Advisor (built; D218–D222 settled) |
 | [22-nfs.md](22-nfs.md) | §26 | NFSv4.1/4.2 and pNFS for unmodified clients: the metadata server, files layouts, data servers in the storage nodes, stripe groups, fencing, failover (investigation; D127, D129, D130 settled) |
 | [15-operations.md](15-operations.md) | §16, §18, §19 | Management API and CLI, crates and units, roles and resources, upgrades, security |
-| [19-administration.md](19-administration.md) | §23 | Installer, cluster API, `hyperstorctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
+| [19-administration.md](19-administration.md) | §23 | Installer, cluster API, `hsctl`, the management service and web UI, certificates, people's authentication and authorization, trash and audit |
 | [20-tenants.md](20-tenants.md) | §24 | Tenant ids on containers, isolation by lease, per-tenant accounting and quotas, two-level fair share |
 | [21-federation.md](21-federation.md) | §25 | Sites as a failure domain, asynchronous replication of immutable versions, the global namespace with range homes, cache sources, the federation view |
 | [25-kv-ranges.md](25-kv-ranges.md) | §28 | `hyperstor-kv`'s range layer (HS11): tables, rows, range objects, the root, splits and merges, the deletion queue (designed; D191, D200–D202) |

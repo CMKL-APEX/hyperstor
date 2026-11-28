@@ -88,7 +88,7 @@ fn unreachable_api_is_status_3() {
     let c = Cluster::all_in_one("unreach", 1);
     let dead = format!("127.0.0.1:{}", free_ports(1));
     let pki = c.pki();
-    let r = std::process::Command::new(c.bin.join("hyperstorctl"))
+    let r = std::process::Command::new(c.bin.join("hsctl"))
         .args(["--api", &dead, "--tls", pki.to_str().unwrap(), "status"])
         .output()
         .unwrap();
@@ -458,7 +458,7 @@ fn sealing_keys_rotate_and_reach_only_storage_nodes() {
     }
 }
 
-/// A pool made to require capabilities (D371) with `hyperstorctl pool set
+/// A pool made to require capabilities (D371) with `hsctl pool set
 /// --capabilities on` serves no client that shows none, as `io-test`
 /// doesn't; says so in `pools`; is audited; and serves again once it is
 /// turned off.
@@ -526,7 +526,7 @@ fn a_pool_requires_capabilities_when_told() {
 
 /// The data path's mutual TLS on an installed cluster (D373, D380;
 /// 30-data-path-tls.md §33.4). A new cluster starts in `allow`: its
-/// nodes, its map service and `hyperstorctl` each hold a certificate, so
+/// nodes, its map service and `hsctl` each hold a certificate, so
 /// every connection authenticates and no node serves one that didn't.
 /// `require` is taken at once, as every node holds one (D377): the
 /// cluster's own connections go on, none refused. Turned `off`,

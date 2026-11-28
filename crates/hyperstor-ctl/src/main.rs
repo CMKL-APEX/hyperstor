@@ -1,4 +1,4 @@
-//! `hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]]
+//! `hsctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]]
 //!               [--json | -o json|yaml] COMMAND
 //!               [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID]
 //!               [--force] [--role R|default] [--ttl SECS] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]]
@@ -129,7 +129,7 @@
 //! - `io-test`, `write-volume` and `read-volume` reach devices on the
 //!   data networks `--networks NAME[,NAME...]` names (their endpoints
 //!   there, D207), else on the `networks` line `hyperstor-install` writes
-//!   into `hyperstorctl.conf` (the host's client networks, D289), else at
+//!   into `hsctl.conf` (the host's client networks, D289), else at
 //!   the devices' addresses; `--networks none` uses the addresses (D340);
 //! - `drain --node N [--dry-run] [--wait SECS]`: takes every device of a
 //!   node out and follows its PGs as an operation; `--dry-run` lists what
@@ -200,7 +200,7 @@
 //! its stable reason, as `(reason)`.
 //!
 //! The API is `--api`, else `$HYPERSTOR_API`, else the `api` line of
-//! `/etc/hyperstor/hyperstorctl.conf` (written by `hyperstor-install`),
+//! `/etc/hyperstor/hsctl.conf` (written by `hyperstor-install`),
 //! else `127.0.0.1:8850`. With `--tls DIR`, or a `tls DIR` line in that
 //! file, it connects over mutual TLS with `DIR/admin.crt`,
 //! `DIR/admin.key` and `DIR/root.crt` (§23.8); otherwise plain HTTP.
@@ -217,7 +217,7 @@
 //! renewed when about to expire; never an argument), and their roles
 //! decide what it may do (§23.9.2, D307). `http://` is for loopback only (an SSH tunnel);
 //! over `https://` it trusts the host's CAs and `--mgmt-ca FILE`'s, or
-//! without it the cluster's root where `hyperstorctl.conf` names one
+//! without it the cluster's root where `hsctl.conf` names one
 //! (mgmt's certificate is the cluster CA's by default, D108).
 //! `--in-realm R` acts in realm R alone, with the person's cluster-wide
 //! roles and their roles in R (D265): lists show only R's volumes,
@@ -246,7 +246,7 @@ use hyperstor_ctl::*;
 mod login;
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "usage: hyperstorctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|dataset list|dataset get|dataset set|dataset inherit|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--encrypt on|off] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256] [--dataset D] [--property P[=V]]... [--under TENANT[/PROJECT]]";
+const USAGE: &str = "usage: hsctl [--api ADDR] [--tls DIR] [--identity DIR] [--socket PATH] [--mgmt URL [--token-file F] [--mgmt-ca FILE] [--in-realm R]] [--timeout-secs N] [--json | -o json|yaml] status|nodes|pools|pgs|pg-grid|pg promote|perf|top-volumes|advise|volumes|space|create-volume|delete-volume|io-test|out|in|weight|full-ratios|device add|device remove|device class|device endpoints|device upgrade|port list|port role|port lending|network list|network set|network remove|claim list|claim port|claim renew|claim release|pool create|pool set|pool copies|pool add-device|pool remove-device|pool delete|drain|token create|token list|token revoke|op list|op get|op watch|op cancel|cert list|cert revoke|cert show|cert renew|sealing-key list|sealing-key rotate|data-tls status|data-tls set|map backup|member list|member add|member remove|snapshot list|snapshot create|snapshot delete|snapshot group|snapshot group-delete|clone-volume|rollback-volume|flatten-volume|copy-volume|move-volume|expand-volume|write-volume|read-volume|enroll|trash list|trash restore|trash purge|trash settings|audit list|audit settings|scrub status|scrub pgs|scrub start|scrub set|s3 key create|s3 key list|s3 key revoke|s3 placement set|s3 placement list|s3 placement delete|s3 bucket list|s3 bucket show|s3 bucket delete|realm create|realm list|realm delete|realm tenant|realm pool|realm host|realm client|realm client-tokens|tenant create|tenant list|tenant rename|tenant delete|project create|project list|project rename|project delete|project move|dataset list|dataset get|dataset set|dataset inherit|admission offer|admission list|admission revoke|admission directories|admission end|admission staleness|admission pending|admission approve|admission reject|admission directory|cluster set-operator|auth login [--wait SECS] [--pool P] [--pg N] [--mib N] [--networks NAME[,NAME...]|none] [--device D] [--weight W|auto] [--nearfull PCT] [--backfillfull PCT] [--full PCT] [--node N] [--address A] [--class C] [--endpoints NET=ADDR[,NET=ADDR...]|none] [--classes C,C...|any] [--kind K] [--copies N] [--min N] [--pgs N] [--autoscale on|off] [--cache-grace SECS] [--capabilities on|off] [--chunk B] [--domain D] [--size S] [--name N] [--id ID] [--force] [--role R] [--ttl SECS] [--holder H] [--host H] [--client C] [--exclusive] [--all] [--lending off|idle|always|default] [--mode off|allow|require] [--encrypt on|off] [--match subnet CIDR|ib PREFIX] [--trusted] [--dry-run] [--serial S] [--file F] [--out FILE] [--raft ADDR] [--map ADDR[,ADDR...]] [--epoch E] [--ids ID,ID...] [--group G] [--new-id ID] [--grace SECS] [--on-full keep|purge] [--since AGO] [--principal P] [--op OP] [--limit N] [--retention-days N] [--offset O] [--sparse] [--usage] [--overdue] [--deep] [--heat read|write] [--hours N] [--deep-every N] [--hole-repair repair|report] [--deep-rate MIB] [--reason TEXT] [--tenant N] [--project N] [--directory-project ID] [--to N] [--realm R[,R...]|any] [--description TEXT] [--data-pool NAME] [--index-pool NAME] [--directory ISSUER] [--url URL] [--pin SHA256] [--ui URL] [--days N] [--minutes N] [--admit open|approval] [--cap POOL=BYTES[,POOL=BYTES...]|none] [--directory-pin SHA256] [--dataset D] [--property P[=V]]... [--under TENANT[/PROJECT]]";
 
 /// Prints with `ok` on success; a refusal the caller can act on (not
 /// found, invalid, claimed) as a message and exit 1. Not being allowed
@@ -268,10 +268,7 @@ fn refused_or<T>(
                     | connectrpc::ErrorCode::FailedPrecondition
             ) =>
         {
-            eprintln!(
-                "hyperstorctl: {}",
-                e.message.as_deref().unwrap_or("refused")
-            );
+            eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
             Ok(Next::Exit(1))
         }
         Err(e) => Err(e),
@@ -304,18 +301,21 @@ fn usage() -> ! {
     if let Ok(h) = HINT.lock()
         && !h.is_empty()
     {
-        eprintln!("hyperstorctl: {h}");
+        eprintln!("hsctl: {h}");
     }
     eprintln!("{USAGE}");
     eprintln!(
-        "run `hyperstorctl --help` for the commands, or `hyperstorctl help COMMAND` for one command and its options"
+        "run `hsctl --help` for the commands, or `hsctl help COMMAND` for one command and its options"
     );
     std::process::exit(2)
 }
 
-/// A setting from `/etc/hyperstor/hyperstorctl.conf`: `KEY VALUE` lines.
+/// A setting from `/etc/hyperstor/hsctl.conf`: `KEY VALUE` lines. A
+/// host installed before D422 has `hyperstorctl.conf`, read while
+/// `hsctl.conf` is missing.
 fn conf(key: &str) -> Option<String> {
-    std::fs::read_to_string("/etc/hyperstor/hyperstorctl.conf")
+    std::fs::read_to_string("/etc/hyperstor/hsctl.conf")
+        .or_else(|_| std::fs::read_to_string("/etc/hyperstor/hyperstorctl.conf"))
         .ok()?
         .lines()
         .find_map(|l| {
@@ -333,7 +333,7 @@ fn api_addr(flag: Option<String>) -> String {
         .or_else(from_conf)
         .unwrap_or_else(|| "127.0.0.1:8850".into());
     if s.parse::<std::net::SocketAddr>().is_err() {
-        eprintln!("hyperstorctl: bad API address {s}");
+        eprintln!("hsctl: bad API address {s}");
         std::process::exit(2)
     }
     s
@@ -541,9 +541,7 @@ fn main() {
     if hsfs {
         if argv.iter().any(|a| a == "--help" || a == "help") {
             println!("{}", hyperstor_ctl::HSFS_USAGE);
-            println!(
-                "the datasets' commands of hyperstorctl (`hyperstorctl help dataset list`, …)"
-            );
+            println!("the datasets' commands of hsctl (`hsctl help dataset list`, …)");
             std::process::exit(0)
         }
         argv = hyperstor_ctl::hsfs_args(&argv).unwrap_or_else(|why| {
@@ -1029,7 +1027,7 @@ fn main() {
         usage()
     };
     hint(format!(
-        "wrong or missing options for `{cmd}`; `hyperstorctl help {cmd}` lists them"
+        "wrong or missing options for `{cmd}`; `hsctl help {cmd}` lists them"
     ));
     // Trust in directories (D306): `admission offer|end|approve|reject`
     // name a glidex tenant by its slug (offer and end may name none: the
@@ -1092,7 +1090,7 @@ fn main() {
     let timeout = timeout.or_else(|| {
         let v = std::env::var("HYPERSTOR_TIMEOUT").ok()?;
         Some(v.parse().unwrap_or_else(|_| {
-            eprintln!("hyperstorctl: bad $HYPERSTOR_TIMEOUT {v}");
+            eprintln!("hsctl: bad $HYPERSTOR_TIMEOUT {v}");
             std::process::exit(2)
         }))
     });
@@ -1392,7 +1390,7 @@ fn main() {
         // Local: no API needed, for finding a serial to revoke.
         let path = a.file.clone().expect("checked");
         let pem = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            eprintln!("hyperstorctl: {path}: {e}");
+            eprintln!("hsctl: {path}: {e}");
             std::process::exit(2)
         });
         match cert_text(&pem) {
@@ -1401,7 +1399,7 @@ fn main() {
                 std::process::exit(0)
             }
             None => {
-                eprintln!("hyperstorctl: {path}: no certificate");
+                eprintln!("hsctl: {path}: no certificate");
                 std::process::exit(1)
             }
         }
@@ -1418,7 +1416,7 @@ fn main() {
         Ok(n) => n,
         Err(_) if !moves_data => Vec::new(),
         Err(e) => {
-            eprintln!("hyperstorctl: {e}");
+            eprintln!("hsctl: {e}");
             std::process::exit(2)
         }
     };
@@ -1510,8 +1508,8 @@ fn main() {
     if cmd == "cert renew" {
         let Some(dir) = tls_dir else {
             eprintln!(
-                "hyperstorctl: cert renew renews the certificate of --tls DIR \
-                 (or the tls line of hyperstorctl.conf), not through --mgmt"
+                "hsctl: cert renew renews the certificate of --tls DIR \
+                 (or the tls line of hsctl.conf), not through --mgmt"
             );
             std::process::exit(2)
         };
@@ -1529,7 +1527,7 @@ fn main() {
             std::path::Path::new(dir),
             &["host", "node", "api"],
         ) {
-            eprintln!("hyperstorctl: --identity: {e}");
+            eprintln!("hsctl: --identity: {e}");
             std::process::exit(2)
         }
     } else if let Some(dir) = &tls_dir {
@@ -1571,7 +1569,7 @@ fn main() {
         };
         match route {
             Ok(leader) => {
-                eprintln!("hyperstorctl: {api} isn't the leader; asking the leader at {leader}");
+                eprintln!("hsctl: {api} isn't the leader; asking the leader at {leader}");
                 outcome = rt.block_on(run(
                     &Target::Api(leader.clone(), certs),
                     Call::Cmd(&cmd, &a),
@@ -1599,7 +1597,7 @@ fn main() {
             hyperstor_reactor::block_on(async move { volume_io(map, &cmd, &a, networks).await })
         }
         Err(e) => {
-            eprintln!("hyperstorctl: {api}: {}", error_text(&e));
+            eprintln!("hsctl: {api}: {}", error_text(&e));
             exit_code(&e)
         }
     };
@@ -1622,7 +1620,7 @@ struct Mgmt {
 /// process list), and over HTTPS the host's CAs and `ca`'s.
 fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>, realm: Option<&str>) -> Mgmt {
     let fail = |m: String| -> ! {
-        eprintln!("hyperstorctl: {m}");
+        eprintln!("hsctl: {m}");
         std::process::exit(2)
     };
     let url = url.trim_end_matches('/').to_string();
@@ -1658,14 +1656,14 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>, realm: Option<&s
             } else {
                 let renewed = login::refresh(&t).unwrap_or_else(|e| {
                     fail(format!(
-                        "{e}: sign in again (hyperstorctl auth login --directory {})",
+                        "{e}: sign in again (hsctl auth login --directory {})",
                         t.directory
                     ))
                 });
                 if let Some(f) = file
                     && let Err(e) = login::save(f, &renewed)
                 {
-                    eprintln!("hyperstorctl: keeping the renewed login: {e}");
+                    eprintln!("hsctl: keeping the renewed login: {e}");
                 }
                 renewed.access_token
             }
@@ -1709,7 +1707,7 @@ fn mgmt_target(url: &str, file: Option<&str>, ca: Option<&str>, realm: Option<&s
 fn auth_login(url: &str, ca: Option<&str>, file: &str, a: &Args) -> i32 {
     let directory = a.directory.clone().expect("checked with the arguments");
     let Some(issuer) = normalize_issuer(&directory) else {
-        eprintln!("hyperstorctl: {directory:?} isn't a directory's issuer (https://host/d/NAME)");
+        eprintln!("hsctl: {directory:?} isn't a directory's issuer (https://host/d/NAME)");
         return 2;
     };
     let url = url.trim_end_matches('/');
@@ -1721,14 +1719,14 @@ fn auth_login(url: &str, ca: Option<&str>, file: &str, a: &Args) -> i32 {
                 })
             }),
             Err(e) => {
-                eprintln!("hyperstorctl: --mgmt-ca: {e}");
+                eprintln!("hsctl: --mgmt-ca: {e}");
                 return 2;
             }
         };
         match hyperstor_pki::web_client_config(ca.as_deref()) {
             Ok(c) => Some(std::sync::Arc::new(c)),
             Err(e) => {
-                eprintln!("hyperstorctl: {e}");
+                eprintln!("hsctl: {e}");
                 return 2;
             }
         }
@@ -1746,7 +1744,7 @@ fn auth_login(url: &str, ca: Option<&str>, file: &str, a: &Args) -> i32 {
             0
         }
         Err(e) => {
-            eprintln!("hyperstorctl: {e}");
+            eprintln!("hsctl: {e}");
             1
         }
     }
@@ -1889,13 +1887,13 @@ fn client_tls(dir: &str) -> std::sync::Arc<connectrpc::rustls::ClientConfig> {
     let dir = std::path::PathBuf::from(dir);
     let read = |f: &str| {
         std::fs::read_to_string(dir.join(f)).unwrap_or_else(|e| {
-            eprintln!("hyperstorctl: {}: {e}", dir.join(f).display());
+            eprintln!("hsctl: {}: {e}", dir.join(f).display());
             std::process::exit(2)
         })
     };
     let c = hyperstor_pki::client_config(&read("admin.crt"), &read("admin.key"), &read("root.crt"))
         .unwrap_or_else(|e| {
-            eprintln!("hyperstorctl: {}: {e}", dir.display());
+            eprintln!("hsctl: {}: {e}", dir.display());
             std::process::exit(2)
         });
     std::sync::Arc::new(c)
@@ -1962,7 +1960,7 @@ where
             let op = r.operation.as_option().cloned().unwrap_or_default();
             show(a, &r, || {
                 format!(
-                    "pool {pool}: scrubbing {} PG(s){}: operation {} (hyperstorctl op watch --id {})\n",
+                    "pool {pool}: scrubbing {} PG(s){}: operation {} (hsctl op watch --id {})\n",
                     op.total,
                     if a.deep { " deep" } else { "" },
                     op.id,
@@ -2022,11 +2020,11 @@ where
         Err(e) if hyperstor_ctl::reason_of(&e).as_deref() == Some("weakens_scrub") => {
             let msg = e.message.as_deref().unwrap_or("this weakens scrub");
             let msg = msg.split(": use").next().unwrap_or(msg);
-            eprintln!("hyperstorctl: {msg}: to do it, give --reason TEXT (D226)");
+            eprintln!("hsctl: {msg}: to do it, give --reason TEXT (D226)");
             return Ok(Next::Exit(1));
         }
         Err(e) if e.code == connectrpc::ErrorCode::InvalidArgument => {
-            eprintln!("hyperstorctl: {}", error_text(&e));
+            eprintln!("hsctl: {}", error_text(&e));
             return Ok(Next::Exit(1));
         }
         Err(e) => return Err(e),
@@ -2203,7 +2201,7 @@ where
         "pgs" => {
             let s = status().await?;
             let Some(pool) = first_pool(&s) else {
-                eprintln!("hyperstorctl: the cluster has no pools");
+                eprintln!("hsctl: the cluster has no pools");
                 return Ok(Next::Exit(1));
             };
             let r = client
@@ -2220,7 +2218,7 @@ where
         "pg-grid" if a.heat.is_some() => {
             let s = status().await?;
             let Some(pool) = first_pool(&s) else {
-                eprintln!("hyperstorctl: the cluster has no pools");
+                eprintln!("hsctl: the cluster has no pools");
                 return Ok(Next::Exit(1));
             };
             let r = client
@@ -2244,7 +2242,7 @@ where
                 .into_owned();
             match (a.device, r.devices.first()) {
                 (Some(d), None) => {
-                    eprintln!("hyperstorctl: device {d} hasn't reported to the leader");
+                    eprintln!("hsctl: device {d} hasn't reported to the leader");
                     Next::Exit(1)
                 }
                 (Some(_), Some(d)) => {
@@ -2279,7 +2277,7 @@ where
         "pg-grid" => {
             let s = status().await?;
             let Some(pool) = first_pool(&s) else {
-                eprintln!("hyperstorctl: the cluster has no pools");
+                eprintln!("hsctl: the cluster has no pools");
                 return Ok(Next::Exit(1));
             };
             let r = client
@@ -2295,7 +2293,7 @@ where
         }
         "volumes" => {
             let Some(pool) = volume_pool().await? else {
-                eprintln!("hyperstorctl: the cluster has no data pools");
+                eprintln!("hsctl: the cluster has no data pools");
                 return Ok(Next::Exit(1));
             };
             let r = client
@@ -2338,7 +2336,7 @@ where
                 && hyperstor_ctl::reason_of(e).as_deref() == Some("no_pool")
             {
                 let Some(pool) = volume_pool().await? else {
-                    eprintln!("hyperstorctl: the cluster has no data pools");
+                    eprintln!("hsctl: the cluster has no data pools");
                     return Ok(Next::Exit(1));
                 };
                 r = client.create_volume(req(pool)).await;
@@ -2354,10 +2352,7 @@ where
                     Next::Exit(0)
                 }
                 Err(e) if e.code != connectrpc::ErrorCode::Unavailable => {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     Next::Exit(1)
                 }
                 Err(e) => return Err(e),
@@ -2376,7 +2371,7 @@ where
                 Ok(r) => {
                     // To the trash (D54), not gone.
                     println!(
-                        "volume {id} moved to the trash: purged at {} unless restored (hyperstorctl trash restore --id {id})",
+                        "volume {id} moved to the trash: purged at {} unless restored (hsctl trash restore --id {id})",
                         hyperstor_ctl::utc(r.into_owned().purge_unix)
                     );
                     Next::Exit(0)
@@ -2400,7 +2395,7 @@ where
                     Ok(r) => r.into_owned().ratios,
                     Err(e) if e.code == connectrpc::ErrorCode::InvalidArgument => {
                         eprintln!(
-                            "hyperstorctl: {}",
+                            "hsctl: {}",
                             e.message.as_deref().unwrap_or("invalid ratios")
                         );
                         return Ok(Next::Exit(1));
@@ -2443,16 +2438,13 @@ where
                         "following its capacity"
                     };
                     println!(
-                        "device {device} weight {:.4}, {how} (map epoch {}); hyperstorctl status shows the PGs moving",
+                        "device {device} weight {:.4}, {how} (map epoch {}); hsctl status shows the PGs moving",
                         r.weight, r.map_epoch
                     );
                     Next::Exit(0)
                 }
                 Err(e) if e.code == connectrpc::ErrorCode::NotFound => {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("not found")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("not found"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2494,7 +2486,7 @@ where
                     );
                     if r.mixed_kinds {
                         eprintln!(
-                            "hyperstorctl: warning: its classes hold hard disks and flash; a write waits for its slowest copy"
+                            "hsctl: warning: its classes hold hard disks and flash; a write waits for its slowest copy"
                         );
                     }
                     Next::Exit(0)
@@ -2506,10 +2498,7 @@ where
                             | connectrpc::ErrorCode::InvalidArgument
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2583,14 +2572,14 @@ where
                         what.join(", "),
                         r.map_epoch,
                         if every_device || !classes.is_empty() || a.domain.is_some() {
-                            "; hyperstorctl status shows its PGs moving"
+                            "; hsctl status shows its PGs moving"
                         } else {
                             ""
                         }
                     );
                     if r.mixed_kinds {
                         eprintln!(
-                            "hyperstorctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
+                            "hsctl: warning: these classes hold hard disks and flash; a write waits for its slowest copy"
                         );
                     }
                     // --wait: until the split is done (D187).
@@ -2608,7 +2597,7 @@ where
                                 }
                             }
                             if Instant::now() >= deadline {
-                                eprintln!("hyperstorctl: pool {pool} still splitting");
+                                eprintln!("hsctl: pool {pool} still splitting");
                                 return Ok(Next::Exit(1));
                             }
                             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -2622,10 +2611,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2666,7 +2652,7 @@ where
                     if let Some(op) = r.operation.as_option().cloned() {
                         show(a, &r, || {
                             format!(
-                                "pool {pool}: deleting these volumes (with their snapshots), then the pool: operation {} (hyperstorctl op watch --id {})\n{}",
+                                "pool {pool}: deleting these volumes (with their snapshots), then the pool: operation {} (hsctl op watch --id {})\n{}",
                                 op.id,
                                 op.id,
                                 volumes_text(&pb::ListVolumesResponse {
@@ -2692,10 +2678,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2719,13 +2702,13 @@ where
                 Ok(r) => {
                     let r = r.into_owned();
                     println!(
-                        "pool {pool} {} device {device} (map epoch {}); hyperstorctl status shows its PGs moving",
+                        "pool {pool} {} device {device} (map epoch {}); hsctl status shows its PGs moving",
                         if member { "uses" } else { "no longer uses" },
                         r.map_epoch
                     );
                     if r.mixed_kinds {
                         eprintln!(
-                            "hyperstorctl: warning: the pool's devices hold hard disks and flash; a write waits for its slowest copy"
+                            "hsctl: warning: the pool's devices hold hard disks and flash; a write waits for its slowest copy"
                         );
                     }
                     Next::Exit(0)
@@ -2736,10 +2719,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2903,10 +2883,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::InvalidArgument
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2920,7 +2897,7 @@ where
             if given != "none" {
                 for e in given.split(',').filter(|e| !e.is_empty()) {
                     let Some((network, address)) = e.split_once('=') else {
-                        eprintln!("hyperstorctl: --endpoints: {e:?} isn't NET=ADDR");
+                        eprintln!("hsctl: --endpoints: {e:?} isn't NET=ADDR");
                         return Ok(Next::Exit(2));
                     };
                     endpoints.push(pb::Endpoint {
@@ -2955,10 +2932,7 @@ where
                             | connectrpc::ErrorCode::PermissionDenied
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -2992,10 +2966,7 @@ where
             if let Err(e) = &r
                 && e.code == connectrpc::ErrorCode::PermissionDenied
             {
-                eprintln!(
-                    "hyperstorctl: {}",
-                    e.message.as_deref().unwrap_or("refused")
-                );
+                eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                 return Ok(Next::Exit(1));
             }
             return refused_or(r, |r| {
@@ -3038,10 +3009,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -3103,10 +3071,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -3134,10 +3099,7 @@ where
                             | connectrpc::ErrorCode::InvalidArgument
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -3172,7 +3134,7 @@ where
         "pg promote" => {
             if !a.dry_run && !a.force {
                 eprintln!(
-                    "hyperstorctl: pg promote gives up the writes only the lost copies have; run it with --dry-run first, then --force"
+                    "hsctl: pg promote gives up the writes only the lost copies have; run it with --dry-run first, then --force"
                 );
                 return Ok(Next::Exit(1));
             }
@@ -3194,10 +3156,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -3224,10 +3183,7 @@ where
                         connectrpc::ErrorCode::NotFound | connectrpc::ErrorCode::FailedPrecondition
                     ) =>
                 {
-                    eprintln!(
-                        "hyperstorctl: {}",
-                        e.message.as_deref().unwrap_or("refused")
-                    );
+                    eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("refused"));
                     return Ok(Next::Exit(1));
                 }
                 Err(e) => return Err(e),
@@ -3249,7 +3205,7 @@ where
                 }
                 match r.operation.as_option() {
                     Some(op) => t.push_str(&format!(
-                        "device {device} out; it leaves the map once its PGs have moved: operation {} (hyperstorctl op watch --id {})\n",
+                        "device {device} out; it leaves the map once its PGs have moved: operation {} (hsctl op watch --id {})\n",
                         op.id, op.id
                     )),
                     None => t.push_str(&format!(
@@ -3277,7 +3233,7 @@ where
                         .flat_map(|x| x.devices.iter().map(|d| d.id))
                         .collect();
                     if devs.is_empty() {
-                        eprintln!("hyperstorctl: no node {n}, or it has no devices");
+                        eprintln!("hsctl: no node {n}, or it has no devices");
                         return Ok(Next::Exit(1));
                     }
                     devs
@@ -3300,14 +3256,11 @@ where
                         let epoch = r.into_owned().map_epoch;
                         changed_epoch = changed_epoch.max(epoch);
                         println!(
-                            "device {device} {cmd} (map epoch {epoch}); hyperstorctl status shows the PGs moving"
+                            "device {device} {cmd} (map epoch {epoch}); hsctl status shows the PGs moving"
                         )
                     }
                     Err(e) if e.code == connectrpc::ErrorCode::NotFound => {
-                        eprintln!(
-                            "hyperstorctl: {}",
-                            e.message.as_deref().unwrap_or("not found")
-                        );
+                        eprintln!("hsctl: {}", e.message.as_deref().unwrap_or("not found"));
                         return Ok(Next::Exit(1));
                     }
                     Err(e) => return Err(e),
@@ -3323,7 +3276,7 @@ where
                     if s.epoch < changed_epoch {
                         // Not published yet: nothing has started moving.
                         if std::time::Instant::now() >= deadline {
-                            eprintln!("hyperstorctl: map epoch {changed_epoch} not published yet");
+                            eprintln!("hsctl: map epoch {changed_epoch} not published yet");
                             return Ok(Next::Exit(1));
                         }
                         continue;
@@ -3338,7 +3291,7 @@ where
                         break;
                     }
                     if std::time::Instant::now() >= deadline {
-                        eprintln!("hyperstorctl: {busy} PG(s) still backfilling or inactive");
+                        eprintln!("hsctl: {busy} PG(s) still backfilling or inactive");
                         return Ok(Next::Exit(1));
                     }
                 }
@@ -3365,7 +3318,7 @@ where
                     Next::Exit(0)
                 }
                 Err(e) if e.code != connectrpc::ErrorCode::Unavailable => {
-                    eprintln!("hyperstorctl: {}", error_text(&e));
+                    eprintln!("hsctl: {}", error_text(&e));
                     Next::Exit(1)
                 }
                 Err(e) => return Err(e),
@@ -3381,7 +3334,7 @@ where
         _ => {
             let s = status().await?;
             let Some(pool) = first_pool(&s) else {
-                eprintln!("hyperstorctl: the cluster has no pools");
+                eprintln!("hsctl: the cluster has no pools");
                 return Ok(Next::Exit(1));
             };
             let map = s.map_address.parse().map_err(|_| {
@@ -3420,7 +3373,7 @@ where
                 eprintln!(
                     "Token {} for scraper {:?}, single-use, expires {} (UTC). On the scraper's\n\
                      host, enroll with it, then point Prometheus at the files (see the docs):\n  \
-                     hyperstorctl --api {} enroll --file FILE --out DIR",
+                     hsctl --api {} enroll --file FILE --out DIR",
                     info.id,
                     info.name,
                     utc(info.expires_unix),
@@ -3432,7 +3385,7 @@ where
                     "Token {} for management client {:?}, single-use, expires {} (UTC). Give it\n\
                      to the client (glidex: gxctl datastore create … --hyperstor-token-file FILE),\n\
                      or enroll with it here:\n  \
-                     hyperstorctl --api {} enroll --file FILE --out DIR",
+                     hsctl --api {} enroll --file FILE --out DIR",
                     info.id,
                     info.name,
                     utc(info.expires_unix),
@@ -3811,7 +3764,7 @@ where
             let op = r.operation.as_option().cloned().unwrap_or_default();
             show(a, &r, || {
                 format!(
-                    "project {id} moving to tenant {to}: operation {} (hyperstorctl op watch --id {})\n",
+                    "project {id} moving to tenant {to}: operation {} (hsctl op watch --id {})\n",
                     op.id, op.id
                 )
             });
@@ -3848,11 +3801,11 @@ where
                 Some(p) => p.clone(),
                 None => match certificate_pin(&url) {
                     Ok(p) => {
-                        eprintln!("hyperstorctl: {url} serves a certificate with SHA-256 {p}");
+                        eprintln!("hsctl: {url} serves a certificate with SHA-256 {p}");
                         p
                     }
                     Err(e) => {
-                        eprintln!("hyperstorctl: {url}: {e}; give its SHA-256 with --pin");
+                        eprintln!("hsctl: {url}: {e}; give its SHA-256 with --pin");
                         return Ok(Next::Exit(1));
                     }
                 },
@@ -4435,7 +4388,7 @@ where
             let op = r.operation.as_option().cloned().unwrap_or_default();
             show(a, &r, || {
                 format!(
-                    "{} purging: operation {} (hyperstorctl op watch --id {})\n",
+                    "{} purging: operation {} (hsctl op watch --id {})\n",
                     what(),
                     op.id,
                     op.id
@@ -4643,7 +4596,7 @@ where
             show(a, &r, || {
                 format!(
                     "volume {} copying to volume {} in pool {}: operation {} \
-                     (hyperstorctl op watch --id {})\n",
+                     (hsctl op watch --id {})\n",
                     id(),
                     r.new_id,
                     a.pool.unwrap_or_default(),
@@ -4668,7 +4621,7 @@ where
             let op = r.operation.as_option().cloned().unwrap_or_default();
             show(a, &r, || {
                 format!(
-                    "volume {} moving to pool {}: operation {} (hyperstorctl op watch --id {})\n",
+                    "volume {} moving to pool {}: operation {} (hsctl op watch --id {})\n",
                     id(),
                     a.pool.unwrap_or_default(),
                     op.id,
@@ -4691,7 +4644,7 @@ where
             let op = r.operation.as_option().cloned().unwrap_or_default();
             show(a, &r, || {
                 format!(
-                    "volume {} flattening: operation {} (hyperstorctl op watch --id {})\n",
+                    "volume {} flattening: operation {} (hsctl op watch --id {})\n",
                     id(),
                     op.id,
                     op.id
@@ -4805,7 +4758,7 @@ where
         .open(&out)
         .and_then(|mut f| f.write_all(&r.backup).and_then(|()| f.sync_all()));
     if let Err(e) = written {
-        eprintln!("hyperstorctl: {out}: {e}");
+        eprintln!("hsctl: {out}: {e}");
         return Ok(Next::Exit(1));
     }
     println!(
@@ -4919,7 +4872,7 @@ where
                 let mut t = moves_text(&r.moves);
                 match r.operation.as_option() {
                     Some(op) => t.push_str(&format!(
-                        "node {node} draining: operation {} (hyperstorctl op watch --id {})\n",
+                        "node {node} draining: operation {} (hsctl op watch --id {})\n",
                         op.id, op.id
                     )),
                     None => t.push_str(&format!(
@@ -5060,7 +5013,7 @@ where
             Ok(Next::Exit(op_exit(&o)))
         }
         _ => {
-            eprintln!("hyperstorctl: operation {id} still running");
+            eprintln!("hsctl: operation {id} still running");
             Ok(Next::Exit(1))
         }
     }
@@ -5093,7 +5046,7 @@ async fn volume_io(
     networks: Vec<String>,
 ) -> i32 {
     let fail = |m: String| {
-        eprintln!("hyperstorctl: {m}");
+        eprintln!("hsctl: {m}");
         1
     };
     let Some(id) = a.id.as_deref().and_then(parse_volume_id) else {
@@ -5115,7 +5068,7 @@ async fn volume_io(
         Err(_) => return fail(format!("map service {named}: no answer in 5 s")),
     };
     // Whoever finds the volume held knows a tool holds it (D153).
-    cl.set_lease_label("hyperstorctl");
+    cl.set_lease_label("hsctl");
     on_networks(&cl, networks);
     let vol = match cl.volume(id).await {
         Ok(Some(v)) => v,
@@ -5257,7 +5210,7 @@ fn parse_volume_id(s: &str) -> Option<u128> {
 /// `admin.key` and `root.crt` into `--out`, the layout `--tls` reads.
 fn enroll(api: &str, a: &Args) -> i32 {
     let fail = |m: String| {
-        eprintln!("hyperstorctl: {m}");
+        eprintln!("hsctl: {m}");
         1
     };
     let path = a.file.clone().unwrap_or_default();
@@ -5326,7 +5279,7 @@ fn enroll(api: &str, a: &Args) -> i32 {
     // certificate.
     println!(
         "enrolled as {} in cluster {}; certificate in {} for 30 days (renew it from a daily timer: \
-         hyperstorctl --api ADDR --tls DIR cert renew); map service {}",
+         hsctl --api ADDR --tls DIR cert renew); map service {}",
         r.identity,
         r.cluster_id,
         dir.display(),
@@ -5346,7 +5299,7 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
     let cert = match std::fs::read_to_string(&crt) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("hyperstorctl: {}: {e}", crt.display());
+            eprintln!("hsctl: {}: {e}", crt.display());
             return 2;
         }
     };
@@ -5361,14 +5314,14 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
     let (key, csr) = match hyperstor_pki::new_request() {
         Ok(k) => k,
         Err(e) => {
-            eprintln!("hyperstorctl: key: {e}");
+            eprintln!("hsctl: key: {e}");
             return 1;
         }
     };
     let uri: http::Uri = match format!("https://{api}").parse() {
         Ok(u) => u,
         Err(_) => {
-            eprintln!("hyperstorctl: {api}: not an address");
+            eprintln!("hsctl: {api}: not an address");
             return 2;
         }
     };
@@ -5390,7 +5343,7 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
     let r = match r {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("hyperstorctl: {api}: {}", error_text(&e));
+            eprintln!("hsctl: {api}: {}", error_text(&e));
             return exit_code(&e);
         }
     };
@@ -5413,11 +5366,11 @@ fn renew(api: &str, dir: &str, force: bool) -> i32 {
     if let Err(e) =
         put("admin.key", &key, 0o600).and_then(|()| put("admin.crt", &r.certificate, 0o644))
     {
-        eprintln!("hyperstorctl: {e}");
+        eprintln!("hsctl: {e}");
         return 1;
     }
     println!(
-        "renewed {} (hyperstorctl cert show --file {} shows its expiry)",
+        "renewed {} (hsctl cert show --file {} shows its expiry)",
         crt.display(),
         crt.display()
     );
@@ -5433,7 +5386,7 @@ fn on_networks(cl: &Client, networks: Vec<String>) -> String {
     let unknown = hyperstor_ctl::unknown_networks(&networks, map.networks.keys());
     if !unknown.is_empty() {
         eprintln!(
-            "hyperstorctl: the cluster has no network {}; devices are reached at their addresses there",
+            "hsctl: the cluster has no network {}; devices are reached at their addresses there",
             unknown.join(", ")
         );
     }
@@ -5506,11 +5459,11 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64, networks: Vec<
     {
         Ok(Ok(c)) => c,
         Ok(Err(e)) => {
-            eprintln!("hyperstorctl: map service {meta}: {e}");
+            eprintln!("hsctl: map service {meta}: {e}");
             return 3;
         }
         Err(_) => {
-            eprintln!("hyperstorctl: map service {meta}: no answer in 5 s");
+            eprintln!("hsctl: map service {meta}: no answer in 5 s");
             return 3;
         }
     };
@@ -5532,7 +5485,7 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64, networks: Vec<
             .write(pool, lineage, (i * STEP) as u64, piece.to_vec())
             .await
         {
-            eprintln!("hyperstorctl: write at {i} MiB: {e}");
+            eprintln!("hsctl: write at {i} MiB: {e}");
             return 1;
         }
     }
@@ -5547,7 +5500,7 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64, networks: Vec<
             Ok(got) => {
                 let at = (i * STEP) as u64;
                 eprintln!(
-                    "hyperstorctl: data read at {i} MiB differs from what was written \
+                    "hsctl: data read at {i} MiB differs from what was written \
                      (pool {pool}, lineage {lineage:032x}): {}",
                     mismatch(piece, &got, at, &data)
                 );
@@ -5559,11 +5512,11 @@ async fn io_test(meta: std::net::SocketAddr, pool: u32, mib: u64, networks: Vec<
                     Ok(g) => format!("different data: {}", mismatch(piece, &g, at, &data)),
                     Err(e) => format!("failed: {e}"),
                 };
-                eprintln!("hyperstorctl: a second read at {i} MiB: {again}");
+                eprintln!("hsctl: a second read at {i} MiB: {again}");
                 return 1;
             }
             Err(e) => {
-                eprintln!("hyperstorctl: read at {i} MiB: {e}");
+                eprintln!("hsctl: read at {i} MiB: {e}");
                 return 1;
             }
         }

@@ -8743,7 +8743,7 @@ export const CaService: GenService<{
   /**
    * A `host` certificate for the host a storage node runs on
    * (04-decisions.md D386), for the key in the request: what
-   * hyperstor-vhost and hyperstorctl --identity show storage nodes
+   * hyperstor-vhost and hsctl --identity show storage nodes
    * there. Asked with that node's certificate, for the host name the
    * node reports. Storage nodes only; audited.
    *
@@ -9165,7 +9165,7 @@ export const TenantService: GenService<{
  * tenant, a project or a dataset and inherited down unless set below. A
  * name shared by two live datasets of a project is shown and addressed
  * with a qualifier: `name@<volume id>` or `name@bucket`. `hsfs` and
- * `hyperstorctl dataset` are its commands.
+ * `hsctl dataset` are its commands.
  *
  * @generated from service hyperstor.v1.DatasetService
  */

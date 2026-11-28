@@ -2,7 +2,7 @@
 //! service traits and clients generated from `proto/`.
 //!
 //! Messages are `buffa` types; their JSON is the proto3 JSON mapping with
-//! the proto field names, so `curl` and `hyperstorctl --json` see the same
+//! the proto field names, so `curl` and `hsctl --json` see the same
 //! shapes (04-decisions.md D51).
 
 #[allow(clippy::all, unused_imports, dead_code, non_camel_case_types)]
@@ -40,7 +40,7 @@ pub fn valid_person(p: &str) -> bool {
 pub const REALMS_HEADER: &str = "x-hyperstor-realms";
 
 /// The header with which a person asks `hyperstor-mgmt` to act in one
-/// realm (`hyperstorctl --realm`, the UI's realm picker; D265): mgmt then
+/// realm (`hsctl --realm`, the UI's realm picker; D265): mgmt then
 /// uses their cluster-wide roles and their grants in that realm, for
 /// that realm alone.
 pub const ACT_IN_REALM_HEADER: &str = "x-hyperstor-realm";

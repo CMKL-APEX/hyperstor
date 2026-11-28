@@ -557,7 +557,7 @@ impl S3Service for Api {
         {
             let e = with_reason(
                 ConnectError::permission_denied(format!(
-                    "gateway {id} isn't bound to realm {:?}: bind it with `hyperstorctl realm host --host {id} --realm {}`",
+                    "gateway {id} isn't bound to realm {:?}: bind it with `hsctl realm host --host {id} --realm {}`",
                     realms.name(realm),
                     realms.name(realm)
                 )),

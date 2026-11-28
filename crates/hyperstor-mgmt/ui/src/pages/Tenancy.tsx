@@ -1,5 +1,5 @@
 // Tenancy (20-tenants.md §24.8, §24.9; 19-administration.md §23.12): what
-// hyperstorctl's realm, tenant, project and admission commands manage, on
+// hsctl's realm, tenant, project and admission commands manage, on
 // one page of the cluster's (not a realm's) in three tabs.
 //
 // - Realms: each realm's pools, hosts and management clients; create and
@@ -21,7 +21,7 @@ import { OperationState, type Project, type Realm, type Tenant, type TrustedDire
 import type { SpaceRow } from "../gen/hyperstor/v1/cluster_pb";
 import { ActionDialog, Button, Card, Cli, ErrorText, Field, Pill, Table, fmtBytes, fmtTime, input, td, useCan, usePoll } from "../ui";
 
-/** A realm list as hyperstorctl takes it: names, or `any` for none. */
+/** A realm list as hsctl takes it: names, or `any` for none. */
 const realmArg = (rs: string[]) => (rs.length ? rs.join(",") : "any");
 
 /** A directory's short name: the last segment of its issuer
@@ -990,7 +990,7 @@ function DirectoriesTab() {
                 <input className={`${input} font-mono`} value={f.pin} onChange={set("pin")} spellCheck={false} autoFocus />
               </Field>
               <p className="text-xs text-slate-500">
-                For an address where mgmt doesn&apos;t serve its own certificate: hyperstorctl admission offer reads it from
+                For an address where mgmt doesn&apos;t serve its own certificate: hsctl admission offer reads it from
                 the address, or <code>openssl s_client -connect HOST:PORT &lt;/dev/null | openssl x509 -noout -fingerprint -sha256</code>.{" "}
                 <button type="button" className="text-sky-700 dark:text-sky-300 hover:underline" onClick={() => setOther(false)}>
                   Use mgmt&apos;s

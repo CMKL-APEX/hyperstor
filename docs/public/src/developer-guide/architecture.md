@@ -13,7 +13,7 @@
    └───────────────────────────┘                └──────────────────────────┘
          ▲  cluster API                              ▲   replication, pings
          │                                           │   between storage nodes
-   hyperstorctl, hyperstor-mgmt (web UI),            └── (same port numbers)
+   hsctl, hyperstor-mgmt (web UI),            └── (same port numbers)
    hyperstor-install
 ```
 
@@ -21,7 +21,7 @@
 |---|---|---|
 | `hyperstor-meta` | yes | The map service: holds the cluster map, detects failures, grants map leases, sets device weights, serves the cluster API and runs long operations (drains, purges, device removals). Three or five members replicate the map with Raft |
 | `hyperstord` | yes | A storage node: one reactor thread per device shard, serving reads, writes, replication, recovery and scrub |
-| `hyperstorctl` | yes | The administrator's CLI, over the cluster API, or through `hyperstor-mgmt` as a person with an API token (`--mgmt`) |
+| `hsctl` | yes | The administrator's CLI, over the cluster API, or through `hyperstor-mgmt` as a person with an API token (`--mgmt`) |
 | `hyperstor-install` | yes | Host checks and a convergent installer; joins hosts with single-use tokens; formats and adds block devices |
 | `hyperstor-mgmt` | yes | The management service: people log in with their host password or an identity provider (OIDC), get roles (viewer, operator, storage admin, security admin) checked by Cedar policies, and call the cluster API through it, named in its audit log. It serves the React web UI over HTTPS |
 | `hyperstor-authd` | yes | A small root helper that checks people's passwords with PAM for the management service, so it never runs as root |

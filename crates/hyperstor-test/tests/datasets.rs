@@ -2,7 +2,7 @@
 //! 04-decisions.md D360, D361): volumes named `tenant/project/name`,
 //! properties set on a tenant, a project or a dataset and inherited down,
 //! `pool` choosing where a volume goes, names unique in a project (copies
-//! and restores taking their own), and `hsfs` as `hyperstorctl dataset`.
+//! and restores taking their own), and `hsfs` as `hsctl dataset`.
 
 use hyperstor_test::*;
 
@@ -242,10 +242,10 @@ fn datasets_are_named_in_projects_and_inherit_properties() {
     );
 
     // hsfs prints its own usage line, and refuses what isn't a command.
-    // Installed as a link to hyperstorctl.
+    // Installed as a link to hsctl.
     assert_eq!(
         std::fs::read_link(c.root.join("usr/local/bin/hsfs")).unwrap(),
-        std::path::Path::new("hyperstorctl")
+        std::path::Path::new("hsctl")
     );
     let u = Run::of(
         std::process::Command::new(c.root.join("usr/local/bin/hsfs"))

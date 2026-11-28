@@ -55,7 +55,7 @@ are refused when their devices span fewer domains than their copies.
 | `class` | the device classes the pool places on (`nvme,ssd`); without it, every device |
 
 Pools are declared in the cluster file, or made at run time with
-`hyperstorctl pool create`.
+`hsctl pool create`.
 
 | Kind | For |
 |---|---|
@@ -80,7 +80,7 @@ copy. See [Device classes](pools-and-devices.md#device-classes).
   the pool. Pools that share devices share their space.
 - **Volumes are thin.** A volume takes space only as it is written, so
   the volumes in a pool can add up to more than the pool holds. Watch
-  the space (`hyperstorctl pools`, the web UI) rather than the volumes'
+  the space (`hsctl pools`, the web UI) rather than the volumes'
   sizes.
 - **Thresholds.** Health warns when a device passes 85 % (`nearfull`),
   devices past 90 % take no backfill (`backfillfull`), and past 95 %
@@ -119,7 +119,7 @@ fast ones and keep the rest on the management network:
 
 - Declare the networks in the [cluster file](../reference/cluster-file.md#network),
   each `control`, `data` or `both`, or on a running cluster with
-  `hyperstorctl network set --name fast --kind data --match "subnet
+  `hsctl network set --name fast --kind data --match "subnet
   192.0.2.0/24"` or the web UI's Networks page, which also shows each
   device's endpoints and the nodes' ports, and sets them.
 - Give each device one or more `endpoint` lines on a data network. The
@@ -130,12 +130,12 @@ fast ones and keep the rest on the management network:
   networks it has endpoints on. A host that joined with a token proposes
   its devices' endpoints from its ports on every installer run. On a map
   service host, and on a joined host installed with `--endpoints off`,
-  set them with `hyperstorctl device endpoints` and run the installer
+  set them with `hsctl device endpoints` and run the installer
   again there: its nodes take the endpoints the map has for their
   devices, and restart with them.
 - Clients choose too: [`hyperstor-vhost --networks`](../reference/hyperstor-vhost.md)
   for VM disks, `hyperstor-s3 --networks`, and
-  [`hyperstorctl --networks`](../reference/hyperstorctl.md) for
+  [`hsctl --networks`](../reference/hsctl.md) for
   `io-test` and the volume commands. The installer gives all three
   the networks the host's own storage nodes use; on a host without
   storage, or to choose others, install with `--client-networks
@@ -143,7 +143,7 @@ fast ones and keep the rest on the management network:
   devices' addresses.
 
 Nodes ping each other on every endpoint. When a port fails, its
-endpoints are marked down (`hyperstorctl nodes --json` shows `down`),
+endpoints are marked down (`hsctl nodes --json` shows `down`),
 and traffic moves to the device's other endpoints, then to its other
 data networks, while the node stays up: no data moves. A node is down
 when it stops sending heartbeats, or when none of its endpoints answers.
@@ -192,7 +192,7 @@ Apply it with `netplan try`, then check again.
 the map service weights each port that carries endpoints by the
 bandwidth other traffic leaves it: senders spread their requests over a
 device's endpoints by those weights. A port's role says what storage may
-do with it (`hyperstorctl port list` shows them):
+do with it (`hsctl port list` shows them):
 
 | Role | Storage |
 |---|---|
@@ -201,18 +201,18 @@ do with it (`hyperstorctl port list` shows them):
 | `host`, `uplink`, `vm` | doesn't use it; `host` is the default for a port without endpoints |
 
 On a GPU host whose InfiniBand ports are its GPUs' rails, mark them
-`compute` (`hyperstorctl port role --node N --name ibp12s0 --role
+`compute` (`hsctl port role --node N --name ibp12s0 --role
 compute`, or a [`port` line](../reference/cluster-file.md#port)) and
 give devices endpoints there: storage then uses the rails while jobs
 leave them idle, and its devices' other endpoints, or their addresses,
-while jobs run. `hyperstorctl port lending` turns lending `off`, or to
+while jobs run. `hsctl port lending` turns lending `off`, or to
 `always`, for the cluster or one port.
 
 **Claims.** A scheduler that knows when its jobs need the rails says so
 rather than waiting for their traffic: with an `orchestrator`
-certificate (`hyperstorctl token create --role orchestrator --name
+certificate (`hsctl token create --role orchestrator --name
 NAME`, then `enroll` on its host), it claims a port for a job
-(`hyperstorctl claim port`, or the API's `ClaimPort`) and renews the
+(`hsctl claim port`, or the API's `ClaimPort`) and renews the
 claim while the job runs. A claimed port is taken back from storage at
 once, and an exclusive claim keeps storage off it until the claim is
 released or lapses. The orchestrator's certificate may claim, renew,

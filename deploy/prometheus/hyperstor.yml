@@ -16,10 +16,10 @@ scrape_configs:
   # The map service's scrub metrics (28-scrub.md §31.8, D234, D235): GET
   # /metrics on each member's cluster API (port 8850), over mutual TLS with
   # a certificate of role `metrics`. Make it on the Prometheus host:
-  #   hyperstorctl token create --role metrics --name prometheus   (an admin)
-  #   hyperstorctl --api MEMBER:8850 enroll --file TOKEN --out /etc/prometheus/hyperstor
+  #   hsctl token create --role metrics --name prometheus   (an admin)
+  #   hsctl --api MEMBER:8850 enroll --file TOKEN --out /etc/prometheus/hyperstor
   # and renew it daily (a timer or cron):
-  #   hyperstorctl --api MEMBER:8850 --tls /etc/prometheus/hyperstor cert renew
+  #   hsctl --api MEMBER:8850 --tls /etc/prometheus/hyperstor cert renew
   # The files must be readable by Prometheus. Every member answers; list them
   # all, so a member being down doesn't stop the scrape.
   - job_name: hyperstor-meta

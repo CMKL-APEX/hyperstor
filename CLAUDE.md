@@ -19,11 +19,11 @@ design is split by topic, with section numbers kept across files.
   its own copy, and the in-process fault rig; volumes as ublk block
   devices (`hyperstor-ublk`, our own ublk on the reactor); snapshots,
   clones, rollback (in place to the newest snapshot), flatten and
-  consistency groups, in the client library, the API and `hyperstorctl`,
+  consistency groups, in the client library, the API and `hsctl`,
   and the host read cache (HS4); paged checkpoints that write only the
   pages changed (D105); the first part of AD0 and AD1: the cluster API on the map
   service over mutual TLS with roles and stable error reasons,
-  `hyperstorctl` (checked against every RPC of the protos), join tokens
+  `hsctl` (checked against every RPC of the protos), join tokens
   (replicated through Raft) for storage hosts and map service members
   with certificate renewal over the API, an encrypted backup of the root
   CA's key, drains as operations, and `hyperstor-install` with host
@@ -31,7 +31,7 @@ design is split by topic, with section numbers kept across files.
   password and OIDC logins to `hyperstor-mgmt` (sessions, API tokens,
   Cedar roles with step-up, the first administrator's claim, the cluster
   API on their behalf, named in the map service's audit), and
-  `hyperstorctl --mgmt` with a person's token, and the React web UI on
+  `hsctl --mgmt` with a person's token, and the React web UI on
   `@glidex/ui-kit` with browser tests; in HS3, `hyperstor-vhost` (volumes
   as VM disks over vhost-user-blk, staged through its control socket; VMs
   boot from them under Cloud Hypervisor and QEMU), with each attached

@@ -37,7 +37,7 @@ Each attach has a lease **identity** of its own, a random 64-bit number
 recorded with the holder and carried by every request under the lease,
 so one client's leases can be fenced one at a time. A lease also records
 a short **label** from its holder (`vhost:<node>` for a VM disk,
-`hyperstorctl` for a tool), which a refused attach names, so the caller
+`hsctl` for a tool), which a refused attach names, so the caller
 can tell a VM's disk from a tool's hold.
 
 | Timing | Value |
@@ -229,8 +229,8 @@ afresh.
 **For glidex.** Hyperstor's side of glidex's driver is built:
 `hyperstor-vhost`'s control socket (one JSON request per line: attach,
 with the node's name as the lease's label; detach; list); a management
-identity enrolled with a single-use join token (`hyperstorctl enroll`);
-`expand-volume`; and `hyperstorctl write-volume` and `read-volume` for
+identity enrolled with a single-use join token (`hsctl enroll`);
+`expand-volume`; and `hsctl write-volume` and `read-volume` for
 images (`--sparse` skips zero blocks). The label is what lets a driver
 starting a VM preempt a disk still held by another node's
 `hyperstor-vhost` after a crash or a failed detach, fencing only that

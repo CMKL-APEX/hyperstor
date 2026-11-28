@@ -1,14 +1,14 @@
-//! `hyperstorctl`'s help and its messages for a wrong command line, run as
+//! `hsctl`'s help and its messages for a wrong command line, run as
 //! the binary: no cluster is needed, since none of these reaches the API.
 
 use std::process::{Command, Output};
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_hyperstorctl"))
+    Command::new(env!("CARGO_BIN_EXE_hsctl"))
         .args(args)
         .env_remove("HYPERSTOR_TIMEOUT")
         .output()
-        .expect("run hyperstorctl")
+        .expect("run hsctl")
 }
 
 fn out(o: &Output) -> String {
@@ -31,7 +31,7 @@ fn without_arguments_it_prints_one_usage_line_and_where_to_find_help() {
         1,
         "{e}"
     );
-    assert!(e.contains("hyperstorctl --help"), "{e}");
+    assert!(e.contains("hsctl --help"), "{e}");
     assert!(out(&o).is_empty());
 }
 
@@ -59,7 +59,7 @@ fn help_for_a_command_names_its_options() {
     let a = run(&["help", "create-volume"]);
     assert_eq!(a.status.code(), Some(0));
     let s = out(&a);
-    assert!(s.starts_with("hyperstorctl create-volume\n"), "{s}");
+    assert!(s.starts_with("hsctl create-volume\n"), "{s}");
     for want in [
         "--size S",
         "--pool P",
@@ -143,7 +143,7 @@ fn options_that_do_not_fit_the_command_point_to_its_help() {
     assert_eq!(o.status.code(), Some(2));
     let e = err(&o);
     assert!(e.contains("create-volume"), "{e}");
-    assert!(e.contains("hyperstorctl help create-volume"), "{e}");
+    assert!(e.contains("hsctl help create-volume"), "{e}");
 }
 
 #[test]

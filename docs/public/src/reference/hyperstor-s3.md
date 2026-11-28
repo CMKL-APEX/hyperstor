@@ -7,9 +7,9 @@ may send any request to any of them.
 
 > **New.** Its five stages are built (see the [status](../status.md)).
 > Access keys and placements are kept by the map service and managed with
-> [`hyperstorctl s3`](hyperstorctl.md); [`hyperstor-install
+> [`hsctl s3`](hsctl.md); [`hyperstor-install
 > --s3`](hyperstor-install.md) installs gateways; buckets, keys and
-> placements are in the web UI's Object storage page and `hyperstorctl
+> placements are in the web UI's Object storage page and `hsctl
 > s3`.
 
 ```text
@@ -22,7 +22,7 @@ usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --iden
 | `--tls DIR` | | Holds `s3.crt` (the certificate chain, leaf first) and `s3.key`: the name clients connect to must be in the certificate. Read at start |
 | `--api ADDR[,ADDR...]` | | The cluster API of the map service's members, tried in turn: the access keys and placements come from there, every 5 seconds |
 | `--identity DIR` | | With `--api`: the gateway's own certificate, `s3.crt` and `s3.key`, of role `s3`, and the cluster's `root.crt`. Only an `s3` certificate may read the keys. It names the gateway's addresses, so `--tls` may be the same directory where clients trust the cluster's root |
-| `--realm NAME` | `default` | With `--api`: the realm this gateway serves. It knows only the keys of that realm's tenants, and its placements: another realm's key is unknown here (`InvalidAccessKeyId`). The map service answers a realm other than `default` only to a gateway bound to it by its certificate's name (`hyperstorctl realm host --host NAME --realm R`); until then the gateway retries |
+| `--realm NAME` | `default` | With `--api`: the realm this gateway serves. It knows only the keys of that realm's tenants, and its placements: another realm's key is unknown here (`InvalidAccessKeyId`). The map service answers a realm other than `default` only to a gateway bound to it by its certificate's name (`hsctl realm host --host NAME --realm R`); until then the gateway retries |
 | `--domain NAME[,NAME...]` | | The gateway's domains: a request to `bucket.NAME` names its bucket in the host (virtual-hosted), one to `NAME` or any other host in its path. Needs a wildcard DNS name and certificate for `*.NAME`; a wildcard covers one label, so buckets with dots in their names are reached path-style |
 | `--keys FILE` | | Instead of `--api`, for running without the cluster API: the access keys, one per line: `ID SECRET TENANT`; `#` starts a comment. Readable by its owner only (`chmod 600`), or the gateway won't start |
 | `--data-pool NAME` | | With `--keys`: the pool new buckets keep their objects' bytes in |
@@ -33,8 +33,8 @@ usage: hyperstor-s3 --meta ADDR[,ADDR...] --tls DIR (--api ADDR[,ADDR...] --iden
 | `--networks NAME[,NAME...]` | none | The data networks this host reaches storage nodes on, in order, as for [hyperstor-vhost](hyperstor-vhost.md) |
 
 ```sh
-hyperstorctl s3 placement set --name default --data-pool bulk --index-pool flash
-hyperstorctl s3 key create --tenant 1 --description photos   # prints ID SECRET
+hsctl s3 placement set --name default --data-pool bulk --index-pool flash
+hsctl s3 key create --tenant 1 --description photos   # prints ID SECRET
 hyperstor-s3 --meta 192.0.2.10:8849 --api 192.0.2.10:8850 \
   --identity /etc/hyperstor/pki --tls /etc/hyperstor/s3 &
 aws --endpoint-url https://s3.example.com:8848 s3 mb s3://photos
@@ -44,7 +44,7 @@ aws --endpoint-url https://s3.example.com:8848 s3 cp cat.jpg s3://photos/
 Give each user a key of their own; the tenant number groups the buckets
 a key may use, and a key reaches only its tenant's buckets. The secret
 is printed once: the map service keeps it encrypted with the cluster key
-and hands it only to gateways. A revoked key (`hyperstorctl s3 key
+and hands it only to gateways. A revoked key (`hsctl s3 key
 revoke`) is refused within seconds. Gateways keep the keys they have
 while the map service is away, and start only once it has answered.
 

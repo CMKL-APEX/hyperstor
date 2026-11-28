@@ -343,7 +343,7 @@ export function Findings({ limit, compact }: { limit?: number; compact?: boolean
           </div>
           <p className="text-slate-600 dark:text-slate-400">Seen: {f.evidence}</p>
           {!compact && <p>Do: {f.action}</p>}
-          {!compact && f.command && <Cli cmd={f.command.replace(/^hyperstorctl /, "")} />}
+          {!compact && f.command && <Cli cmd={f.command.replace(/^hsctl /, "")} />}
         </article>
       ))}
       {!compact && hidden > 0 && <p className="text-xs text-slate-500">{hidden} snoozed in this browser.</p>}

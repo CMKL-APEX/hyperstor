@@ -825,7 +825,7 @@ pub fn stalled(s: &mut pb::GetStatusResponse, d: std::time::Duration) {
 /// only when it can't does it answer from the map alone, which the leader
 /// published, without warning about what only the leader knows, and say
 /// so in a note; one that knows no leader warns, since nothing can change
-/// the map (and `hyperstorctl status --wait` waits for an election).
+/// the map (and `hsctl status --wait` waits for an election).
 pub fn status_for(
     map: &ClusterMap,
     heard: &std::collections::BTreeMap<u32, std::time::Duration>,

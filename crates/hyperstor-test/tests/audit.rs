@@ -1,6 +1,6 @@
 //! The audit log (19-administration.md §23.9.4, D112, D113): the map
 //! service's records and hyperstor-mgmt's (people's logins and roles) land
-//! in `.meta`; `hyperstorctl audit list` reads them newest first, filtered
+//! in `.meta`; `hsctl audit list` reads them newest first, filtered
 //! and paged; retention is set; through mgmt only security administrators
 //! read it. A storm of refusals is summarised (D147), and the records
 //! of a day's parts page through mgmt (D148).
@@ -160,7 +160,7 @@ fn a_refusal_storm_is_summarised_and_pages() {
             _ => break,
         }
     }
-    // (uint64 is a string in protobuf's JSON, maybe not in hyperstorctl's.)
+    // (uint64 is a string in protobuf's JSON, maybe not in hsctl's.)
     let key = |r: &serde_json::Value| {
         let t = r["time_ms"]
             .as_str()

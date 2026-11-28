@@ -15,7 +15,7 @@ It prints the size of the map it loaded, then runs until stopped. All
 options are in the [reference](../reference/hyperstor-meta.md).
 
 With `--api 127.0.0.1:8850` it also serves the
-[cluster API](../reference/cluster-api.md), which `hyperstorctl`, the
+[cluster API](../reference/cluster-api.md), which `hsctl`, the
 management service and other management clients use. Add `--api-tls
 DIR` to require client certificates; without it, keep the API on
 loopback. The installer also gives it a local socket (`--api-socket`),
@@ -76,9 +76,9 @@ map, and the others send nodes to it.
   map the first time; after that, hosts and pools you add to the file
   (on every member) are added when a leader is next elected: restart the
   members, one at a time. Hosts can also join with a token, and devices
-  and pools be added and removed with `hyperstorctl`, with no restart
+  and pools be added and removed with `hsctl`, with no restart
   (see [Managing a cluster](managing.md)).
-- **Any member answers** `hyperstorctl` and the web UI. What only the
+- **Any member answers** `hsctl` and the web UI. What only the
   leader knows (devices' space, when each node was last heard from,
   flapping nodes, scrub's findings) a member that doesn't lead asks the
   leader for, so the answers are the same wherever you ask.
@@ -115,7 +115,7 @@ minutes, and keeps the last 24. Take one at any time, to keep off the
 cluster:
 
 ```sh
-hyperstorctl map backup --out map.hsbackup
+hsctl map backup --out map.hsbackup
 ```
 
 A backup holds what the map service holds, not data: volumes and their
@@ -130,14 +130,14 @@ sudo mv /var/lib/hyperstor/meta /var/lib/hyperstor/meta.lost
 echo "HS_ONCE=--restore /var/lib/hyperstor/meta-backups/map-…hsbackup" \
     | sudo tee /etc/hyperstor/meta-once.env
 sudo systemctl start hyperstor-meta
-hyperstorctl status --wait 60
+hsctl status --wait 60
 sudo rm /etc/hyperstor/meta-once.env
 ```
 
 `/etc/hyperstor/meta-once.env` holds options for one start; the restored
 store stays in the data directory, and the next start needs none. The
 cluster API opens only once the backup is written into the store, so
-`hyperstorctl status --wait` answers then, never from a half-restored
+`hsctl status --wait` answers then, never from a half-restored
 store.
 It is a map service of one; with several
 members, the others join it again. Changes made after the backup was
@@ -154,8 +154,8 @@ that includes it, and start it; then add it on the leader:
 sudo hyperstor-install install --join 192.0.2.10:8850 --token-file token \
     --role meta --members "$M,4=192.0.2.13:8851/192.0.2.13:8849" --member-id 4
 # on the leader
-hyperstorctl member add --id 4 --raft 192.0.2.13:8851 --map 192.0.2.13:8849
-hyperstorctl member list
+hsctl member add --id 4 --raft 192.0.2.13:8851 --map 192.0.2.13:8849
+hsctl member list
 ```
 
 The new member is a learner until it has the log, then a voter; add it
@@ -177,7 +177,7 @@ The installer does each on the host itself:
 
 ```sh
 # on the leader: a meta token, copied to the storage host
-(umask 077; sudo hyperstorctl token create --role meta > token)
+(umask 077; sudo hsctl token create --role meta > token)
 # on the storage host: it joins as the next member id, keeps its node,
 # and adds itself once its map service runs
 sudo hyperstor-install install --role both --token-file token
@@ -215,7 +215,7 @@ alone, on its host, with every other member stopped:
 sudo systemctl stop hyperstor-meta
 echo "HS_ONCE=--force-alone CLUSTER_ID" | sudo tee /etc/hyperstor/meta-once.env
 sudo systemctl start hyperstor-meta
-hyperstorctl member list            # one member, leading
+hsctl member list            # one member, leading
 sudo rm /etc/hyperstor/meta-once.env
 ```
 

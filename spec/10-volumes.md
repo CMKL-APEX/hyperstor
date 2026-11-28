@@ -79,7 +79,7 @@ Client I/O, create/expand/delete, snapshots, clones, space and QoS. Part of the 
   the holder's watch of its header (D103), deletion by merging versions
   in the engine (D104), resets to the newest snapshot in place (D106,
   I124), consistency groups (I125), and the cluster API and
-  `hyperstorctl` (I126).
+  `hsctl` (I126).
 
 ### 10.4 Clones and flatten
 

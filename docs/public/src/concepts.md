@@ -107,7 +107,7 @@ own. A **consistency group** snapshots several volumes at one instant.
 
 ## The trash
 
-Deleting a volume or a snapshot through the cluster API, `hyperstorctl`
+Deleting a volume or a snapshot through the cluster API, `hsctl`
 or the web UI moves it to the **trash**: it can't be attached, but its
 data stays, and counts against the pool, for the pool's grace period (a
 day by default). Until then it can be restored; after it, the map

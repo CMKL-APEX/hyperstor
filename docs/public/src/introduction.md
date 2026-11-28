@@ -77,7 +77,7 @@ on its own.
   a read cache that the clones of one image on a host share.
 - **Administration.** `hyperstor-install` installs a trial cluster on one
   host, or a cluster across hosts that join with single-use tokens.
-  `hyperstorctl` and a web UI manage it, with people's logins (a
+  `hsctl` and a web UI manage it, with people's logins (a
   password or an identity provider), roles, an audit log, and long
   operations such as draining a node. Clusters are
   [upgraded](admin-guide/upgrading.md) one host at a time while they run.

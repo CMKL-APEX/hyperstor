@@ -1,5 +1,5 @@
 // People and their roles, your API tokens, join tokens and certificates
-// (the map service's backup stays with hyperstorctl: a file to keep). Everyone manages their own API tokens; the
+// (the map service's backup stays with hsctl: a file to keep). Everyone manages their own API tokens; the
 // rest is for security administrators. Acting in a realm (D264, D265),
 // only that realm's grants, which its security administrators set too.
 import { useState } from "react";
@@ -159,7 +159,7 @@ function ApiTokens() {
         ))}
       </Table>
       <p className="mt-2 text-xs text-slate-500">
-        For scripts and <code>hyperstorctl --mgmt</code>: they act with your roles, but never for what needs a fresh
+        For scripts and <code>hsctl --mgmt</code>: they act with your roles, but never for what needs a fresh
         login.
       </p>
       {create && (

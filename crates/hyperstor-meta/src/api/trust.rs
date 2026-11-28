@@ -1,7 +1,7 @@
 //! `TrustService` (19-administration.md §23.12, 04-decisions.md D306): trust
 //! in glidex directories, kept by `crate::trust`.
 //!
-//! - **Offers** are made here (`hyperstorctl admission offer`), the secret
+//! - **Offers** are made here (`hsctl admission offer`), the secret
 //!   from glidex-trust's random source; the reply carries the `gxo_` token
 //!   once, and the store keeps the secret's hash only (glidex D64).
 //! - **Redeems and ends** reach hyperstor-mgmt, the address in the offer,
@@ -801,7 +801,7 @@ impl TrustService for Api {
             }
             let Some(pin) = normalize_pin(req.pin) else {
                 return Err(invalid(
-                    "a certificate's SHA-256 is 64 hex digits (hyperstorctl reads it from --url)",
+                    "a certificate's SHA-256 is 64 hex digits (hsctl reads it from --url)",
                 ));
             };
             let name = if whole {

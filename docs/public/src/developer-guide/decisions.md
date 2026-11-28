@@ -85,7 +85,7 @@ moves more data for erasure-coded pools and needs tuning.
 
 | | |
 |---|---|
-| **Decision** | The map service sets each device's weight, in TiB, from the size the device reports. A new report changes the map only when it differs by more than 1 %. An operator can pin a weight (`hyperstorctl weight`) until it is set back to `auto`. A change moves its PGs at once, under a per-target backfill budget |
+| **Decision** | The map service sets each device's weight, in TiB, from the size the device reports. A new report changes the map only when it differs by more than 1 %. An operator can pin a weight (`hsctl weight`) until it is set back to `auto`. A change moves its PGs at once, under a per-target backfill budget |
 | **Why** | Every device used to join with weight 1, so a small device filled first. Capacity by default needs no step to forget; the override covers a slower drive or a slow drain. The 1 % threshold keeps reports every 5 s from churning the map |
 | **Alternatives** | **A balancer** that sets a second weight from how full each device is (Ceph's `crush-compat`): added only if a device reaches `nearfull` while its class has room. **Per-PG overrides in the map** (Ceph's `upmap`): not used, so placement stays a pure function of the map's weights |
 | **Status** | Built |
@@ -362,7 +362,7 @@ comes after the filesystem.
 | mgmt keeps people's state (users, sessions, API tokens, roles) in the map service's replicated store, and caches a checked session for at most 10 s | Any number of mgmt instances share state without a second database; a logout or revocation takes effect within 10 s |
 | Password logins go through a small root helper that checks PAM; OIDC logins use the authorization code flow with PKCE. Both come from a library shared with glidex | PAM needs root, and the service that faces browsers doesn't get it. One implementation of sessions, tokens and logins for both projects |
 | Roles are Cedar policies over every cluster API call; destructive calls need a login of the last 10 minutes | One place decides who may do what, and deleting data takes a person who has just proved who they are; API tokens never count as a recent login |
-| `hyperstorctl --mgmt` acts with a person's API token, and the map service's audit names that person | Scripts and people use one CLI, and every change is traced to someone |
+| `hsctl --mgmt` acts with a person's API token, and the map service's audit names that person | Scripts and people use one CLI, and every change is traced to someone |
 | The web UI (React) is installed as files that mgmt serves | It can be updated without a new binary; serving files is what a separate UI service would do later |
 | mgmt listens on every address over HTTPS by default, with a certificate from the cluster's own CA; operators can give it their own, or the node's Tailscale one. It never serves a self-signed certificate | People reach the UI without a tunnel, and nothing carrying passwords or cookies crosses the network in clear. The cluster's root is trusted once for every host, where a self-signed certificate would be checked by hand per host |
 | An offline root CA and an online intermediate; an encrypted backup of the root key | A compromised host can't mint a new root; losing the root's host doesn't lose the cluster |
