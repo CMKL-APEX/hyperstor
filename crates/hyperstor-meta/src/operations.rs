@@ -110,6 +110,33 @@ mod hex_id {
 }
 
 impl Work {
+    /// Whether `other` asks for what this does, so that a retried request
+    /// is answered with the operation already running (I472): the same
+    /// node drained, the same device removed (the PGs that move are found
+    /// when asked, so they differ); the same PGs scrubbed as deep, whenever
+    /// asked; any other kind with the same fields.
+    pub fn same(&self, other: &Work) -> bool {
+        match (self, other) {
+            (Work::Drain { node: a, .. }, Work::Drain { node: b, .. }) => a == b,
+            (Work::RemoveDevice { device: a, .. }, Work::RemoveDevice { device: b, .. }) => a == b,
+            (
+                Work::Scrub {
+                    pool: a,
+                    pgs: p,
+                    deep: x,
+                    ..
+                },
+                Work::Scrub {
+                    pool: b,
+                    pgs: q,
+                    deep: y,
+                    ..
+                },
+            ) => a == b && p == q && x == y,
+            (a, b) => a == b,
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Work::Drain { .. } => "drain",
@@ -255,15 +282,74 @@ impl Ops {
         }
     }
 
-    /// Changes operation `id` with `f` (read, then written whole): its new
-    /// self, or `None` if there is none.
+    /// Records `op`, unless an operation that does the [same](Work::same)
+    /// is running: that one, and `false`. Checked and written in one
+    /// transaction, so two retries of one request start one operation
+    /// (I472). Only the leader, with a store.
+    pub fn begin(&self, op: &Op) -> Result<(Op, bool), Error> {
+        let running = |o: &Op| o.running() && o.work.same(&op.work);
+        match &self.0 {
+            Rows::Memory(m) => {
+                let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(o) = m.values().find(|o| running(o)) {
+                    return Ok((o.clone(), false));
+                }
+                m.insert(op.id.clone(), op.clone());
+                Ok((op.clone(), true))
+            }
+            Rows::Db(db) => {
+                let v = serde_json::to_vec(op).map_err(|e| Error::Store(e.to_string()))?;
+                db.write(Origin::Leader, |tx| -> Result<(Op, bool), Error> {
+                    let mut t = tx
+                        .open_table(definition::<store::MapSchema>(Table::Operations))
+                        .map_err(StoreError::from)?;
+                    for row in t.iter().map_err(StoreError::from)? {
+                        let (_, val) = row.map_err(StoreError::from)?;
+                        if let Ok(o) = serde_json::from_slice::<Op>(val.value())
+                            && running(&o)
+                        {
+                            return Ok((o, false));
+                        }
+                    }
+                    t.insert(op.id.as_str(), v.as_slice())
+                        .map_err(StoreError::from)?;
+                    Ok((op.clone(), true))
+                })
+            }
+        }
+    }
+
+    /// Changes operation `id` with `f`: its new self, or `None` if there
+    /// is none. Read and written in one transaction, so `f` sees what any
+    /// other change wrote (a cancel isn't undone by a progress report
+    /// read before it). Only the leader, with a store.
     pub fn update(&self, id: &str, f: impl FnOnce(&mut Op)) -> Result<Option<Op>, Error> {
-        let Some(mut o) = self.get(id)? else {
-            return Ok(None);
-        };
-        f(&mut o);
-        self.put(&o)?;
-        Ok(Some(o))
+        match &self.0 {
+            Rows::Memory(m) => {
+                let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+                Ok(m.get_mut(id).map(|o| {
+                    f(o);
+                    o.clone()
+                }))
+            }
+            Rows::Db(db) => db.write(Origin::Leader, |tx| -> Result<Option<Op>, Error> {
+                let mut t = tx
+                    .open_table(definition::<store::MapSchema>(Table::Operations))
+                    .map_err(StoreError::from)?;
+                let old = t.get(id).map_err(StoreError::from)?;
+                let Some(mut o) = old
+                    .map(|v| serde_json::from_slice::<Op>(v.value()))
+                    .transpose()
+                    .map_err(|e| Error::Store(e.to_string()))?
+                else {
+                    return Ok(None);
+                };
+                f(&mut o);
+                let v = serde_json::to_vec(&o).map_err(|e| Error::Store(e.to_string()))?;
+                t.insert(id, v.as_slice()).map_err(StoreError::from)?;
+                Ok(Some(o))
+            }),
+        }
     }
 
     /// Removes operations finished more than [`KEEP_SECS`] ago. Only the
@@ -419,6 +505,167 @@ mod tests {
             ops.get("b").unwrap().unwrap().work,
             op("b", 0, State::Done, 0).work
         );
+    }
+
+    /// A cancel racing a task's progress reports and its finish: whichever
+    /// lands first ends the operation, and nothing after it starts it
+    /// again or changes how it ended (I472). Before, an update read the
+    /// row, then wrote it whole, so a progress report read before the
+    /// cancel put `Running` back.
+    fn a_cancel_stays(ops: Arc<Ops>) {
+        for round in 0..20 {
+            let id = format!("r{round}");
+            ops.put(&op(&id, now_unix(), State::Running, 0)).unwrap();
+            let progress = {
+                let (ops, id) = (ops.clone(), id.clone());
+                std::thread::spawn(move || {
+                    for n in 0..50 {
+                        ops.update(&id, |o| {
+                            if o.running() {
+                                o.done = n;
+                            }
+                        })
+                        .unwrap();
+                    }
+                    ops.update(&id, |o| {
+                        if o.running() {
+                            o.state = State::Done;
+                        }
+                    })
+                    .unwrap()
+                    .unwrap()
+                })
+            };
+            let cancel = {
+                let (ops, id) = (ops.clone(), id.clone());
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_micros(200 * round));
+                    ops.update(&id, |o| {
+                        if o.running() {
+                            o.state = State::Cancelled;
+                        }
+                    })
+                    .unwrap()
+                    .unwrap()
+                })
+            };
+            let (finished, cancelled) = (progress.join().unwrap(), cancel.join().unwrap());
+            let last = ops.get(&id).unwrap().unwrap();
+            assert_ne!(last.state, State::Running, "round {round}");
+            // The second to land saw how the first ended it.
+            assert_eq!(finished.state, last.state, "round {round}");
+            assert_eq!(cancelled.state, last.state, "round {round}");
+        }
+    }
+
+    #[test]
+    fn a_cancel_is_never_undone() {
+        a_cancel_stays(Arc::new(Ops::in_memory()));
+        let dir = tempfile::tempdir().unwrap();
+        a_cancel_stays(Arc::new(Ops::replicated(Arc::new(
+            Db::create(dir.path().join("map.redb")).unwrap(),
+        ))));
+    }
+
+    /// Starts at random, several at once, of a few kinds on a few targets,
+    /// with operations ending between them, against a model: at most one
+    /// operation runs for each kind of work, a start meeting it answers
+    /// it, and any other starts a new one (I472).
+    fn starts_match_a_model(ops: Arc<Ops>) {
+        use std::collections::HashMap;
+        let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
+        let mut rand = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        // What runs, by its kind of work, in the model.
+        let mut model: HashMap<String, String> = HashMap::new();
+        let key = |w: &Work| match w {
+            Work::Drain { node, .. } => format!("drain {node}"),
+            Work::Scrub {
+                pool, pgs, deep, ..
+            } => format!("scrub {pool} {pgs:?} {deep}"),
+            w => serde_json::to_string(w).unwrap(),
+        };
+        let mut next = 0;
+        for _ in 0..300 {
+            if rand(4) == 0 && !model.is_empty() {
+                // One ends.
+                let k = model
+                    .keys()
+                    .nth(rand(model.len() as u64) as usize)
+                    .unwrap()
+                    .clone();
+                let id = model.remove(&k).unwrap();
+                let s = [State::Done, State::Failed, State::Cancelled][rand(3) as usize];
+                ops.update(&id, |o| o.state = s).unwrap().unwrap();
+                continue;
+            }
+            let work = match rand(4) {
+                0 => Work::Flatten {
+                    volume: rand(3) as u128,
+                },
+                1 => Work::Drain {
+                    node: rand(2) as u32,
+                    devices: vec![],
+                    pgs: vec![(0, rand(9) as u32)],
+                },
+                2 => Work::Scrub {
+                    pool: rand(2) as u32,
+                    pgs: [vec![], vec![3]][rand(2) as usize].clone(),
+                    deep: rand(2) == 0,
+                    since: rand(1000),
+                },
+                _ => Work::Purge {
+                    volume: rand(2) as u128,
+                    epoch: [None, Some(1)][rand(2) as usize],
+                },
+            };
+            // The same start sent by up to four callers at once.
+            let n = 1 + rand(4) as usize;
+            let starts: Vec<_> = (0..n)
+                .map(|_| {
+                    next += 1;
+                    let o = Op {
+                        work: work.clone(),
+                        ..op(&format!("s{next}"), now_unix(), State::Running, 0)
+                    };
+                    let ops = ops.clone();
+                    std::thread::spawn(move || ops.begin(&o).unwrap())
+                })
+                .collect();
+            let got: Vec<(Op, bool)> = starts.into_iter().map(|t| t.join().unwrap()).collect();
+            let k = key(&work);
+            let new: Vec<&Op> = got.iter().filter(|(_, n)| *n).map(|(o, _)| o).collect();
+            match model.get(&k) {
+                Some(id) => assert!(new.is_empty(), "{k} runs as {id}: none new"),
+                None => {
+                    assert_eq!(new.len(), 1, "{k}: one new");
+                    model.insert(k.clone(), new[0].id.clone());
+                }
+            }
+            for (o, _) in &got {
+                assert_eq!(&o.id, &model[&k], "{k}: every caller has the running one");
+            }
+            let running: Vec<Op> = ops
+                .list()
+                .unwrap()
+                .into_iter()
+                .filter(Op::running)
+                .collect();
+            assert_eq!(running.len(), model.len());
+        }
+    }
+
+    #[test]
+    fn a_retried_start_answers_the_running_operation() {
+        starts_match_a_model(Arc::new(Ops::in_memory()));
+        let dir = tempfile::tempdir().unwrap();
+        starts_match_a_model(Arc::new(Ops::replicated(Arc::new(
+            Db::create(dir.path().join("map.redb")).unwrap(),
+        ))));
     }
 
     #[test]
