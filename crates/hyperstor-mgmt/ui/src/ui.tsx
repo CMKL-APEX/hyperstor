@@ -4,7 +4,7 @@
 // refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Modal, useSession } from "@glidex/ui-kit";
-import { getActingRealm, getScope, onActingRealm, onScope, rolesIn, type Me, type Methods, type Scope } from "./api";
+import { getActingRealm, getScope, onActingRealm, onScope, onlyInTenancy, rolesIn, rolesMaybe, type Me, type Methods, type Scope } from "./api";
 
 export function Card({ title, actions, children }: { title?: string; actions?: ReactNode; children: ReactNode }) {
   return (
@@ -211,6 +211,14 @@ export function useRealm(): string | null {
   return useSyncExternalStore(onActingRealm, getActingRealm);
 }
 
+/** Whether the person sees less than the whole cluster: acting in a
+ * realm, or holding grants only in tenants and projects. Pages then ask
+ * for what a realm's people may read, not the cluster's status. */
+export function useNarrow(): boolean {
+  const { me } = useSession<Me, Methods>();
+  return useRealm() != null || onlyInTenancy(me.roles);
+}
+
 /** The tenant and project picked in the header (D310). */
 export function useScope(): Scope {
   return useSyncExternalStore(onScope, getScope);
@@ -222,11 +230,16 @@ export function realmOf(realm: string, tenant = 0): string {
 }
 
 /** Whether the person's roles allow a group of actions (policy.rs's), in
- * the realm they act in: their cluster-wide roles and that realm's. */
+ * the realm they act in: their cluster-wide roles, that realm's, and
+ * their tenants' and projects' (mgmt decides which rows those reach).
+ * `cluster`: only roles that hold over the whole cluster. */
 export function useCan() {
   const { me } = useSession<Me, Methods>();
-  const roles = rolesIn(me.roles, useRealm());
-  return (group: keyof typeof GROUPS) => roles.some((r) => GROUPS[group].includes(r));
+  const realm = useRealm();
+  const roles = rolesMaybe(me.roles, realm);
+  const whole = rolesIn(me.roles, null);
+  return (group: keyof typeof GROUPS, cluster = false) =>
+    (cluster && !realm ? whole : roles).some((r) => GROUPS[group].includes(r));
 }
 
 export function fmtBytes(n: number | bigint): string {

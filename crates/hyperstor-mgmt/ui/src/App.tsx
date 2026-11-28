@@ -8,6 +8,7 @@ import {
   auth,
   directoryOrigin,
   grantRealms,
+  onlyInTenancy,
   allRealms,
   rolesIn,
   savedRealm,
@@ -295,7 +296,9 @@ function ScopePicker() {
 function Shell() {
   const { me, logout } = useSession<Me, Methods>();
   const realm = useRealm();
-  const pages = realm ? PAGES.filter(([to]) => REALM_PAGES.has(to)) : PAGES;
+  // Someone with grants only in tenants and projects sees a realm's pages.
+  const narrow = realm != null || onlyInTenancy(me.roles);
+  const pages = narrow ? PAGES.filter(([to]) => REALM_PAGES.has(to)) : PAGES;
   return (
     <div className="min-h-screen">
       <header className="flex flex-wrap items-center gap-4 px-5 py-3 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700">
@@ -331,8 +334,8 @@ function Shell() {
             You have no roles yet: a security administrator gives them (Security, People).
           </p>
         )}
-        {realm ? (
-          <Routes key={realm}>
+        {narrow ? (
+          <Routes key={realm ?? ""}>
             <Route path="/volumes" element={<Volumes />} />
             <Route path="/trash" element={<Trash />} />
             <Route path="/s3" element={<ObjectStorage />} />
