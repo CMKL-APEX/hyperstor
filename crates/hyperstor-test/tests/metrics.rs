@@ -25,6 +25,20 @@ fn requests_are_counted_and_timed() {
     wait_for("gauges", 5, || {
         (c.metric_sum("hyperstor_device_objects", "") > 0).then_some(())
     });
+    // Each device sizes its index's leaves at start (D408), and serves
+    // the totals by format.
+    wait_for("a pass over each device's index", 10, || {
+        (c.metric_sum("hyperstor_index_passes_total", "") >= 3).then_some(())
+    });
+    let m = c.metrics(0);
+    for kind in ["per_block", "per_block64", "ranges", "packed"] {
+        assert!(
+            m.contains(&format!(",kind=\"{kind}\"}}"))
+                && m.contains("\nhyperstor_index_leaf_bytes{"),
+            "{kind}"
+        );
+    }
+    assert!(m.contains("\nhyperstor_index_mapped{"));
     // Nodes follow the map every 200 ms, and the map service may have
     // just changed it (D158 weights the devices once they report), so
     // they agree within moments, not at every instant.
