@@ -11,6 +11,7 @@ pub mod blockmap;
 pub mod dev;
 pub mod device;
 pub mod index;
+pub mod leaf;
 pub mod probe;
 pub mod shard;
 pub mod types;

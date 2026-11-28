@@ -232,6 +232,26 @@ impl BlockMap {
         out
     }
 
+    /// Calls `f(logical, physical, blocks)` for each mapping in logical
+    /// order: each run, or each mapped slot of a dense map, not merged. No
+    /// checksums are copied ([`BlockMap::runs`] copies them).
+    pub fn each_mapping(&self, mut f: impl FnMut(u64, u64, u64)) {
+        match self {
+            BlockMap::Runs(m) => {
+                for (lb, r) in m {
+                    f(*lb, r.pblock, r.len());
+                }
+            }
+            BlockMap::Dense(v, base) => {
+                for (i, s) in v.iter().enumerate() {
+                    if let Some((pb, _)) = unpack(*s, *base) {
+                        f(i as u64, pb, 1);
+                    }
+                }
+            }
+        }
+    }
+
     /// Number of runs (maximal contiguous mappings).
     pub fn run_count(&self) -> u64 {
         match self {
@@ -667,5 +687,28 @@ mod tests {
         a.rebase(15);
         assert!(!a.is_dense(), "block 10 is before the base");
         assert_eq!(a.runs(), runs);
+    }
+
+    #[test]
+    fn each_mapping_covers_what_runs_does() {
+        let mut a = BlockMap::default();
+        for (lb, pb, n) in [(0, 100, 4), (4, 104, 2), (8, 50, 3), (20, 7, 1)] {
+            a.map(lb, pb, &vec![lb as u32; n]);
+        }
+        let mut d = a.clone();
+        d.make_dense(0);
+        for m in [&a, &d] {
+            let mut merged: Vec<(u64, u64, u64)> = Vec::new();
+            m.each_mapping(|lb, pb, n| match merged.last_mut() {
+                Some((l, p, c)) if *l + *c == lb && *p + *c == pb => *c += n,
+                _ => merged.push((lb, pb, n)),
+            });
+            let want: Vec<(u64, u64, u64)> = m
+                .runs()
+                .into_iter()
+                .map(|(l, p, c)| (l, p, c.len() as u64))
+                .collect();
+            assert_eq!(merged, want);
+        }
     }
 }

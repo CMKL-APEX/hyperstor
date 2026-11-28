@@ -107,6 +107,18 @@ pub struct ShardMetrics {
     pub discarded_bytes: AtomicU64,
     pub discard_queued_bytes: AtomicU64,
     pub map_epoch: AtomicU64,
+    /// What the on-device index's leaves would take for the device's
+    /// block maps, by format (D408), as of the last whole pass over its
+    /// index ([`hyperstor_engine::leaf`]): objects, blocks and runs
+    /// sized, the bytes of each format, and passes finished.
+    pub leaf_objects: AtomicU64,
+    pub leaf_blocks: AtomicU64,
+    pub leaf_runs: AtomicU64,
+    pub leaf_per_block: AtomicU64,
+    pub leaf_per_block64: AtomicU64,
+    pub leaf_ranges: AtomicU64,
+    pub leaf_packed: AtomicU64,
+    pub leaf_passes: AtomicU64,
     /// Connections served a request without having authenticated (D373).
     pub unauthenticated: AtomicU64,
     /// Connections dropped for a revoked certificate (D384).
@@ -292,6 +304,37 @@ pub fn render(node: u32, shards: &[(u32, Arc<ShardMetrics>)]) -> String {
     family("hyperstor_log_bytes", "gauge", "Size of the log.", &|m| {
         vec![("", g(&m.log_bytes))]
     });
+    family(
+        "hyperstor_index_leaf_bytes",
+        "gauge",
+        "Leaf bytes the on-device index would take for the device's block maps, by format (D408), as of the last pass over its index.",
+        &|m| {
+            vec![
+                ("per_block", g(&m.leaf_per_block)),
+                ("per_block64", g(&m.leaf_per_block64)),
+                ("ranges", g(&m.leaf_ranges)),
+                ("packed", g(&m.leaf_packed)),
+            ]
+        },
+    );
+    family(
+        "hyperstor_index_mapped",
+        "gauge",
+        "Objects, mapped blocks and runs (contiguous both ways) in the device's block maps, as of the last pass over its index.",
+        &|m| {
+            vec![
+                ("objects", g(&m.leaf_objects)),
+                ("blocks", g(&m.leaf_blocks)),
+                ("runs", g(&m.leaf_runs)),
+            ]
+        },
+    );
+    family(
+        "hyperstor_index_passes_total",
+        "counter",
+        "Passes over the device's index that sized its leaves; the first ends minutes after a start.",
+        &|m| vec![("", g(&m.leaf_passes))],
+    );
     family(
         "hyperstor_commits_total",
         "counter",
@@ -497,7 +540,12 @@ mod tests {
             t.contains("hyperstor_encrypted_connections_total{node=\"4\",device=\"4000\"} 0\n")
         );
         assert!(t.contains("hyperstor_refused_connections_total{node=\"4\",device=\"4000\"} 0\n"));
-        assert_eq!(t.matches("# TYPE ").count(), 30);
+        assert!(t.contains(
+            "hyperstor_index_leaf_bytes{node=\"4\",device=\"4001\",kind=\"packed\"} 0\n"
+        ));
+        assert!(t.contains("hyperstor_index_mapped{node=\"4\",device=\"4000\",kind=\"runs\"} 0\n"));
+        assert!(t.contains("hyperstor_index_passes_total{node=\"4\",device=\"4000\"} 0\n"));
+        assert_eq!(t.matches("# TYPE ").count(), 33);
         // Histograms are cumulative and end at +Inf with the count.
         let c = Arc::new(ShardMetrics::default());
         for us in [10, 20, 100, 100_000] {
