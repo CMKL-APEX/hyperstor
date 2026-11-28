@@ -4797,12 +4797,16 @@ impl Meta {
         else {
             return Err("this map service member holds no certificate for the data path".into());
         };
-        if mode == DataTls::Off
-            || self.published.borrow().data_tls == DataTls::Off
-            || self.map.borrow().data_tls == DataTls::Off
-        {
+        if mode == DataTls::Off || self.map.borrow().data_tls == DataTls::Off {
             return Err(
                 "set the mode to allow first: encryption is turned on once nodes take TLS, and each is tried"
+                    .into(),
+            );
+        }
+        // Nodes take TLS once they have a map in `allow`.
+        if self.published.borrow().data_tls == DataTls::Off {
+            return Err(
+                "the map in mode allow isn't published yet, so nodes don't take TLS: try again in a moment"
                     .into(),
             );
         }

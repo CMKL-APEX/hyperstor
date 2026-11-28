@@ -1710,8 +1710,7 @@ what = "T3: the installer loads the kernel's `tls` module and checks it (`ktls`)
 spec = ["30-data-path-tls.md §33.10", "30-data-path-tls.md §33.11", "G69", "D407", "D414", "I462", "I463"]
 status = "done"
 tests = [
-    "install::check_reports_every_item",
-    "install::install_is_convergent_and_uninstall_keeps_configuration",
+    "cluster::encryption_is_refused_until_every_node_keeps_an_encrypted_session",
 ]
 
 [[milestone]]

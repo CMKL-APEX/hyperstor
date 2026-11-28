@@ -10534,10 +10534,6 @@ fn sessions_stay_encrypted_on_networks_not_marked_trusted() {
     let lo = |trusted| {
         Some(hyperstor_meta::NetworkDef::parse("data", trusted, "subnet 127.0.0.0/8").unwrap())
     };
-    // Encryption is turned on once nodes take TLS, so each can be tried
-    // (D414).
-    let e = c.data_tls_encrypt(DataTls::Off, Some(true)).unwrap_err();
-    assert!(e.contains("set the mode to allow first"), "{e}");
     c.data_tls(DataTls::Allow).unwrap();
     c.network("lo", lo(false));
     let encrypted = |c: &Cluster| -> Vec<u64> {
@@ -10634,15 +10630,6 @@ fn sessions_stay_encrypted_on_networks_not_marked_trusted() {
     loop {
         match step_rx.recv().unwrap() {
             "encrypt" => {
-                // A node whose kernel lacks TLS can't keep an encrypted
-                // session: refused, named (D414).
-                c.older.set_no_ktls(1, true);
-                let e = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap_err();
-                assert!(
-                    e.contains("storage node(s) 1 couldn't keep an encrypted session"),
-                    "{e}"
-                );
-                c.older.set_no_ktls(1, false);
                 let (_, mode, was) = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap();
                 assert_eq!((mode, was), (DataTls::Allow, false));
             }
@@ -10667,6 +10654,41 @@ fn sessions_stay_encrypted_on_networks_not_marked_trusted() {
             .flat_map(|i| [(1u128, i), (2u128, i)])
             .collect::<Vec<_>>(),
     );
+}
+
+/// Encryption is turned on only once every storage node that is up
+/// keeps an encrypted session (D414; 30-data-path-tls.md §33.11):
+/// refused in mode `off`, where nodes don't take TLS; refused, naming
+/// it, while a node's kernel lacks TLS (played by a fault hook: Linux
+/// loads the `tls` module only for a process with CAP_NET_ADMIN); taken
+/// once it keeps one.
+#[test]
+fn encryption_is_refused_until_every_node_keeps_an_encrypted_session() {
+    use hyperstor_meta::DataTls;
+    let c = Cluster::start(3, 1);
+    let e = c.data_tls_encrypt(DataTls::Off, Some(true)).unwrap_err();
+    assert!(e.contains("set the mode to allow first"), "{e}");
+    let e = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap_err();
+    assert!(e.contains("set the mode to allow first"), "{e}");
+    c.data_tls(DataTls::Allow).unwrap();
+    c.older.set_no_ktls(1, true);
+    // Right after, the map in `allow` may not be published yet.
+    let t0 = std::time::Instant::now();
+    let e = loop {
+        let e = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap_err();
+        if !e.contains("isn't published yet") {
+            break e;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "{e}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(
+        e.contains("storage node(s) 1 couldn't keep an encrypted session"),
+        "{e}"
+    );
+    c.older.set_no_ktls(1, false);
+    let (_, mode, was) = c.data_tls_encrypt(DataTls::Allow, Some(true)).unwrap();
+    assert_eq!((mode, was), (DataTls::Allow, false));
 }
 
 /// Revoked certificates on the data path (D384; 30-data-path-tls.md
